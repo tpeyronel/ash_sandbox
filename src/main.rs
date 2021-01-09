@@ -7,6 +7,7 @@ use std::{
         ffi::{c_void, CStr, CString},
         io::Write,
         os::raw::c_char,
+        process::Command,
 };
 
 use ash::{
@@ -282,7 +283,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         let swapchain = unsafe { swch_loader.create_swapchain(&swch_cinfo, None)? };
 
+        Command::new("res/misc/glslc.exe")
+                .arg("res/shader/basic_shader.vert")
+                .arg("-o")
+                .arg("res/shader/basic_shader.vert.spv")
+                .spawn()?;
 
+        Command::new("res/misc/glslc.exe")
+                .arg("res/shader/basic_shader.frag")
+                .arg("-o")
+                .arg("res/shader/basic_shader.frag.spv")
+                .spawn()?;
 
 
 
