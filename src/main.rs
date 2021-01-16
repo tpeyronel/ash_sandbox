@@ -1,34 +1,30 @@
+mod image;
 mod my_vec;
+mod renderer;
 mod timer;
 mod vertex;
+mod vk_buffer;
 mod vk_context;
-mod vk_immutable_buffer;
+mod vk_image;
+mod vkma_error;
 
+#[macro_use]
+extern crate const_cstr;
+#[macro_use]
+extern crate imgui;
+#[macro_use]
+extern crate bitflags;
 extern crate nalgebra as na;
+extern crate nalgebra_glm as glm;
 extern crate vk_mem as vma;
 
 use std::{
-        borrow::Cow,
         error::Error,
-        ffi::{c_void, CStr, CString},
         io::Write,
-        os::raw::c_char,
-        process::Command,
-        ptr,
         rc::Rc,
         time::{Duration, Instant},
 };
 
-use ash::{
-        extensions::{
-                ext::DebugUtils,
-                khr::{Surface, Swapchain},
-        },
-        prelude::VkResult,
-        version::{DeviceV1_0, EntryV1_0, InstanceV1_0},
-        vk,
-        vk::{DebugUtilsMessengerCreateInfoEXT, Offset2D},
-};
 use chrono::Local;
 use env_logger::Env;
 use fps_counter::FPSCounter;
@@ -39,7 +35,7 @@ use winit::{
         window::{Fullscreen, WindowBuilder},
 };
 
-use crate::{timer::Timer, vk_context::VkContext};
+use crate::{renderer::Renderer, vk_context::VkContext};
 
 /*macro_rules! cstring {
         ($s:expr) => {
@@ -92,49 +88,75 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .with_visible(false)
                 .with_always_on_top(false)
                 .with_min_inner_size(winit::dpi::PhysicalSize {
-                        width:  240,
+                        width: 240,
                         height: 240,
                 })
                 .build(&event_loop)?);
         trace!("Created window");
 
-        let mut vk_context = VkContext::new(&window)?;
+        let mut imgui_c = imgui::Context::create();
 
+        let mut platform = imgui_winit_support::WinitPlatform::init(&mut imgui_c);
 
+        let hidpi_factor = platform.hidpi_factor();
+        let font_size = (13.0 * hidpi_factor) as f32;
+        imgui_c.fonts().add_font(&[
+                imgui::FontSource::DefaultFontData {
+                        config: Some(imgui::FontConfig {
+                                size_pixels: font_size,
+                                ..imgui::FontConfig::default()
+                        }),
+                },
+                imgui::FontSource::TtfData {
+                        data: include_bytes!("../res/font/FiraCode-Regular.ttf"),
+                        size_pixels: font_size,
+                        config: Some(imgui::FontConfig {
+                                rasterizer_multiply: 1.75,
+                                glyph_ranges: imgui::FontGlyphRanges::japanese(),
+                                ..imgui::FontConfig::default()
+                        }),
+                },
+        ]);
+        imgui_c.io_mut().font_global_scale = (1.0 / hidpi_factor) as f32;
+        platform.attach_window(imgui_c.io_mut(), &window, imgui_winit_support::HiDpiMode::Rounded);
 
+        let mut vk_context = VkContext::new(&window, &mut imgui_c)?;
 
         let mut fps_ctr = FPSCounter::new();
         let mut last_print_fps = Instant::now();
+        let mut last_frame = Instant::now();
 
         window.set_visible(true);
         event_loop.run(move |event, _, control_flow| {
                 *control_flow = ControlFlow::Poll;
 
+                platform.handle_event(imgui_c.io_mut(), &window, &event);
+
                 match event {
-                        Event::WindowEvent {
-                                window_id,
-                                event,
-                        } if window_id == window.id() => match event {
+                        Event::NewEvents(_) => {
+                                let now = Instant::now();
+                                imgui_c.io_mut().update_delta_time(now - last_frame);
+                                last_frame = now;
+                        }
+                        Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
                                 WindowEvent::Resized(size) => {
                                         vk_context.on_window_resize(size.width, size.height);
-                                },
+                                }
                                 WindowEvent::CloseRequested => {
                                         *control_flow = ControlFlow::Exit;
-                                },
-                                WindowEvent::KeyboardInput {
-                                        input, ..
-                                } => {
+                                }
+                                WindowEvent::KeyboardInput { input, .. } => {
                                         if let Some(virtual_keycode) = input.virtual_keycode {
                                                 match virtual_keycode {
                                                         VirtualKeyCode::Escape => *control_flow = ControlFlow::Exit,
-                                                        VirtualKeyCode::F => {},
-                                                        _ => {},
+                                                        VirtualKeyCode::F => {}
+                                                        _ => {}
                                                 };
                                         }
-                                },
-                                _ => {},
+                                }
+                                _ => {}
                         },
-                        Event::MainEventsCleared => unsafe {
+                        Event::MainEventsCleared => {
                                 let fps = fps_ctr.tick();
                                 let now = Instant::now();
                                 let time_since_last_print_fps = now - last_print_fps;
@@ -145,29 +167,37 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         info!("FPS: {}", fps);
                                 }
 
-                                vk_context.draw().expect("Error occurred while drawing");
-                        },
+                                platform.prepare_frame(imgui_c.io_mut(), &window)
+                                        .expect("Failed to prepare frame");
+                                let mut ui = imgui_c.frame();
+
+                                imgui::Window::new(im_str!("Hello world"))
+                                        .size([300.0, 100.0], imgui::Condition::FirstUseEver)
+                                        .build(&ui, || {
+                                                ui.text(im_str!("Hello world!"));
+                                                ui.text(im_str!("こんにちは世界！"));
+                                                ui.text(im_str!("This...is...imgui-rs!"));
+                                                ui.separator();
+                                                let mouse_pos = ui.io().mouse_pos;
+                                                ui.text(format!(
+                                                        "Mouse Position: ({:.1},{:.1})",
+                                                        mouse_pos[0], mouse_pos[1]
+                                                ));
+                                        });
+
+                                let mut opened: bool = false;
+                                ui.show_demo_window(&mut opened);
+
+                                let imgui_draw_data = ui.render();
+
+                                vk_context.draw(imgui_draw_data).expect("Error occurred while drawing");
+                        }
                         _ => (),
                 }
         });
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        trace!("Terminating program...");
-        Ok(())
+        /*trace!("Terminating program...");
+        Ok(())*/
         /*let entry = ash::Entry::new()?;
         trace!("Created entry");
 

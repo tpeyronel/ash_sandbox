@@ -1,10 +1,10 @@
 #version 450
 
-/*layout (set = 0, binding = 0) uniform Matrices {
+layout (set = 0, binding = 0) uniform Matrices {
         mat4 model;
         mat4 view;
         mat4 proj;
-} u_mats;*/
+} u_mats;
 
 
 layout (location = 0) in vec3 i_pos;
@@ -16,8 +16,9 @@ layout (location = 0) out vec2 o_tex_coord;
 
 
 void main() {
-        //gl_Position = u_mats.proj * u_mats.view * u_mats.model * vec4(i_pos, 1.0);
-        gl_Position = vec4(i_pos, 1.0);
+        gl_Position = u_mats.proj * u_mats.view * u_mats.model * vec4(i_pos, 1.0);
+        //gl_Position = u_mats.model * vec4(i_pos, 1.0);
+        //gl_Position = vec4(i_pos, 1.0);
 
         o_tex_coord = i_tex_coord;
 }

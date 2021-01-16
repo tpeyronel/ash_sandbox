@@ -26,3 +26,10 @@ pub type Vec2i = glm::IVec2;
 pub type Vec3i = glm::IVec3;
 #[allow(dead_code)]
 pub type Vec4i = glm::IVec4;
+
+#[allow(dead_code)]
+pub type Mat2 = glm::Mat2;
+#[allow(dead_code)]
+pub type Mat3 = glm::Mat3;
+#[allow(dead_code)]
+pub type Mat4 = glm::Mat4;
