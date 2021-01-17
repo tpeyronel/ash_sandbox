@@ -25,6 +25,11 @@ use bitflags;
 use log::{debug, error, info, trace, warn};
 use winit::window::Window;
 
+use crate::vk_image::{VkImage, VkImageCreateInfo};
+use crate::vk_wrapper::{
+        VkDebugUtilsMessenger, VkDevice, VkFramebuffer, VkImageView, VkInstance, VkSampler, VkSurface,
+};
+use crate::vkma_error::VkmaResult;
 use crate::{
         image::Image,
         my_vec::*,
@@ -33,6 +38,7 @@ use crate::{
         vertex::Vertex,
         vk_buffer::{VkBuffer, VkBufferCreateInfo, VkImmutableBufferCreateInfo},
 };
+use std::sync::Arc;
 
 macro_rules! cstring {
         ($s:expr) => {
@@ -65,29 +71,26 @@ const DEPTH_STENCIL_FORMAT: vk::Format = vk::Format::D24_UNORM_S8_UINT;
 pub struct VkContext {
         window: Rc<Window>,
 
-        entry: ash::Entry,
-        instance: ash::Instance,
+        entry: Arc<ash::Entry>,
+        instance: Arc<VkInstance>,
 
-        debug_utils_loader: Option<DebugUtils>,
-        debug_utils_messenger: Option<vk::DebugUtilsMessengerEXT>,
+        debug_utils_messenger: Option<VkDebugUtilsMessenger>,
 
-        surface_loader: Surface,
-        surface: vk::SurfaceKHR,
+        surface: Arc<VkSurface>,
 
         physical_device: vk::PhysicalDevice,
-        device: ash::Device,
+        device: Arc<VkDevice>,
 
         q_family_i: VkQueueFamilyIndices,
         queues: VkQueues,
 
-        allocator: vma::Allocator,
+        allocator: Arc<vma::Allocator>,
 
         swapchain: VkSwapchain,
         swapchain_outdated_causes: VkSwapchainOutdatedCauses,
 
         render_pass: vk::RenderPass,
-        imgui_render_pass: vk::RenderPass,
-
+        //imgui_render_pass: vk::RenderPass,
         cmd_pool: vk::CommandPool,
         setup_cmd_buffer: VkReusableCommandBuffer,
         draw_cmd_buffers: Vec<VkReusableCommandBuffer>,
@@ -96,10 +99,9 @@ pub struct VkContext {
         index_buffer: VkBuffer,
         matrices_buffers: Vec<VkBuffer>,
 
-        img: vk::Image,
-        img_alloc: vma::Allocation,
-        img_view: vk::ImageView,
-        img_sampler: vk::Sampler,
+        vk_img: VkImage,
+        vk_img_view: VkImageView,
+        vk_img_sampler: VkSampler,
 
         desc_pool: vk::DescriptorPool,
         desc_set_layout: vk::DescriptorSetLayout,
@@ -130,28 +132,25 @@ impl VkContext {
         pub fn new(window: &Rc<Window>, imgui_context: &mut imgui::Context) -> Result<Self, Box<dyn Error>> {
                 let _t = Timer::new("Initialized VkContext in: ");
 
-                let entry = ash::Entry::new()?;
+                let entry = Arc::new(ash::Entry::new()?);
 
                 let instance = Self::create_instance(window, &entry)?;
                 trace!("Created VkInstance");
 
-                let mut debug_utils_loader = None;
-                let mut debug_utils_messenger = None;
-                if ENABLE_VALIDATION_LAYERS {
-                        debug_utils_loader = Some(DebugUtils::new(&entry, &instance));
-
-                        debug_utils_messenger = Some(Self::create_debug_utils_messenger(
-                                debug_utils_loader.as_ref().unwrap(),
-                        )?);
+                let debug_utils_messenger = if !ENABLE_VALIDATION_LAYERS {
+                        None
+                } else {
+                        let debug_messenger = Some(Self::create_debug_utils_messenger(&entry, &instance)?);
 
                         trace!("Created VkDebugUtilsMessenger");
+
+                        debug_messenger
                 };
 
-                let surface_loader = Surface::new(&entry, &instance);
-                let surface = unsafe { ash_window::create_surface(&entry, &instance, window.deref().deref(), None)? };
+                let surface = Arc::new(unsafe { VkSurface::new(&entry, &instance, window)? });
                 trace!("Created VkSurface");
 
-                let (physical_device, q_family_i) = Self::choose_physical_device(&instance, &surface_loader, surface)?;
+                let (physical_device, q_family_i) = Self::choose_physical_device(&instance, &surface)?;
 
                 trace!("Chose VkPhysicalDevice");
                 info!("Chosen physical device: {:?}", unsafe {
@@ -172,8 +171,7 @@ impl VkContext {
                 let mut swapchain = VkSwapchain::new(
                         window,
                         &instance,
-                        &surface_loader,
-                        surface,
+                        &surface,
                         physical_device,
                         &device,
                         &allocator,
@@ -185,7 +183,7 @@ impl VkContext {
 
                 let render_pass = Self::create_render_pass(&device, swapchain.format.format)?;
                 trace!("Created VkRenderPass");
-                let imgui_render_pass = Self::create_imgui_render_pass(&device, swapchain.format.format)?;
+                //let imgui_render_pass = Self::create_imgui_render_pass(&device, swapchain.format.format)?;
 
                 swapchain.create_framebuffers(&device, render_pass)?;
                 trace!("Created VkFramebuffers");
@@ -204,24 +202,13 @@ impl VkContext {
                 let matrices_buffers = Self::create_matrices_buffers(&device, &allocator, swapchain.img_count)?;
                 trace!("Created matrices uniform buffer");
 
-                let (img, img_alloc, img_view, img_sampler) = match Self::create_texture_image(
+                let (vk_img, vk_img_view, vk_img_sampler) = Self::create_texture_image(
                         unsafe { &instance.get_physical_device_properties(physical_device).limits },
                         &device,
                         &allocator,
                         &setup_cmd_buffer,
                         queues.graphics,
-                ) {
-                        Ok(v) => v,
-                        Err(err) => {
-                                vertex_buffer.destroy(&allocator);
-                                index_buffer.destroy(&allocator);
-                                for buffer in &matrices_buffers {
-                                        buffer.destroy(&allocator);
-                                }
-
-                                return Err(err);
-                        }
-                };
+                )?;
                 trace!("Created VkImage");
 
                 let desc_pool = Self::create_descriptor_pool(&device)?;
@@ -231,8 +218,8 @@ impl VkContext {
                         desc_pool,
                         desc_set_layout,
                         &matrices_buffers,
-                        img_view,
-                        img_sampler,
+                        *vk_img_view,
+                        *vk_img_sampler,
                 )?;
                 trace!("Created VkDescriptorSets");
 
@@ -258,10 +245,8 @@ impl VkContext {
                         entry,
                         instance,
 
-                        debug_utils_loader,
                         debug_utils_messenger,
 
-                        surface_loader,
                         surface,
 
                         physical_device,
@@ -276,8 +261,7 @@ impl VkContext {
                         swapchain_outdated_causes: VkSwapchainOutdatedCauses::NONE,
 
                         render_pass,
-                        imgui_render_pass,
-
+                        //imgui_render_pass,
                         cmd_pool,
                         setup_cmd_buffer,
                         draw_cmd_buffers,
@@ -286,10 +270,9 @@ impl VkContext {
                         index_buffer,
                         matrices_buffers,
 
-                        img,
-                        img_view,
-                        img_alloc,
-                        img_sampler,
+                        vk_img,
+                        vk_img_view,
+                        vk_img_sampler,
 
                         desc_pool,
                         desc_set_layout,
@@ -314,7 +297,7 @@ impl VkContext {
                 s.imgui_renderer = Some(imgui_rs_vulkan_renderer::Renderer::new(
                         &s,
                         s.swapchain.img_count as usize,
-                        s.imgui_render_pass,
+                        s.render_pass,
                         imgui_context,
                 )?);
 
@@ -363,7 +346,7 @@ impl VkContext {
 
                 unsafe { self.device.device_wait_idle()? };
 
-                let mut old_swapchain = {
+                let old_swapchain = {
                         let old_swapchain_handle = self.swapchain.handle;
 
                         std::mem::replace(
@@ -371,8 +354,7 @@ impl VkContext {
                                 VkSwapchain::new(
                                         &self.window,
                                         &self.instance,
-                                        &self.surface_loader,
-                                        self.surface,
+                                        &self.surface,
                                         self.physical_device,
                                         &self.device,
                                         &self.allocator,
@@ -389,12 +371,12 @@ impl VkContext {
                         unsafe { self.device.destroy_render_pass(self.render_pass, None) };
                         self.render_pass = Self::create_render_pass(&self.device, self.swapchain.format.format)?;
 
-                        unsafe { self.device.destroy_render_pass(self.imgui_render_pass, None) };
+                        /*unsafe { self.device.destroy_render_pass(self.imgui_render_pass, None) };
                         self.imgui_render_pass =
-                                Self::create_imgui_render_pass(&self.device, self.swapchain.format.format)?;
+                                Self::create_imgui_render_pass(&self.device, self.swapchain.format.format)?;*/
 
                         let mut imgui_renderer = self.imgui_renderer.take().unwrap();
-                        imgui_renderer.set_render_pass(self, self.imgui_render_pass)?;
+                        imgui_renderer.set_render_pass(self, self.render_pass)?;
                         self.imgui_renderer = Some(imgui_renderer);
 
                         recreate_pipeline = true;
@@ -403,9 +385,6 @@ impl VkContext {
                 self.swapchain.create_framebuffers(&self.device, self.render_pass)?;
 
                 if old_swapchain.img_count != self.swapchain.img_count {
-                        for buffer in &self.matrices_buffers {
-                                buffer.destroy(&self.allocator);
-                        }
                         self.matrices_buffers =
                                 Self::create_matrices_buffers(&self.device, &self.allocator, self.swapchain.img_count)?;
 
@@ -415,8 +394,8 @@ impl VkContext {
                                 self.desc_pool,
                                 self.desc_set_layout,
                                 &self.matrices_buffers,
-                                self.img_view,
-                                self.img_sampler,
+                                *self.vk_img_view,
+                                *self.vk_img_sampler,
                         )?;
 
                         for cmd_buffer in &self.draw_cmd_buffers {
@@ -454,7 +433,6 @@ impl VkContext {
                 }
 
                 self.swapchain_outdated_causes = VkSwapchainOutdatedCauses::NONE;
-                old_swapchain.destroy(&self.device, &self.allocator);
 
                 Ok(())
         }
@@ -485,7 +463,7 @@ impl VkContext {
                 Ok(())
         }
 
-        fn create_instance(window: &Window, entry: &ash::Entry) -> Result<ash::Instance, Box<dyn Error>> {
+        fn create_instance(window: &Window, entry: &Arc<ash::Entry>) -> Result<Arc<VkInstance>, Box<dyn Error>> {
                 unsafe {
                         let mut req_layers = Vec::new();
                         if ENABLE_VALIDATION_LAYERS {
@@ -529,7 +507,7 @@ impl VkContext {
                                         &debug_info as *const vk::DebugUtilsMessengerCreateInfoEXT as *const c_void;
                         }
 
-                        entry.create_instance(&instance_cinfo, None).map_err(|e| e.into())
+                        Ok(Arc::new(VkInstance::new(entry, &instance_cinfo)?))
                 }
         }
 
@@ -546,24 +524,24 @@ impl VkContext {
         }
 
         fn create_debug_utils_messenger(
-                debug_utils_loader: &DebugUtils,
-        ) -> Result<vk::DebugUtilsMessengerEXT, Box<dyn Error>> {
+                entry: &ash::Entry,
+                instance: &ash::Instance,
+        ) -> VkResult<VkDebugUtilsMessenger> {
                 let debug_cinfo = Self::create_debug_utils_messenger_cinfo();
 
-                unsafe { debug_utils_loader.create_debug_utils_messenger(&debug_cinfo, None) }.map_err(|e| e.into())
+                unsafe { VkDebugUtilsMessenger::new(entry, instance, &debug_cinfo) }
         }
 
         fn choose_physical_device(
                 instance: &ash::Instance,
-                surface_loader: &Surface,
-                surface: vk::SurfaceKHR,
+                surface: &VkSurface,
         ) -> Result<(vk::PhysicalDevice, VkQueueFamilyIndices), Box<dyn Error>> {
                 Ok(unsafe {
                         let ph_devices = instance.enumerate_physical_devices()?;
 
                         ph_devices
                                 .iter()
-                                .filter_map(|&pd| Self::is_device_suitable(instance, surface_loader, surface, pd))
+                                .filter_map(|&pd| Self::is_device_suitable(instance, surface, pd))
                                 .find(|&(pd, _)| {
                                         let name = CStr::from_ptr(
                                                 instance.get_physical_device_properties(pd).device_name.as_ptr(),
@@ -579,11 +557,10 @@ impl VkContext {
 
         fn is_device_suitable(
                 instance: &ash::Instance,
-                surface_loader: &Surface,
-                surface: vk::SurfaceKHR,
+                surface: &VkSurface,
                 pd: vk::PhysicalDevice,
         ) -> Option<(vk::PhysicalDevice, VkQueueFamilyIndices)> {
-                let q_family_i = match VkQueueFamilyIndices::new(instance, surface_loader, surface, pd) {
+                let q_family_i = match VkQueueFamilyIndices::new(instance, surface, pd) {
                         Some(q_family_i) => q_family_i,
                         None => return None,
                 };
@@ -601,7 +578,7 @@ impl VkContext {
                 instance: &ash::Instance,
                 physical_device: vk::PhysicalDevice,
                 q_family_i: &VkQueueFamilyIndices,
-        ) -> Result<(ash::Device, VkQueues), Box<dyn Error>> {
+        ) -> Result<(Arc<VkDevice>, VkQueues), Box<dyn Error>> {
                 let memory_budget_ext = CStr::from_bytes_with_nul(b"VK_EXT_memory_budget\0").unwrap();
 
                 let req_device_extensions_raw = vec![Swapchain::name().as_ptr(), memory_budget_ext.as_ptr()];
@@ -638,7 +615,7 @@ impl VkContext {
                         .enabled_extension_names(&req_device_extensions_raw)
                         .enabled_features(&req_device_features);
 
-                let device = unsafe { instance.create_device(physical_device, &device_cinfo, None)? };
+                let device = unsafe { Arc::new(VkDevice::new(&instance, physical_device, &device_cinfo)?) };
 
                 let queues = VkQueues {
                         graphics: unsafe { device.get_device_queue(q_family_i.graphics, 0) },
@@ -652,7 +629,7 @@ impl VkContext {
                 instance: &ash::Instance,
                 physical_device: vk::PhysicalDevice,
                 device: &ash::Device,
-        ) -> Result<vma::Allocator, Box<dyn Error>> {
+        ) -> vma::Result<Arc<vma::Allocator>> {
                 let allocator_cinfo = vma::AllocatorCreateInfo {
                         physical_device,
                         device: device.clone(),
@@ -663,12 +640,12 @@ impl VkContext {
                         heap_size_limits: None,
                 };
 
-                vma::Allocator::new(&allocator_cinfo).map_err(|e| e.into())
+                Ok(Arc::new(vma::Allocator::new(&allocator_cinfo)?))
         }
 
         fn create_vertex_buffer(
                 device: &ash::Device,
-                allocator: &vma::Allocator,
+                allocator: &Arc<vma::Allocator>,
                 queues: &VkQueues,
                 setup_cmd_buffer: &VkReusableCommandBuffer,
         ) -> Result<VkBuffer, Box<dyn Error>> {
@@ -823,7 +800,7 @@ impl VkContext {
 
         fn create_index_buffer(
                 device: &ash::Device,
-                allocator: &vma::Allocator,
+                allocator: &Arc<vma::Allocator>,
                 queues: &VkQueues,
                 setup_cmd_buffer: &VkReusableCommandBuffer,
         ) -> Result<VkBuffer, Box<dyn Error>> {
@@ -873,7 +850,7 @@ impl VkContext {
 
         fn create_matrices_buffers(
                 device: &ash::Device,
-                allocator: &vma::Allocator,
+                allocator: &Arc<vma::Allocator>,
                 swch_img_count: u32,
         ) -> Result<Vec<VkBuffer>, Box<dyn Error>> {
                 let buffer_size = std::mem::size_of::<Matrices3D>() as vk::DeviceSize;
@@ -902,11 +879,11 @@ impl VkContext {
 
         fn create_texture_image(
                 pd_limits: &vk::PhysicalDeviceLimits,
-                device: &ash::Device,
-                allocator: &vma::Allocator,
+                device: &Arc<VkDevice>,
+                allocator: &Arc<vma::Allocator>,
                 cmd_buffer: &VkReusableCommandBuffer,
                 transfer_queue: vk::Queue,
-        ) -> Result<(vk::Image, vma::Allocation, vk::ImageView, vk::Sampler), Box<dyn Error>> {
+        ) -> Result<(VkImage, VkImageView, VkSampler), Box<dyn Error>> {
                 unsafe { stb_image::stb_image::bindgen::stbi_set_flip_vertically_on_load(1) };
 
                 let img = Image::new(const_cstr!("res/tex/wall.jpg").as_cstr(), 4)?;
@@ -934,6 +911,29 @@ impl VkContext {
                 }
                 staging_buffer.unmap_memory(&allocator)?;
                 staging_buffer.flush_memory(&allocator)?;
+
+                let vk_img_cinfo = VkImageCreateInfo {
+                        image_type: vk::ImageType::TYPE_2D,
+                        format: vk::Format::R8G8B8A8_SRGB,
+                        extent: vk::Extent3D {
+                                width: img.width(),
+                                height: img.height(),
+                                depth: 1,
+                        },
+                        mip_levels: 1,
+                        array_layers: 1,
+                        samples: vk::SampleCountFlags::TYPE_1,
+                        tiling: vk::ImageTiling::OPTIMAL,
+                        usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                        queue_family_indices: None,
+                        initial_layout: vk::ImageLayout::UNDEFINED,
+                        mem_usage: vma::MemoryUsage::GpuOnly,
+                        alloc_cflags: vma::AllocationCreateFlags::DEDICATED_MEMORY,
+                        required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                        preferred_flags: Default::default(),
+                };
+
+                let vk_img = VkImage::new(allocator, &vk_img_cinfo)?;
 
                 /*let (vk_img, vk_img_alloc, _) = {
                         let vk_img_cinfo = vk::ImageCreateInfo {
@@ -977,7 +977,7 @@ impl VkContext {
                                 new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                                 src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                                 dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                image: vk_img,
+                                image: *vk_img,
                                 subresource_range: vk::ImageSubresourceRange {
                                         aspect_mask: vk::ImageAspectFlags::COLOR,
                                         base_mip_level: 0,
@@ -1022,7 +1022,7 @@ impl VkContext {
                                 device.cmd_copy_buffer_to_image(
                                         cmd_buffer,
                                         *staging_buffer,
-                                        vk_img,
+                                        *vk_img,
                                         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                                         &[region],
                                 )
@@ -1035,7 +1035,7 @@ impl VkContext {
                                 new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                                 src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                                 dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                image: vk_img,
+                                image: *vk_img,
                                 subresource_range: vk::ImageSubresourceRange {
                                         aspect_mask: vk::ImageAspectFlags::COLOR,
                                         base_mip_level: 0,
@@ -1063,7 +1063,7 @@ impl VkContext {
 
                 let vk_img_view = unsafe {
                         let vk_img_view_cinfo = vk::ImageViewCreateInfo {
-                                image: vk_img,
+                                image: *vk_img,
                                 view_type: vk::ImageViewType::TYPE_2D,
                                 format: vk::Format::R8G8B8A8_SRGB,
                                 components: vk::ComponentMapping::default(),
@@ -1077,11 +1077,10 @@ impl VkContext {
                                 ..vk::ImageViewCreateInfo::default()
                         };
 
-                        device.create_image_view(&vk_img_view_cinfo, None)?
+                        VkImageView::new(device, &vk_img_view_cinfo)?
                 };
 
                 cmd_buffer.wait(&device, u64::MAX)?;
-                staging_buffer.destroy(&allocator);
 
                 let vk_img_sampler = unsafe {
                         let sampler_cinfo = vk::SamplerCreateInfo {
@@ -1103,10 +1102,10 @@ impl VkContext {
                                 ..vk::SamplerCreateInfo::default()
                         };
 
-                        device.create_sampler(&sampler_cinfo, None)?
+                        VkSampler::new(device, &sampler_cinfo)?
                 };
 
-                Ok((vk_img, vk_img_alloc, vk_img_view, vk_img_sampler))
+                Ok((vk_img, vk_img_view, vk_img_sampler))
         }
 
         fn create_descriptor_pool(device: &ash::Device) -> VkResult<vk::DescriptorPool> {
@@ -1173,7 +1172,7 @@ impl VkContext {
 
                 for (matrices_buffer, &desc_set) in matrices_buffers.iter().zip(desc_sets.iter()) {
                         let buffer_info = vk::DescriptorBufferInfo {
-                                buffer: matrices_buffer.handle,
+                                buffer: **matrices_buffer,
                                 offset: 0,
                                 range: size_of::<Matrices3D>() as vk::DeviceSize,
                         };
@@ -1219,7 +1218,7 @@ impl VkContext {
                                 stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
                                 stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
                                 initial_layout: vk::ImageLayout::UNDEFINED,
-                                final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
                         },
                         vk::AttachmentDescription {
                                 flags: vk::AttachmentDescriptionFlags::empty(),
@@ -1274,7 +1273,7 @@ impl VkContext {
                 unsafe { device.create_render_pass(&render_pass_cinfo, None) }
         }
 
-        fn create_imgui_render_pass(device: &ash::Device, swapchain_format: vk::Format) -> VkResult<vk::RenderPass> {
+        /*fn create_imgui_render_pass(device: &ash::Device, swapchain_format: vk::Format) -> VkResult<vk::RenderPass> {
                 let attachments = [
                         vk::AttachmentDescription {
                                 flags: vk::AttachmentDescriptionFlags::empty(),
@@ -1335,7 +1334,7 @@ impl VkContext {
                         .dependencies(&subpass_dependencies);
 
                 unsafe { device.create_render_pass(&render_pass_cinfo, None) }
-        }
+        }*/
 
         fn create_viewport_and_scissor(swapchain_extent: vk::Extent2D) -> (vk::Viewport, vk::Rect2D) {
                 (
@@ -1551,7 +1550,7 @@ impl Renderer for VkContext {
                 let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.frame_i];
                 let frame_present_complete_semaphore = self.present_complete_semaphores[self.frame_i];
 
-                let frame_framebuffer = self.swapchain.framebuffers[img_i as usize];
+                let frame_framebuffer = &self.swapchain.framebuffers[img_i as usize];
 
                 let time = self.creation_instant.elapsed().as_secs_f32();
                 let intensity = ((time.sin() + 1.0) / 2.0) * 0.5;
@@ -1580,7 +1579,7 @@ impl Renderer for VkContext {
                         |device, draw_cmd_buffer| unsafe {
                                 let render_pass_binfo = vk::RenderPassBeginInfo::builder()
                                         .render_pass(self.render_pass)
-                                        .framebuffer(frame_framebuffer)
+                                        .framebuffer(**frame_framebuffer)
                                         .render_area(self.scissor)
                                         .clear_values(&clear_values);
 
@@ -1599,10 +1598,10 @@ impl Renderer for VkContext {
                                 device.cmd_set_viewport(draw_cmd_buffer, 0, slice::from_ref(&self.viewport));
                                 device.cmd_set_scissor(draw_cmd_buffer, 0, slice::from_ref(&self.scissor));
 
-                                device.cmd_bind_vertex_buffers(draw_cmd_buffer, 0, &[self.vertex_buffer.handle], &[0]);
+                                device.cmd_bind_vertex_buffers(draw_cmd_buffer, 0, &[*self.vertex_buffer], &[0]);
                                 device.cmd_bind_index_buffer(
                                         draw_cmd_buffer,
-                                        self.index_buffer.handle,
+                                        *self.index_buffer,
                                         0,
                                         vk::IndexType::UINT32,
                                 );
@@ -1619,18 +1618,18 @@ impl Renderer for VkContext {
                                         device.cmd_draw_indexed(draw_cmd_buffer, 36, 1, 0, 0, 0);
                                 }
 
-                                device.cmd_end_render_pass(draw_cmd_buffer);
+                                /*device.cmd_end_render_pass(draw_cmd_buffer);
 
                                 let imgui_render_pass_binfo = vk::RenderPassBeginInfo::builder()
                                         .render_pass(self.imgui_render_pass)
-                                        .framebuffer(frame_framebuffer)
+                                        .framebuffer(**frame_framebuffer)
                                         .render_area(self.scissor);
 
                                 device.cmd_begin_render_pass(
                                         draw_cmd_buffer,
                                         &imgui_render_pass_binfo,
                                         vk::SubpassContents::INLINE,
-                                );
+                                );*/
                                 imgui_renderer.cmd_draw(self, draw_cmd_buffer, imgui_draw_data)?;
                                 device.cmd_end_render_pass(draw_cmd_buffer);
 
@@ -1690,32 +1689,7 @@ impl Drop for VkContext {
                         self.device.destroy_descriptor_pool(self.desc_pool, None);
 
                         self.device.destroy_render_pass(self.render_pass, None);
-                        self.device.destroy_render_pass(self.imgui_render_pass, None);
-
-                        self.swapchain.destroy(&self.device, &self.allocator);
-
-                        self.device.destroy_sampler(self.img_sampler, None);
-                        self.device.destroy_image_view(self.img_view, None);
-                        let _ = self.allocator.destroy_image(self.img, &self.img_alloc);
-                        for buffer in &self.matrices_buffers {
-                                buffer.destroy(&self.allocator);
-                        }
-                        self.vertex_buffer.destroy(&self.allocator);
-                        self.index_buffer.destroy(&self.allocator);
-                        self.allocator.destroy();
-
-                        self.device.destroy_device(None);
-
-                        self.surface_loader.destroy_surface(self.surface, None);
-
-                        if let Some(debug_utils_messenger) = self.debug_utils_messenger.take() {
-                                self.debug_utils_loader
-                                        .as_ref()
-                                        .unwrap()
-                                        .destroy_debug_utils_messenger(debug_utils_messenger, None);
-                        }
-
-                        self.instance.destroy_instance(None);
+                        //self.device.destroy_render_pass(self.imgui_render_pass, None);
                 }
         }
 }
@@ -1755,12 +1729,7 @@ struct VkQueueFamilyIndices {
 }
 
 impl VkQueueFamilyIndices {
-        fn new(
-                instance: &ash::Instance,
-                surface_loader: &Surface,
-                surface: vk::SurfaceKHR,
-                pd: vk::PhysicalDevice,
-        ) -> Option<Self> {
+        fn new(instance: &ash::Instance, surface: &VkSurface, pd: vk::PhysicalDevice) -> Option<Self> {
                 let q_families_props = unsafe { instance.get_physical_device_queue_family_properties(pd) };
 
                 fn find_queue_family<F>(q_families_props: &[vk::QueueFamilyProperties], cond: F) -> Option<u32>
@@ -1787,8 +1756,8 @@ impl VkQueueFamilyIndices {
                 };
 
                 let supports_present = |i: usize, _q_fam_props: &vk::QueueFamilyProperties| unsafe {
-                        surface_loader
-                                .get_physical_device_surface_support(pd, i as u32, surface)
+                        surface.loader()
+                                .get_physical_device_surface_support(pd, i as u32, **surface)
                                 .unwrap()
                 };
 
@@ -1823,35 +1792,37 @@ struct VkQueues {
 
 struct VkSwapchain {
         loader: Swapchain,
+        surface: Arc<VkSurface>,
+
         handle: vk::SwapchainKHR,
         format: vk::SurfaceFormatKHR,
         extent: vk::Extent2D,
         present_mode: vk::PresentModeKHR,
-        imgs: Vec<vk::Image>,
+        color_imgs: Vec<vk::Image>,
+        color_img_views: Vec<VkImageView>,
+        framebuffers: Vec<VkFramebuffer>,
         img_count: u32,
-        img_views: Vec<vk::ImageView>,
-        framebuffers: Vec<vk::Framebuffer>,
-        depth_img: vk::Image,
-        depth_img_alloc: vma::Allocation,
-        depth_img_view: vk::ImageView,
+        depth_img: VkImage,
+        depth_img_view: VkImageView,
 }
 
 impl VkSwapchain {
         fn new(
                 window: &Window,
                 instance: &ash::Instance,
-                surface_loader: &Surface,
-                surface: vk::SurfaceKHR,
+                surface: &Arc<VkSurface>,
                 physical_device: vk::PhysicalDevice,
-                device: &ash::Device,
-                allocator: &vma::Allocator,
+                device: &Arc<VkDevice>,
+                allocator: &Arc<vma::Allocator>,
                 old_swapchain: vk::SwapchainKHR,
         ) -> Result<Self, Box<dyn Error>> {
-                let format = Self::choose_format(surface_loader, surface, physical_device)?;
+                let format = Self::choose_format(surface, physical_device)?;
                 debug!("VkSwapchain format ({:?})", format);
 
-                let surface_capabilities =
-                        unsafe { surface_loader.get_physical_device_surface_capabilities(physical_device, surface)? };
+                let surface_capabilities = unsafe {
+                        surface.loader()
+                                .get_physical_device_surface_capabilities(physical_device, ***surface)?
+                };
 
                 let desired_img_count = na::clamp(
                         3,
@@ -1875,13 +1846,13 @@ impl VkSwapchain {
 
                 let pre_transform = surface_capabilities.current_transform;
 
-                let present_mode = Self::choose_present_mode(&surface_loader, surface, physical_device)?;
+                let present_mode = Self::choose_present_mode(&surface, physical_device)?;
                 debug!("VkSwapchain present mode: {:?}", present_mode);
 
-                let loader = Swapchain::new(instance, device);
+                let loader = Swapchain::new(instance, &***device);
 
                 let swch_cinfo = vk::SwapchainCreateInfoKHR::builder()
-                        .surface(surface)
+                        .surface(***surface)
                         .min_image_count(desired_img_count)
                         .image_color_space(format.color_space)
                         .image_format(format.format)
@@ -1897,11 +1868,11 @@ impl VkSwapchain {
 
                 let handle = unsafe { loader.create_swapchain(&swch_cinfo, None)? };
 
-                let imgs = unsafe { loader.get_swapchain_images(handle)? };
+                let color_imgs = unsafe { loader.get_swapchain_images(handle)? };
 
-                let img_count = imgs.len() as u32;
+                let img_count = color_imgs.len() as u32;
 
-                let img_views = imgs
+                let color_img_views = color_imgs
                         .iter()
                         .map(|&img| {
                                 let img_view_cinfo = vk::ImageViewCreateInfo::builder()
@@ -1917,12 +1888,12 @@ impl VkSwapchain {
                                                 layer_count: 1,
                                         });
 
-                                unsafe { device.create_image_view(&img_view_cinfo, None) }
+                                unsafe { VkImageView::new(device, &img_view_cinfo) }
                         })
-                        .collect::<VkResult<Vec<vk::ImageView>>>()?;
+                        .collect::<VkResult<Vec<VkImageView>>>()?;
 
-                let (depth_img, depth_img_alloc, _) = unsafe {
-                        let depth_img_cinfo = vk::ImageCreateInfo {
+                let depth_img = unsafe {
+                        let depth_img_cinfo = VkImageCreateInfo {
                                 image_type: vk::ImageType::TYPE_2D,
                                 format: DEPTH_STENCIL_FORMAT,
                                 extent: Extent3D {
@@ -1935,29 +1906,21 @@ impl VkSwapchain {
                                 samples: vk::SampleCountFlags::TYPE_1,
                                 tiling: vk::ImageTiling::OPTIMAL,
                                 usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-                                sharing_mode: vk::SharingMode::EXCLUSIVE,
-                                queue_family_index_count: 0,
-                                p_queue_family_indices: std::ptr::null(),
+                                queue_family_indices: None,
                                 initial_layout: vk::ImageLayout::UNDEFINED,
-                                ..vk::ImageCreateInfo::default()
-                        };
 
-                        let depth_alloc_cinfo = vma::AllocationCreateInfo {
-                                usage: vma::MemoryUsage::GpuOnly,
-                                flags: vma::AllocationCreateFlags::NONE,
+                                mem_usage: vma::MemoryUsage::GpuOnly,
+                                alloc_cflags: vma::AllocationCreateFlags::NONE,
                                 required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
                                 preferred_flags: Default::default(),
-                                memory_type_bits: 0,
-                                pool: None,
-                                user_data: None,
                         };
 
-                        allocator.create_image(&depth_img_cinfo, &depth_alloc_cinfo)?
+                        VkImage::new(allocator, &depth_img_cinfo)?
                 };
 
                 let depth_img_view = unsafe {
                         let depth_img_view_cinfo = vk::ImageViewCreateInfo {
-                                image: depth_img,
+                                image: *depth_img,
                                 view_type: vk::ImageViewType::TYPE_2D,
                                 format: DEPTH_STENCIL_FORMAT,
                                 components: vk::ComponentMapping::default(),
@@ -1971,33 +1934,34 @@ impl VkSwapchain {
                                 ..vk::ImageViewCreateInfo::default()
                         };
 
-                        device.create_image_view(&depth_img_view_cinfo, None)?
+                        VkImageView::new(device, &depth_img_view_cinfo)?
                 };
 
                 Ok(Self {
                         loader,
+                        surface: Arc::clone(surface),
+
                         handle,
                         format,
                         extent,
                         present_mode,
-                        imgs,
-                        img_count,
-                        img_views,
+                        color_imgs,
+                        color_img_views,
                         framebuffers: vec![],
+                        img_count,
                         depth_img,
-                        depth_img_alloc,
                         depth_img_view,
                 })
         }
 
-        pub fn create_framebuffers(&mut self, device: &ash::Device, render_pass: vk::RenderPass) -> VkResult<()> {
+        pub fn create_framebuffers(&mut self, device: &Arc<VkDevice>, render_pass: vk::RenderPass) -> VkResult<()> {
                 assert!(self.framebuffers.is_empty());
 
                 self.framebuffers = self
-                        .img_views
+                        .color_img_views
                         .iter()
-                        .map(|&img_view| {
-                                let attachments = [img_view, self.depth_img_view];
+                        .map(|color_img_view| {
+                                let attachments = [**color_img_view, *self.depth_img_view];
 
                                 let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
                                         .render_pass(render_pass)
@@ -2006,9 +1970,9 @@ impl VkSwapchain {
                                         .height(self.extent.height)
                                         .layers(1);
 
-                                unsafe { device.create_framebuffer(&framebuffer_cinfo, None) }
+                                unsafe { VkFramebuffer::new(device, &framebuffer_cinfo) }
                         })
-                        .collect::<VkResult<Vec<vk::Framebuffer>>>()?;
+                        .collect::<VkResult<Vec<VkFramebuffer>>>()?;
 
                 Ok(())
         }
@@ -2026,26 +1990,11 @@ impl VkSwapchain {
                 self.loader.queue_present(queue, present_info)
         }
 
-        fn destroy(&mut self, device: &ash::Device, allocator: &vma::Allocator) {
-                unsafe {
-                        device.destroy_image_view(self.depth_img_view, None);
-                        let _ = allocator.destroy_image(self.depth_img, &self.depth_img_alloc);
-
-                        for i in 0..self.imgs.len() {
-                                device.destroy_image_view(self.img_views[i], None);
-                                device.destroy_framebuffer(self.framebuffers[i], None);
-                        }
-
-                        self.loader.destroy_swapchain(self.handle, None)
+        fn choose_format(surface: &VkSurface, physical_device: vk::PhysicalDevice) -> VkResult<vk::SurfaceFormatKHR> {
+                let formats = unsafe {
+                        surface.loader()
+                                .get_physical_device_surface_formats(physical_device, **surface)?
                 };
-        }
-
-        fn choose_format(
-                surface_loader: &Surface,
-                surface: vk::SurfaceKHR,
-                physical_device: vk::PhysicalDevice,
-        ) -> VkResult<vk::SurfaceFormatKHR> {
-                let formats = unsafe { surface_loader.get_physical_device_surface_formats(physical_device, surface)? };
 
                 let find_format = |fmt: vk::Format, color_space: vk::ColorSpaceKHR| {
                         formats.iter().find(|f| f.format == fmt && f.color_space == color_space)
@@ -2061,12 +2010,13 @@ impl VkSwapchain {
         }
 
         fn choose_present_mode(
-                surface_loader: &Surface,
-                surface: vk::SurfaceKHR,
+                surface: &VkSurface,
                 physical_device: vk::PhysicalDevice,
         ) -> VkResult<vk::PresentModeKHR> {
-                let modes =
-                        unsafe { surface_loader.get_physical_device_surface_present_modes(physical_device, surface)? };
+                let modes = unsafe {
+                        surface.loader()
+                                .get_physical_device_surface_present_modes(physical_device, **surface)?
+                };
 
                 let find_present_mode = |mode: vk::PresentModeKHR| modes.iter().any(|&m| m == mode);
 
@@ -2085,6 +2035,12 @@ impl Deref for VkSwapchain {
 
         fn deref(&self) -> &Self::Target {
                 &self.handle
+        }
+}
+
+impl Drop for VkSwapchain {
+        fn drop(&mut self) {
+                unsafe { self.loader.destroy_swapchain(self.handle, None) };
         }
 }
 

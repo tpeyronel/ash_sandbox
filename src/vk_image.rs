@@ -3,9 +3,7 @@ use ash::vk;
 use std::ops::Deref;
 use std::sync::Arc;
 
-pub struct VkImageCreateInfo<'a> {
-        pub allocator: &'a Arc<vma::Allocator>,
-
+pub struct VkImageCreateInfo {
         pub image_type: vk::ImageType,
         pub format: vk::Format,
         pub extent: vk::Extent3D,
@@ -14,7 +12,7 @@ pub struct VkImageCreateInfo<'a> {
         pub samples: vk::SampleCountFlags,
         pub tiling: vk::ImageTiling,
         pub usage: vk::ImageUsageFlags,
-        pub queue_family_indices: Option<&'a [u32]>,
+        pub queue_family_indices: Option<Vec<u32>>,
         pub initial_layout: vk::ImageLayout,
 
         pub mem_usage: vma::MemoryUsage,
@@ -32,7 +30,7 @@ pub struct VkImage {
 }
 
 impl VkImage {
-        pub fn new(create_info: &VkImageCreateInfo) -> VkmaResult<Self> {
+        pub fn new(allocator: &Arc<vma::Allocator>, create_info: &VkImageCreateInfo) -> VkmaResult<Self> {
                 let (handle, alloc, ainfo) = {
                         let mut vk_img_cinfo = vk::ImageCreateInfo {
                                 image_type: create_info.image_type,
@@ -47,7 +45,7 @@ impl VkImage {
                                 ..vk::ImageCreateInfo::default()
                         };
 
-                        match create_info.queue_family_indices {
+                        match &create_info.queue_family_indices {
                                 Some(queue_families_indices) => {
                                         assert!(!queue_families_indices.is_empty());
 
@@ -72,11 +70,11 @@ impl VkImage {
                                 user_data: None,
                         };
 
-                        create_info.allocator.create_image(&vk_img_cinfo, &alloc_cinfo)?
+                        allocator.create_image(&vk_img_cinfo, &alloc_cinfo)?
                 };
 
                 Ok(Self {
-                        allocator: Arc::clone(create_info.allocator),
+                        allocator: Arc::clone(allocator),
                         handle,
                         alloc,
                         ainfo,
@@ -89,5 +87,15 @@ impl Deref for VkImage {
 
         fn deref(&self) -> &Self::Target {
                 &self.handle
+        }
+}
+
+impl Drop for VkImage {
+        fn drop(&mut self) {
+                assert_ne!(self.handle, vk::Image::null());
+
+                let _ = self.allocator.destroy_image(self.handle, &self.alloc);
+
+                self.handle = vk::Image::null();
         }
 }

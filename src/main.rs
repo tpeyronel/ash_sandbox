@@ -6,6 +6,7 @@ mod vertex;
 mod vk_buffer;
 mod vk_context;
 mod vk_image;
+mod vk_wrapper;
 mod vkma_error;
 
 #[macro_use]
@@ -79,11 +80,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .init();
 
         let event_loop = EventLoop::new();
+
+        let fullscreen_mode =
+                Fullscreen::Exclusive(event_loop.primary_monitor().unwrap().video_modes().next().unwrap());
+
         let window = Rc::new(WindowBuilder::new()
                 .with_fullscreen(Some(Fullscreen::Borderless(None)))
-                .with_fullscreen(Some(Fullscreen::Exclusive(
-                        event_loop.primary_monitor().unwrap().video_modes().next().unwrap(),
-                )))
+                .with_fullscreen(Some(fullscreen_mode.clone()))
                 .with_fullscreen(None)
                 .with_visible(false)
                 .with_always_on_top(false)
@@ -149,7 +152,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         if let Some(virtual_keycode) = input.virtual_keycode {
                                                 match virtual_keycode {
                                                         VirtualKeyCode::Escape => *control_flow = ControlFlow::Exit,
-                                                        VirtualKeyCode::F => {}
+                                                        VirtualKeyCode::F11 if input.state == winit::event::ElementState::Released => {
+                                                                match window.fullscreen() {
+                                                                        Some(_) => window.set_fullscreen(None),
+                                                                        None => window.set_fullscreen(Some(
+                                                                                fullscreen_mode.clone(),
+                                                                        )),
+                                                                };
+                                                        }
                                                         _ => {}
                                                 };
                                         }
