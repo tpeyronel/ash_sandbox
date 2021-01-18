@@ -4,11 +4,13 @@ use ash::{version::DeviceV1_0, vk};
 
 use crate::vk_context::VkReusableCommandBuffer;
 use crate::vkma_error::VkmaResult;
+use log::trace;
 use std::sync::Arc;
 
 pub struct VkBufferCreateInfo<'a> {
         pub device: &'a ash::Device,
         pub allocator: &'a Arc<vma::Allocator>,
+
         pub buffer_size: vk::DeviceSize,
         pub buffer_usage: vk::BufferUsageFlags,
         pub mem_usage: vma::MemoryUsage,
@@ -22,6 +24,7 @@ pub struct VkBufferCreateInfo<'a> {
 pub struct VkImmutableBufferCreateInfo<'a, T> {
         pub device: &'a ash::Device,
         pub allocator: &'a Arc<vma::Allocator>,
+
         pub cmd_buffer: &'a VkReusableCommandBuffer,
         pub transfer_queue: vk::Queue,
         pub buffer_usage: vk::BufferUsageFlags,
@@ -160,6 +163,8 @@ impl Deref for VkBuffer {
 
 impl Drop for VkBuffer {
         fn drop(&mut self) {
+                trace!("Destroying VkBuffer...");
+
                 assert_ne!(self.handle, vk::Buffer::null());
 
                 let _ = self.allocator.destroy_buffer(self.handle, &self.alloc);

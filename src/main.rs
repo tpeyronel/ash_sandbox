@@ -6,6 +6,8 @@ mod vertex;
 mod vk_buffer;
 mod vk_context;
 mod vk_image;
+mod vk_renderer;
+mod vk_swapchain;
 mod vk_wrapper;
 mod vkma_error;
 
@@ -23,6 +25,7 @@ use std::{
         error::Error,
         io::Write,
         rc::Rc,
+        sync::Arc,
         time::{Duration, Instant},
 };
 
@@ -84,17 +87,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         let fullscreen_mode =
                 Fullscreen::Exclusive(event_loop.primary_monitor().unwrap().video_modes().next().unwrap());
 
-        let window = Rc::new(WindowBuilder::new()
-                .with_fullscreen(Some(Fullscreen::Borderless(None)))
-                .with_fullscreen(Some(fullscreen_mode.clone()))
-                .with_fullscreen(None)
-                .with_visible(false)
-                .with_always_on_top(false)
-                .with_min_inner_size(winit::dpi::PhysicalSize {
-                        width: 240,
-                        height: 240,
-                })
-                .build(&event_loop)?);
+        let window = Arc::new(
+                WindowBuilder::new()
+                        .with_fullscreen(Some(Fullscreen::Borderless(None)))
+                        .with_fullscreen(Some(fullscreen_mode.clone()))
+                        .with_fullscreen(None)
+                        .with_visible(false)
+                        .with_always_on_top(false)
+                        .with_min_inner_size(winit::dpi::PhysicalSize {
+                                width:  240,
+                                height: 240,
+                        })
+                        .build(&event_loop)?,
+        );
         trace!("Created window");
 
         let mut imgui_c = imgui::Context::create();
@@ -111,9 +116,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }),
                 },
                 imgui::FontSource::TtfData {
-                        data: include_bytes!("../res/font/FiraCode-Regular.ttf"),
+                        data:        include_bytes!("../res/font/FiraCode-Regular.ttf"),
                         size_pixels: font_size,
-                        config: Some(imgui::FontConfig {
+                        config:      Some(imgui::FontConfig {
                                 rasterizer_multiply: 1.75,
                                 glyph_ranges: imgui::FontGlyphRanges::japanese(),
                                 ..imgui::FontConfig::default()
