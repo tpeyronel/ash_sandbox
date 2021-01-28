@@ -24,7 +24,6 @@ extern crate vk_mem as vma;
 use std::{
         error::Error,
         io::Write,
-        rc::Rc,
         sync::Arc,
         time::{Duration, Instant},
 };
@@ -39,7 +38,7 @@ use winit::{
         window::{Fullscreen, WindowBuilder},
 };
 
-use crate::{renderer::Renderer, vk_context::VkContext};
+use crate::{renderer::Renderer, vk_context::VkContext, vk_renderer::VkRenderer};
 
 /*macro_rules! cstring {
         ($s:expr) => {
@@ -128,7 +127,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         imgui_c.io_mut().font_global_scale = (1.0 / hidpi_factor) as f32;
         platform.attach_window(imgui_c.io_mut(), &window, imgui_winit_support::HiDpiMode::Rounded);
 
-        let mut vk_context = VkContext::new(&window, &mut imgui_c)?;
+        let mut renderer = VkRenderer::new(&window, &mut imgui_c)?;
 
         let mut fps_ctr = FPSCounter::new();
         let mut last_print_fps = Instant::now();
@@ -148,7 +147,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                         Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
                                 WindowEvent::Resized(size) => {
-                                        vk_context.on_window_resize(size.width, size.height);
+                                        //renderer.on_window_resize(size.width, size.height);
                                 }
                                 WindowEvent::CloseRequested => {
                                         *control_flow = ControlFlow::Exit;
@@ -205,7 +204,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                                 let imgui_draw_data = ui.render();
 
-                                vk_context.draw(imgui_draw_data).expect("Error occurred while drawing");
+                                renderer.draw(imgui_draw_data).expect("Error occurred while drawing");
                         }
                         _ => (),
                 }
