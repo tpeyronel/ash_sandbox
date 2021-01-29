@@ -1,6 +1,6 @@
 use std::ffi::CStr;
 
-pub struct Image {
+pub struct Image2D {
         data:      *mut u8,
         data_size: usize,
         width:     u32,
@@ -8,8 +8,8 @@ pub struct Image {
         channels:  u32,
 }
 
-impl Image {
-        pub fn new(path: &CStr, desired_channels: u32) -> Result<Image, std::io::Error> {
+impl Image2D {
+        pub fn new(path: &CStr, desired_channels: u32) -> Result<Image2D, std::io::Error> {
                 let mut width: i32 = 0;
                 let mut height: i32 = 0;
                 let mut original_channels: i32 = 0;
@@ -63,7 +63,7 @@ impl Image {
         }
 }
 
-impl Drop for Image {
+impl Drop for Image2D {
         fn drop(&mut self) {
                 unsafe {
                         libc::free(self.data as *mut _);

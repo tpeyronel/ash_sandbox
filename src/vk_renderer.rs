@@ -2,11 +2,11 @@ use std::{error::Error, ffi::CString, mem::size_of, process::Command, slice, syn
 
 use ash::{prelude::VkResult, version::DeviceV1_0, vk};
 use imgui::DrawData;
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 use winit::window::Window;
 
 use crate::{
-        image::Image,
+        image::Image2D,
         my_glm::*,
         renderer::Renderer,
         timer::Timer,
@@ -14,7 +14,7 @@ use crate::{
         vk_buffer::{VkBuffer, VkBufferCreateInfo, VkImmutableBufferCreateInfo},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::{VkContext, VkQueues},
-        vk_image::{VkImage, VkImageCreateInfo},
+        vk_image::{VkImage, VkImageCreateFromImage2DInfo, VkImageCreateInfo},
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauses},
         vk_wrapper::{
                 VkDescriptorSetLayout, VkDevice, VkImageView, VkPipeline, VkPipelineLayout, VkRenderPass, VkSampler,
@@ -72,7 +72,6 @@ impl VkRenderer {
                         vk_context.physical_device,
                         &vk_context.device,
                         &vk_context.allocator,
-                        vk::SwapchainKHR::null(),
                 )?;
                 trace!("Created VkSwapchain");
 
@@ -86,7 +85,7 @@ impl VkRenderer {
                 )?;
                 trace!("Created VkRenderPass");
 
-                swapchain.create_framebuffers(&vk_context.device, *render_pass)?;
+                swapchain.create_framebuffers(*render_pass)?;
                 trace!("Created VkFramebuffers");
 
                 let setup_cmd_buffer = VkReusableCommandBuffer::new(&vk_context.device, *vk_context.cmd_pool)?;
@@ -271,59 +270,48 @@ impl Renderer for VkRenderer {
 
 impl VkRenderer {
         fn recreate_swapchain_maybe(&mut self) -> Result<(), Box<dyn Error>> {
-                if self.swapchain_outdated_causes == VkSwapchainOutdatedCauses::NONE {
-                        return Ok(());
-                }
-
-                // If resize is the only cause, then check that we actually need to resize
-                if self.swapchain_outdated_causes == VkSwapchainOutdatedCauses::WINDOW_RESIZE {
-                        let window_size = self.window.inner_size();
-
-                        if window_size.width == self.swapchain.extent.width
-                                && window_size.height == self.swapchain.extent.height
-                        {
-                                self.swapchain_outdated_causes = VkSwapchainOutdatedCauses::NONE;
-
+                match self.swapchain_outdated_causes {
+                        VkSwapchainOutdatedCauses::NONE => {
                                 return Ok(());
-                        }
-                }
+                        },
+                        // If resize is the only cause, then check that we actually need to resize
+                        VkSwapchainOutdatedCauses::WINDOW_RESIZE => {
+                                let wsize = self.window.inner_size();
+
+                                if wsize.width == self.swapchain.extent.width
+                                        && wsize.height == self.swapchain.extent.height
+                                {
+                                        self.swapchain_outdated_causes = VkSwapchainOutdatedCauses::NONE;
+
+                                        return Ok(());
+                                }
+                        },
+                        _ => (),
+                };
 
                 trace!("Recreating VkSwapchain...");
                 let _t = Timer::new("Recreated VkSwapchain in: ");
 
                 let mut recreate_render_pass: bool = false;
-                let recreate_pipeline: bool = self
+                let mut recreate_pipeline: bool = self
                         .swapchain_outdated_causes
                         .contains(VkSwapchainOutdatedCauses::OUT_OF_DATE);
 
                 unsafe { self.vk_context.device.device_wait_idle()? };
 
-                let old_swapchain = {
-                        let old_swapchain_handle = *self.swapchain;
-
-                        std::mem::replace(
-                                &mut self.swapchain,
-                                VkSwapchain::new(
-                                        &self.window,
-                                        &self.vk_context.instance,
-                                        &self.vk_context.surface,
-                                        self.vk_context.physical_device,
-                                        &self.vk_context.device,
-                                        &self.vk_context.allocator,
-                                        old_swapchain_handle,
-                                )?,
-                        )
-                };
+                let swapchain_recreate_info = self.swapchain.recreate()?;
 
                 let (viewport, scissor) = Self::create_viewport_and_scissor(self.swapchain.extent);
                 self.viewport = viewport;
                 self.scissor = scissor;
 
-                if old_swapchain.color_format != self.swapchain.color_format {
+                if swapchain_recreate_info.color_format_changed || swapchain_recreate_info.samples_changed {
                         recreate_render_pass = true;
                 }
 
                 if recreate_render_pass {
+                        trace!("Recreating VkRenderPass...");
+
                         self.render_pass = Self::create_render_pass(
                                 &self.vk_context.device,
                                 self.swapchain.samples,
@@ -337,14 +325,14 @@ impl VkRenderer {
                                 *self.render_pass,
                         )?;
 
-                        trace!("Recreated VkRenderPass");
+                        recreate_pipeline = true;
                 }
 
-                self.swapchain
-                        .create_framebuffers(&self.vk_context.device, *self.render_pass)?;
+                self.swapchain.create_framebuffers(*self.render_pass)?;
 
-                if old_swapchain.img_count != self.swapchain.img_count {
+                if swapchain_recreate_info.img_count_changed {
                         trace!("Recreating VkObjects that depend on VkSwapchain img count...");
+                        warn!("VkSwapchain image count changed!");
 
                         self.matrices_buffers = Self::create_matrices_buffers(
                                 &self.vk_context.device,
@@ -388,7 +376,7 @@ impl VkRenderer {
                         self.frame_i = 0;
                 }
 
-                if recreate_render_pass || recreate_pipeline {
+                if recreate_pipeline {
                         trace!("Recreating VkGraphicsPipeline...");
                         self.graphics_pipeline = Self::create_graphics_pipeline(
                                 &self.vk_context.device,
@@ -732,9 +720,19 @@ impl VkRenderer {
         ) -> Result<(VkImage, VkImageView, VkSampler), Box<dyn Error>> {
                 unsafe { stb_image::stb_image::bindgen::stbi_set_flip_vertically_on_load(1) };
 
-                let img = Image::new(const_cstr!("res/tex/wall.jpg").as_cstr(), 4)?;
+                let img = Image2D::new(const_cstr!("res/tex/wall.jpg").as_cstr(), 4)?;
 
-                let staging_buffer = {
+                let vk_img_cinfo = VkImageCreateFromImage2DInfo {
+                        image: &img,
+                        format: vk::Format::R8G8B8A8_SRGB,
+                        mip_levels: 1,
+                        samples: vk::SampleCountFlags::TYPE_1,
+                        transfer_cmd_buffer: cmd_buffer,
+                        transfer_queue,
+                };
+
+                let vk_img = VkImage::from_image_2d(device, allocator, &vk_img_cinfo)?;
+                /*let staging_buffer = {
                         let buffer_cinfo = VkBufferCreateInfo {
                                 device,
                                 allocator,
@@ -873,7 +871,7 @@ impl VkRenderer {
                         };
 
                         Ok(())
-                })?;
+                })?;*/
 
                 let vk_img_view = unsafe {
                         let vk_img_view_cinfo = vk::ImageViewCreateInfo {
