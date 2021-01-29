@@ -2,7 +2,7 @@ use std::mem::size_of;
 
 use ash::{vk, vk::VertexInputRate};
 
-use crate::my_vec::*;
+use crate::my_glm::*;
 
 pub struct Vertex {
         pub pos:       Vec3,

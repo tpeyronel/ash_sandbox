@@ -1,27 +1,38 @@
 use std::{error::Error, ffi::CString, mem::size_of, process::Command, slice, sync::Arc, time::Instant};
 
-use ash::{prelude::VkResult, version::DeviceV1_0, vk, vk::CommandBuffer};
+use ash::{prelude::VkResult, version::DeviceV1_0, vk};
 use imgui::DrawData;
-use imgui_rs_vulkan_renderer::RendererVkContext;
-use log::{error, trace};
+use log::{debug, error, info, trace};
 use winit::window::Window;
 
 use crate::{
         image::Image,
-        my_vec::*,
+        my_glm::*,
         renderer::Renderer,
+        timer::Timer,
         vertex::Vertex,
         vk_buffer::{VkBuffer, VkBufferCreateInfo, VkImmutableBufferCreateInfo},
-        vk_context::{VkContext, VkQueues, VkReusableCommandBuffer},
+        vk_command_buffer::VkReusableCommandBuffer,
+        vk_context::{VkContext, VkQueues},
         vk_image::{VkImage, VkImageCreateInfo},
+        vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauses},
         vk_wrapper::{
-                VkDescriptorSetLayout, VkDevice, VkImageView, VkPipeline, VkPipelineLayout, VkSampler, VkShaderModule,
+                VkDescriptorSetLayout, VkDevice, VkImageView, VkPipeline, VkPipelineLayout, VkRenderPass, VkSampler,
+                VkSemaphore, VkShaderModule,
         },
 };
 
 pub struct VkRenderer {
         window:     Arc<Window>,
         vk_context: VkContext,
+
+        swapchain:                 VkSwapchain,
+        swapchain_outdated_causes: VkSwapchainOutdatedCauses,
+
+        render_pass: VkRenderPass,
+
+        setup_cmd_buffer: VkReusableCommandBuffer,
+        draw_cmd_buffers: Vec<VkReusableCommandBuffer>,
 
         vertex_buffer:    VkBuffer,
         index_buffer:     VkBuffer,
@@ -39,19 +50,65 @@ pub struct VkRenderer {
 
         imgui_renderer: imgui_rs_vulkan_renderer::Renderer,
 
+        viewport: vk::Viewport,
+        scissor:  vk::Rect2D,
+
+        img_avail_semaphores:        Vec<VkSemaphore>,
+        present_complete_semaphores: Vec<VkSemaphore>,
+
         creation_instant: Instant,
+        frame_i:          usize,
         frame_counter:    u32,
 }
 
 impl VkRenderer {
         pub fn new(window: &Arc<Window>, imgui_context: &mut imgui::Context) -> Result<Self, Box<dyn Error>> {
-                let vk_context = VkContext::new(window, imgui_context)?;
+                let vk_context = VkContext::new(window)?;
+
+                let mut swapchain = VkSwapchain::new(
+                        window,
+                        &vk_context.instance,
+                        &vk_context.surface,
+                        vk_context.physical_device,
+                        &vk_context.device,
+                        &vk_context.allocator,
+                        vk::SwapchainKHR::null(),
+                )?;
+                trace!("Created VkSwapchain");
+
+                let (viewport, scissor) = Self::create_viewport_and_scissor(swapchain.extent);
+
+                let render_pass = Self::create_render_pass(
+                        &vk_context.device,
+                        swapchain.samples,
+                        swapchain.color_format.format,
+                        swapchain.depth_format,
+                )?;
+                trace!("Created VkRenderPass");
+
+                swapchain.create_framebuffers(&vk_context.device, *render_pass)?;
+                trace!("Created VkFramebuffers");
+
+                let setup_cmd_buffer = VkReusableCommandBuffer::new(&vk_context.device, *vk_context.cmd_pool)?;
+                let draw_cmd_buffers = VkReusableCommandBuffer::new_vec(
+                        &vk_context.device,
+                        *vk_context.cmd_pool,
+                        swapchain.img_count,
+                )?;
+                trace!("Allocated VkCommandBuffers");
+
+                let (img_avail_semaphores, present_complete_semaphores) =
+                        Self::create_sync_objects(&vk_context.device, swapchain.img_count)?;
+                trace!("Created VkSemaphores");
+
+
+
 
                 let vertex_buffer = Self::create_vertex_buffer(
                         &vk_context.device,
                         &vk_context.allocator,
                         &vk_context.queues,
-                        &vk_context.setup_cmd_buffer,
+                        &setup_cmd_buffer,
                 )?;
                 trace!("Created vertex buffer");
 
@@ -59,15 +116,12 @@ impl VkRenderer {
                         &vk_context.device,
                         &vk_context.allocator,
                         &vk_context.queues,
-                        &vk_context.setup_cmd_buffer,
+                        &setup_cmd_buffer,
                 )?;
                 trace!("Created index buffer");
 
-                let matrices_buffers = Self::create_matrices_buffers(
-                        &vk_context.device,
-                        &vk_context.allocator,
-                        vk_context.swapchain.img_count,
-                )?;
+                let matrices_buffers =
+                        Self::create_matrices_buffers(&vk_context.device, &vk_context.allocator, swapchain.img_count)?;
                 trace!("Created matrices uniform buffer");
 
 
@@ -75,7 +129,7 @@ impl VkRenderer {
                         &vk_context.physical_device_limits,
                         &vk_context.device,
                         &vk_context.allocator,
-                        &vk_context.setup_cmd_buffer,
+                        &setup_cmd_buffer,
                         vk_context.queues.graphics,
                 )?;
 
@@ -96,23 +150,31 @@ impl VkRenderer {
 
                 let graphics_pipeline = Self::create_graphics_pipeline(
                         &vk_context.device,
-                        vk_context.swapchain.samples,
-                        *vk_context.render_pass,
+                        swapchain.samples,
+                        *render_pass,
                         &graphics_pipeline_layout,
                 )?;
                 trace!("Created VkGraphicsPipeline");
 
                 let imgui_renderer = imgui_rs_vulkan_renderer::Renderer::new(
                         &vk_context,
-                        vk_context.swapchain.img_count as usize,
-                        vk_context.swapchain.samples,
-                        *vk_context.render_pass,
+                        swapchain.img_count as usize,
+                        swapchain.samples,
+                        *render_pass,
                         imgui_context,
                 )?;
 
                 Ok(Self {
                         window: Arc::clone(window),
                         vk_context,
+
+                        swapchain,
+                        swapchain_outdated_causes: VkSwapchainOutdatedCauses::NONE,
+
+                        render_pass,
+
+                        setup_cmd_buffer,
+                        draw_cmd_buffers,
 
                         vertex_buffer,
                         index_buffer,
@@ -130,7 +192,15 @@ impl VkRenderer {
 
                         imgui_renderer,
 
+                        viewport,
+                        scissor,
+
+                        img_avail_semaphores,
+                        present_complete_semaphores,
+
                         creation_instant: Instant::now(),
+
+                        frame_i: 0,
                         frame_counter: 0,
                 })
         }
@@ -138,27 +208,10 @@ impl VkRenderer {
 
 impl Renderer for VkRenderer {
         fn draw(&mut self, imgui_draw_data: &DrawData) -> Result<(), Box<dyn Error>> {
-                let on_render_pass_recreation = |vk_context: &VkContext,
-                                                 render_pass: vk::RenderPass|
-                 -> Result<(), Box<dyn Error>> {
-                        self.imgui_renderer
-                                .set_render_pass(vk_context, vk_context.swapchain.samples, render_pass)?;
-
-                        self.graphics_pipeline = Self::create_graphics_pipeline(
-                                &vk_context.device,
-                                vk_context.swapchain.samples,
-                                *vk_context.render_pass,
-                                &self.graphics_pipeline_layout,
-                        )?;
-
-                        Ok(())
+                let (img_i, frame_i, draw_cmd_buffer) = match unsafe { self.begin_frame()? } {
+                        Some(v) => v,
+                        None => return Ok(()),
                 };
-
-                let (img_i, frame_i, draw_cmd_buffer) =
-                        match unsafe { self.vk_context.begin_frame(on_render_pass_recreation)? } {
-                                Some(v) => v,
-                                None => return Ok(()),
-                        };
 
                 self.update_matrices_buffer(frame_i)?;
 
@@ -169,16 +222,12 @@ impl Renderer for VkRenderer {
                                 *self.graphics_pipeline,
                         );
 
-                        self.vk_context.device.cmd_set_viewport(
-                                draw_cmd_buffer,
-                                0,
-                                slice::from_ref(&self.vk_context.viewport),
-                        );
-                        self.vk_context.device.cmd_set_scissor(
-                                draw_cmd_buffer,
-                                0,
-                                slice::from_ref(&self.vk_context.scissor),
-                        );
+                        self.vk_context
+                                .device
+                                .cmd_set_viewport(draw_cmd_buffer, 0, slice::from_ref(&self.viewport));
+                        self.vk_context
+                                .device
+                                .cmd_set_scissor(draw_cmd_buffer, 0, slice::from_ref(&self.scissor));
 
                         self.vk_context.device.cmd_bind_vertex_buffers(
                                 draw_cmd_buffer,
@@ -208,14 +257,284 @@ impl Renderer for VkRenderer {
                         self.imgui_renderer
                                 .cmd_draw(&self.vk_context, draw_cmd_buffer, imgui_draw_data)?;
 
-                        self.vk_context.end_frame(img_i)?;
+                        self.end_frame(img_i)?;
                 }
 
                 Ok(())
         }
+
+        fn on_window_resize(&mut self, _width: u32, _height: u32) {
+                self.swapchain_outdated_causes
+                        .insert(VkSwapchainOutdatedCauses::WINDOW_RESIZE);
+        }
 }
 
 impl VkRenderer {
+        fn recreate_swapchain_maybe(&mut self) -> Result<(), Box<dyn Error>> {
+                if self.swapchain_outdated_causes == VkSwapchainOutdatedCauses::NONE {
+                        return Ok(());
+                }
+
+                // If resize is the only cause, then check that we actually need to resize
+                if self.swapchain_outdated_causes == VkSwapchainOutdatedCauses::WINDOW_RESIZE {
+                        let window_size = self.window.inner_size();
+
+                        if window_size.width == self.swapchain.extent.width
+                                && window_size.height == self.swapchain.extent.height
+                        {
+                                self.swapchain_outdated_causes = VkSwapchainOutdatedCauses::NONE;
+
+                                return Ok(());
+                        }
+                }
+
+                trace!("Recreating VkSwapchain...");
+                let _t = Timer::new("Recreated VkSwapchain in: ");
+
+                let mut recreate_render_pass: bool = false;
+                let recreate_pipeline: bool = self
+                        .swapchain_outdated_causes
+                        .contains(VkSwapchainOutdatedCauses::OUT_OF_DATE);
+
+                unsafe { self.vk_context.device.device_wait_idle()? };
+
+                let old_swapchain = {
+                        let old_swapchain_handle = *self.swapchain;
+
+                        std::mem::replace(
+                                &mut self.swapchain,
+                                VkSwapchain::new(
+                                        &self.window,
+                                        &self.vk_context.instance,
+                                        &self.vk_context.surface,
+                                        self.vk_context.physical_device,
+                                        &self.vk_context.device,
+                                        &self.vk_context.allocator,
+                                        old_swapchain_handle,
+                                )?,
+                        )
+                };
+
+                let (viewport, scissor) = Self::create_viewport_and_scissor(self.swapchain.extent);
+                self.viewport = viewport;
+                self.scissor = scissor;
+
+                if old_swapchain.color_format != self.swapchain.color_format {
+                        recreate_render_pass = true;
+                }
+
+                if recreate_render_pass {
+                        self.render_pass = Self::create_render_pass(
+                                &self.vk_context.device,
+                                self.swapchain.samples,
+                                self.swapchain.color_format.format,
+                                self.swapchain.depth_format,
+                        )?;
+
+                        self.imgui_renderer.set_render_pass(
+                                &self.vk_context,
+                                self.swapchain.samples,
+                                *self.render_pass,
+                        )?;
+
+                        trace!("Recreated VkRenderPass");
+                }
+
+                self.swapchain
+                        .create_framebuffers(&self.vk_context.device, *self.render_pass)?;
+
+                if old_swapchain.img_count != self.swapchain.img_count {
+                        trace!("Recreating VkObjects that depend on VkSwapchain img count...");
+
+                        self.matrices_buffers = Self::create_matrices_buffers(
+                                &self.vk_context.device,
+                                &self.vk_context.allocator,
+                                self.swapchain.img_count,
+                        )?;
+
+                        unsafe {
+                                self.vk_context
+                                        .device
+                                        .free_descriptor_sets(*self.vk_context.desc_pool, &self.desc_sets)
+                        };
+
+                        self.desc_sets = Self::create_descriptor_sets(
+                                &self.vk_context.device,
+                                *self.vk_context.desc_pool,
+                                *self.desc_set_layout,
+                                &self.matrices_buffers,
+                                *self.tex_vk_img_view,
+                                *self.tex_vk_img_sampler,
+                        )?;
+
+                        for cmd_buffer in &self.draw_cmd_buffers {
+                                unsafe {
+                                        self.vk_context
+                                                .device
+                                                .free_command_buffers(*self.vk_context.cmd_pool, &[**cmd_buffer])
+                                };
+                        }
+                        self.draw_cmd_buffers = VkReusableCommandBuffer::new_vec(
+                                &self.vk_context.device,
+                                *self.vk_context.cmd_pool,
+                                self.swapchain.img_count,
+                        )?;
+
+                        let (img_avail_semaphores, present_complete_semaphores) =
+                                Self::create_sync_objects(&self.vk_context.device, self.swapchain.img_count)?;
+                        self.img_avail_semaphores = img_avail_semaphores;
+                        self.present_complete_semaphores = present_complete_semaphores;
+
+                        self.frame_i = 0;
+                }
+
+                if recreate_render_pass || recreate_pipeline {
+                        trace!("Recreating VkGraphicsPipeline...");
+                        self.graphics_pipeline = Self::create_graphics_pipeline(
+                                &self.vk_context.device,
+                                self.swapchain.samples,
+                                *self.render_pass,
+                                &self.graphics_pipeline_layout,
+                        )?;
+                }
+
+                self.swapchain_outdated_causes = VkSwapchainOutdatedCauses::NONE;
+
+                Ok(())
+        }
+
+        fn create_render_pass(
+                device: &Arc<VkDevice>,
+                swapchain_samples: vk::SampleCountFlags,
+                swapchain_color_format: vk::Format,
+                swapchain_depth_format: vk::Format,
+        ) -> VkResult<VkRenderPass> {
+                let attachments = [
+                        vk::AttachmentDescription {
+                                flags:            vk::AttachmentDescriptionFlags::empty(),
+                                format:           swapchain_color_format,
+                                samples:          swapchain_samples,
+                                load_op:          vk::AttachmentLoadOp::CLEAR,
+                                store_op:         vk::AttachmentStoreOp::STORE,
+                                stencil_load_op:  vk::AttachmentLoadOp::DONT_CARE,
+                                stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+                                initial_layout:   vk::ImageLayout::UNDEFINED,
+                                final_layout:     vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        },
+                        vk::AttachmentDescription {
+                                flags:            vk::AttachmentDescriptionFlags::empty(),
+                                format:           swapchain_depth_format,
+                                samples:          swapchain_samples,
+                                load_op:          vk::AttachmentLoadOp::CLEAR,
+                                store_op:         vk::AttachmentStoreOp::STORE,
+                                stencil_load_op:  vk::AttachmentLoadOp::DONT_CARE,
+                                stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+                                initial_layout:   vk::ImageLayout::UNDEFINED,
+                                final_layout:     vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                        },
+                        vk::AttachmentDescription {
+                                flags:            vk::AttachmentDescriptionFlags::empty(),
+                                format:           swapchain_color_format,
+                                samples:          vk::SampleCountFlags::TYPE_1,
+                                load_op:          vk::AttachmentLoadOp::DONT_CARE,
+                                store_op:         vk::AttachmentStoreOp::STORE,
+                                stencil_load_op:  vk::AttachmentLoadOp::DONT_CARE,
+                                stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+                                initial_layout:   vk::ImageLayout::UNDEFINED,
+                                final_layout:     vk::ImageLayout::PRESENT_SRC_KHR,
+                        },
+                ];
+
+                let color_attachment_ref = vk::AttachmentReference {
+                        attachment: 0,
+                        layout:     vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                };
+
+                let depth_attachment_ref = vk::AttachmentReference {
+                        attachment: 1,
+                        layout:     vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                };
+
+                let resolve_attachment_ref = vk::AttachmentReference {
+                        attachment: 2,
+                        layout:     vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                };
+
+                let subpass_descriptions = [vk::SubpassDescription::builder()
+                        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+                        .color_attachments(slice::from_ref(&color_attachment_ref))
+                        .depth_stencil_attachment(&depth_attachment_ref)
+                        //.input_attachments(&[])
+                        .resolve_attachments(slice::from_ref(&resolve_attachment_ref))
+                        //.preserve_attachments(&[])
+                        .build()];
+
+                let subpass_dependencies = [vk::SubpassDependency {
+                        src_subpass:      vk::SUBPASS_EXTERNAL,
+                        dst_subpass:      0,
+                        src_stage_mask:   vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                        dst_stage_mask:   vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                        src_access_mask:  vk::AccessFlags::empty(),
+                        dst_access_mask:  vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                        dependency_flags: vk::DependencyFlags::empty(),
+                }];
+
+                let render_pass_cinfo = vk::RenderPassCreateInfo::builder()
+                        .attachments(&attachments)
+                        .subpasses(&subpass_descriptions)
+                        .dependencies(&subpass_dependencies);
+
+                unsafe { VkRenderPass::new(device, &render_pass_cinfo) }
+        }
+
+        fn create_viewport_and_scissor(swapchain_extent: vk::Extent2D) -> (vk::Viewport, vk::Rect2D) {
+                (
+                        vk::Viewport {
+                                x:         0.0,
+                                y:         swapchain_extent.height as f32,
+                                width:     swapchain_extent.width as f32,
+                                height:    -(swapchain_extent.height as f32),
+                                min_depth: 0.0,
+                                max_depth: 1.0,
+                        },
+                        vk::Rect2D {
+                                offset: vk::Offset2D {
+                                        x: 0, y: 0
+                                },
+                                extent: swapchain_extent,
+                        },
+                )
+        }
+
+        fn create_sync_objects(
+                device: &Arc<VkDevice>,
+                swch_img_count: u32,
+        ) -> VkResult<(Vec<VkSemaphore>, Vec<VkSemaphore>)> {
+                fn create_n_semaphores(
+                        device: &Arc<VkDevice>,
+                        semaphore_cinfo: &vk::SemaphoreCreateInfo,
+                        n: usize,
+                ) -> VkResult<Vec<VkSemaphore>> {
+                        let mut semaphores = Vec::with_capacity(n);
+
+                        for _ in 0..n {
+                                semaphores.push(unsafe { VkSemaphore::new(device, semaphore_cinfo)? });
+                        }
+
+                        Ok(semaphores)
+                }
+
+                let semaphore_cinfo = vk::SemaphoreCreateInfo::builder().build();
+
+                Ok((
+                        create_n_semaphores(device, &semaphore_cinfo, swch_img_count as usize)?,
+                        create_n_semaphores(device, &semaphore_cinfo, swch_img_count as usize)?,
+                ))
+        }
+
         fn create_vertex_buffer(
                 device: &ash::Device,
                 allocator: &Arc<vma::Allocator>,
@@ -802,6 +1121,136 @@ impl VkRenderer {
                         .build();
 
                 unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
+        }
+
+        unsafe fn begin_frame(&mut self) -> Result<Option<(u32, usize, vk::CommandBuffer)>, Box<dyn Error>> {
+                let window_size = self.window.inner_size();
+                if window_size.width == 0 || window_size.height == 0 {
+                        return Ok(None);
+                }
+
+                self.recreate_swapchain_maybe()?;
+
+                let frame_img_avail_semaphore = &self.img_avail_semaphores[self.frame_i];
+
+                let img_i = {
+                        let (img_i, suboptimal) = self.swapchain.acquire_next_image(
+                                u64::MAX,
+                                **frame_img_avail_semaphore,
+                                vk::Fence::null(),
+                        )?;
+
+                        if suboptimal {
+                                self.swapchain_outdated_causes
+                                        .insert(VkSwapchainOutdatedCauses::SUBOPTIMAL);
+                        }
+
+                        img_i
+                };
+
+
+                let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.frame_i];
+                let frame_framebuffer = &self.swapchain.framebuffers[img_i as usize];
+
+                let time = self.creation_instant.elapsed().as_secs_f32();
+                let intensity = ((time.sin() + 1.0) / 2.0) * 0.05;
+
+                let clear_values = [
+                        vk::ClearValue {
+                                color: vk::ClearColorValue {
+                                        float32: [intensity, intensity, intensity, 1.0],
+                                },
+                        },
+                        vk::ClearValue {
+                                depth_stencil: vk::ClearDepthStencilValue {
+                                        depth:   1.0,
+                                        stencil: 0,
+                                },
+                        },
+                ];
+
+
+                self.vk_context
+                        .device
+                        .wait_for_fences(&[*frame_draw_cmd_buffer.fence], true, u64::MAX)?;
+
+                self.vk_context.device.reset_fences(&[*frame_draw_cmd_buffer.fence])?;
+                self.vk_context.device.reset_command_buffer(
+                        **frame_draw_cmd_buffer,
+                        vk::CommandBufferResetFlags::RELEASE_RESOURCES,
+                )?;
+
+                let cmd_buffer_binfo =
+                        vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+                self.vk_context
+                        .device
+                        .begin_command_buffer(**frame_draw_cmd_buffer, &cmd_buffer_binfo)?;
+
+                let render_pass_binfo = vk::RenderPassBeginInfo::builder()
+                        .render_pass(*self.render_pass)
+                        .framebuffer(**frame_framebuffer)
+                        .render_area(self.scissor)
+                        .clear_values(&clear_values);
+
+                self.vk_context.device.cmd_begin_render_pass(
+                        **frame_draw_cmd_buffer,
+                        &render_pass_binfo,
+                        vk::SubpassContents::INLINE,
+                );
+
+                Ok(Some((img_i, self.frame_i, **frame_draw_cmd_buffer)))
+        }
+
+        unsafe fn end_frame(&mut self, img_i: u32) -> Result<(), Box<dyn Error>> {
+                let frame_img_avail_semaphore = &self.img_avail_semaphores[self.frame_i];
+                let frame_present_complete_semaphore = &self.present_complete_semaphores[self.frame_i];
+                let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.frame_i];
+
+                self.vk_context.device.cmd_end_render_pass(**frame_draw_cmd_buffer);
+                self.vk_context.device.end_command_buffer(**frame_draw_cmd_buffer)?;
+
+                let cmd_buffers = [**frame_draw_cmd_buffer];
+                let wait_semaphores = &[**frame_img_avail_semaphore];
+                let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+                let signal_semaphores = &[**frame_present_complete_semaphore];
+
+                let submit_info = vk::SubmitInfo::builder()
+                        .command_buffers(&cmd_buffers)
+                        .wait_semaphores(wait_semaphores)
+                        .wait_dst_stage_mask(wait_stages)
+                        .signal_semaphores(signal_semaphores);
+
+
+                self.vk_context.device.queue_submit(
+                        self.vk_context.queues.graphics,
+                        &[submit_info.build()],
+                        *frame_draw_cmd_buffer.fence,
+                )?;
+
+                match self.swapchain.queue_present(
+                        self.vk_context.queues.present,
+                        &vk::PresentInfoKHR::builder()
+                                .wait_semaphores(&[**frame_present_complete_semaphore])
+                                .swapchains(&[*self.swapchain])
+                                .image_indices(&[img_i]),
+                ) {
+                        Ok(suboptimal) if suboptimal => {
+                                self.swapchain_outdated_causes
+                                        .insert(VkSwapchainOutdatedCauses::SUBOPTIMAL);
+                        },
+                        Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                                self.swapchain_outdated_causes
+                                        .insert(VkSwapchainOutdatedCauses::OUT_OF_DATE);
+                        },
+                        Err(err) => return Err(err.into()),
+                        _ => {},
+                };
+
+                self.frame_i = (self.frame_i + 1) % (self.swapchain.img_count as usize);
+                self.frame_counter += 1;
+
+                Ok(())
         }
 
         fn update_matrices_buffer(&self, frame_i: usize) -> vma::Result<()> {

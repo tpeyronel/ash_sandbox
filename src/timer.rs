@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use log::info;
+use log::debug;
 
 pub struct Timer {
         msg:   String,
@@ -21,6 +21,6 @@ impl Drop for Timer {
         fn drop(&mut self) {
                 let time = self.start.elapsed();
 
-                info!("{}{:.3}ms", self.msg, time.as_micros() as f32 / 1000.0);
+                debug!("{}{:.3}ms", self.msg, time.as_micros() as f32 / 1000.0);
         }
 }

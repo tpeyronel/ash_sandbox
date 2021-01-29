@@ -1,6 +1,7 @@
 use std::{error::Error, ops::Deref, sync::Arc};
 
 use ash::{extensions::khr::Swapchain, prelude::VkResult, version::InstanceV1_0, vk};
+use bitflags::bitflags;
 use log::{debug, trace};
 
 use crate::{
@@ -9,19 +10,29 @@ use crate::{
 };
 
 pub struct VkSwapchain {
-        loader:  Swapchain,
-        surface: Arc<VkSurface>,
+        loader: Swapchain,
 
-        handle:                vk::SwapchainKHR,
-        pub color_format:      vk::SurfaceFormatKHR,
-        pub depth_format:      vk::Format,
-        pub extent:            vk::Extent2D,
-        pub present_mode:      vk::PresentModeKHR,
-        pub samples:           vk::SampleCountFlags,
-        pub color_img:         VkImage,
-        pub color_img_view:    VkImageView,
-        pub depth_img:         VkImage,
-        pub depth_img_view:    VkImageView,
+        window:          Arc<winit::window::Window>,
+        instance:        Arc<ash::Instance>,
+        surface:         Arc<VkSurface>,
+        physical_device: vk::PhysicalDevice,
+        device:          Arc<VkDevice>,
+        allocator:       Arc<vma::Allocator>,
+
+        handle: vk::SwapchainKHR,
+
+        pub color_format: vk::SurfaceFormatKHR,
+        pub depth_format: vk::Format,
+        pub extent:       vk::Extent2D,
+        pub present_mode: vk::PresentModeKHR,
+        pub samples:      vk::SampleCountFlags,
+
+        pub color_img:      VkImage,
+        pub color_img_view: VkImageView,
+
+        pub depth_img:      VkImage,
+        pub depth_img_view: VkImageView,
+
         pub resolve_imgs:      Vec<vk::Image>,
         pub resolve_img_views: Vec<VkImageView>,
         pub img_count:         u32,
@@ -209,7 +220,7 @@ impl VkSwapchain {
 
                 Ok(Self {
                         loader,
-                        surface: Arc::clone(surface),
+                        _surface: Arc::clone(surface),
 
                         handle,
 
@@ -268,6 +279,206 @@ impl VkSwapchain {
 
         pub unsafe fn queue_present(&self, queue: vk::Queue, present_info: &vk::PresentInfoKHR) -> VkResult<bool> {
                 self.loader.queue_present(queue, present_info)
+        }
+
+        pub fn recreate(&mut self) -> Result<(Self, VkSwapchainRecreateInfo), Box<dyn Error>> {
+                let color_format = Self::choose_color_format(surface, physical_device)?;
+                debug!("VkSwapchain color format ({:?})", color_format);
+
+                let surface_capabilities = unsafe {
+                        surface.loader()
+                                .get_physical_device_surface_capabilities(physical_device, ***surface)?
+                };
+
+                let desired_img_count = na::clamp(
+                        3,
+                        surface_capabilities.min_image_count,
+                        match surface_capabilities.max_image_count {
+                                0 => u32::MAX,
+                                _ => surface_capabilities.max_image_count,
+                        },
+                );
+
+                debug!("VkSwapchain image count: {}", desired_img_count);
+
+                let extent = match surface_capabilities.current_extent.width {
+                        u32::MAX => vk::Extent2D {
+                                width:  window.inner_size().width,
+                                height: window.inner_size().height,
+                        },
+                        _ => surface_capabilities.current_extent,
+                };
+                debug!("VkSwapchain extent: {:?}", extent);
+
+                let pre_transform = surface_capabilities.current_transform;
+
+                let present_mode = Self::choose_present_mode(&surface, physical_device)?;
+                debug!("VkSwapchain present mode: {:?}", present_mode);
+
+                let loader = Swapchain::new(instance, &***device);
+
+                let swch_cinfo = vk::SwapchainCreateInfoKHR::builder()
+                        .surface(***surface)
+                        .min_image_count(desired_img_count)
+                        .image_color_space(color_format.color_space)
+                        .image_format(color_format.format)
+                        .image_extent(extent)
+                        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+                        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+                        .pre_transform(pre_transform)
+                        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+                        .present_mode(present_mode)
+                        .clipped(true)
+                        .image_array_layers(1)
+                        .old_swapchain(old_swapchain);
+
+                let handle = unsafe { loader.create_swapchain(&swch_cinfo, None)? };
+
+                let samples = Self::choose_sample_count(instance, physical_device);
+                debug!("Swapchain samples: {:?}", samples);
+
+                let color_img = unsafe {
+                        let depth_img_cinfo = VkImageCreateInfo {
+                                image_type: vk::ImageType::TYPE_2D,
+                                format: color_format.format,
+                                extent: vk::Extent3D {
+                                        width:  extent.width,
+                                        height: extent.height,
+                                        depth:  1,
+                                },
+                                mip_levels: 1,
+                                array_layers: 1,
+                                samples,
+                                tiling: vk::ImageTiling::OPTIMAL,
+                                usage: vk::ImageUsageFlags::TRANSIENT_ATTACHMENT
+                                        | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                                queue_family_indices: None,
+                                initial_layout: vk::ImageLayout::UNDEFINED,
+
+                                mem_usage: vma::MemoryUsage::GpuOnly,
+                                alloc_cflags: vma::AllocationCreateFlags::NONE,
+                                required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                                preferred_flags: Default::default(),
+                        };
+
+                        VkImage::new(allocator, &depth_img_cinfo)?
+                };
+
+                let color_img_view = unsafe {
+                        let color_img_view_cinfo = vk::ImageViewCreateInfo {
+                                image: *color_img,
+                                view_type: vk::ImageViewType::TYPE_2D,
+                                format: color_format.format,
+                                components: vk::ComponentMapping::default(),
+                                subresource_range: vk::ImageSubresourceRange {
+                                        aspect_mask:      vk::ImageAspectFlags::COLOR,
+                                        base_mip_level:   0,
+                                        level_count:      1,
+                                        base_array_layer: 0,
+                                        layer_count:      1,
+                                },
+                                ..vk::ImageViewCreateInfo::default()
+                        };
+
+                        VkImageView::new(device, &color_img_view_cinfo)?
+                };
+
+                let depth_img = unsafe {
+                        let depth_img_cinfo = VkImageCreateInfo {
+                                image_type: vk::ImageType::TYPE_2D,
+                                format: vk::Format::D24_UNORM_S8_UINT,
+                                extent: vk::Extent3D {
+                                        width:  extent.width,
+                                        height: extent.height,
+                                        depth:  1,
+                                },
+                                mip_levels: 1,
+                                array_layers: 1,
+                                samples,
+                                tiling: vk::ImageTiling::OPTIMAL,
+                                usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                                queue_family_indices: None,
+                                initial_layout: vk::ImageLayout::UNDEFINED,
+
+                                mem_usage: vma::MemoryUsage::GpuOnly,
+                                alloc_cflags: vma::AllocationCreateFlags::NONE,
+                                required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                                preferred_flags: Default::default(),
+                        };
+
+                        VkImage::new(allocator, &depth_img_cinfo)?
+                };
+
+                let depth_img_view = unsafe {
+                        let depth_img_view_cinfo = vk::ImageViewCreateInfo {
+                                image: *depth_img,
+                                view_type: vk::ImageViewType::TYPE_2D,
+                                format: vk::Format::D24_UNORM_S8_UINT,
+                                components: vk::ComponentMapping::default(),
+                                subresource_range: vk::ImageSubresourceRange {
+                                        aspect_mask:      vk::ImageAspectFlags::DEPTH,
+                                        base_mip_level:   0,
+                                        level_count:      1,
+                                        base_array_layer: 0,
+                                        layer_count:      1,
+                                },
+                                ..vk::ImageViewCreateInfo::default()
+                        };
+
+                        VkImageView::new(device, &depth_img_view_cinfo)?
+                };
+
+                let resolve_imgs = unsafe { loader.get_swapchain_images(handle)? };
+
+                let resolve_img_views = resolve_imgs
+                        .iter()
+                        .map(|&img| {
+                                let img_view_cinfo = vk::ImageViewCreateInfo::builder()
+                                        .image(img)
+                                        .view_type(vk::ImageViewType::TYPE_2D)
+                                        .format(color_format.format)
+                                        .components(vk::ComponentMapping::default())
+                                        .subresource_range(vk::ImageSubresourceRange {
+                                                aspect_mask:      vk::ImageAspectFlags::COLOR,
+                                                base_mip_level:   0,
+                                                level_count:      1,
+                                                base_array_layer: 0,
+                                                layer_count:      1,
+                                        });
+
+                                unsafe { VkImageView::new(device, &img_view_cinfo) }
+                        })
+                        .collect::<VkResult<Vec<VkImageView>>>()?;
+                let img_count = resolve_imgs.len() as u32;
+
+                Ok((
+                        Self {
+                                loader,
+                                _surface: Arc::clone(surface),
+
+                                handle,
+
+                                color_format,
+                                depth_format: vk::Format::D24_UNORM_S8_UINT,
+
+                                extent,
+                                present_mode,
+                                samples,
+
+                                color_img,
+                                color_img_view,
+
+                                depth_img,
+                                depth_img_view,
+
+                                resolve_imgs,
+                                resolve_img_views,
+                                img_count,
+
+                                framebuffers: vec![],
+                        },
+                        recreate_info,
+                ))
         }
 
         fn choose_color_format(
@@ -347,4 +558,18 @@ impl Drop for VkSwapchain {
         fn drop(&mut self) {
                 unsafe { self.loader.destroy_swapchain(self.handle, None) };
         }
+}
+
+bitflags! {
+        pub struct VkSwapchainOutdatedCauses: u32 {
+                const NONE = 0b00000000;
+                const WINDOW_RESIZE = 0b00000001;
+                const SUBOPTIMAL = 0b00000010;
+                const OUT_OF_DATE = 0b00000100;
+        }
+}
+
+pub struct VkSwapchainRecreateInfo {
+        color_format_changed: bool,
+        img_count_changed:    bool,
 }

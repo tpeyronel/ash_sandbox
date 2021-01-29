@@ -1,42 +1,40 @@
-use std::{error::Error, ops::Deref};
+use std::{error::Error, ops::Deref, sync::Arc};
 
 use ash::{version::DeviceV1_0, vk};
-
-use crate::vk_context::VkReusableCommandBuffer;
-use crate::vkma_error::VkmaResult;
 use log::trace;
-use std::sync::Arc;
+
+use crate::vk_command_buffer::VkReusableCommandBuffer;
 
 pub struct VkBufferCreateInfo<'a> {
-        pub device: &'a ash::Device,
+        pub device:    &'a ash::Device,
         pub allocator: &'a Arc<vma::Allocator>,
 
-        pub buffer_size: vk::DeviceSize,
-        pub buffer_usage: vk::BufferUsageFlags,
-        pub mem_usage: vma::MemoryUsage,
-        pub alloc_flags: vma::AllocationCreateFlags,
-        pub req_mem_flags: vk::MemoryPropertyFlags,
-        pub pref_mem_flags: vk::MemoryPropertyFlags,
-        pub mem_type_bits: u32,
+        pub buffer_size:      vk::DeviceSize,
+        pub buffer_usage:     vk::BufferUsageFlags,
+        pub mem_usage:        vma::MemoryUsage,
+        pub alloc_flags:      vma::AllocationCreateFlags,
+        pub req_mem_flags:    vk::MemoryPropertyFlags,
+        pub pref_mem_flags:   vk::MemoryPropertyFlags,
+        pub mem_type_bits:    u32,
         pub q_family_indices: Option<&'a [u32]>,
 }
 
 pub struct VkImmutableBufferCreateInfo<'a, T> {
-        pub device: &'a ash::Device,
+        pub device:    &'a ash::Device,
         pub allocator: &'a Arc<vma::Allocator>,
 
-        pub cmd_buffer: &'a VkReusableCommandBuffer,
+        pub cmd_buffer:     &'a VkReusableCommandBuffer,
         pub transfer_queue: vk::Queue,
-        pub buffer_usage: vk::BufferUsageFlags,
-        pub data: &'a [T],
+        pub buffer_usage:   vk::BufferUsageFlags,
+        pub data:           &'a [T],
 }
 
 pub struct VkBuffer {
         allocator: Arc<vma::Allocator>,
 
         handle: vk::Buffer,
-        alloc: vma::Allocation,
-        ainfo: vma::AllocationInfo,
+        alloc:  vma::Allocation,
+        ainfo:  vma::AllocationInfo,
 }
 
 impl VkBuffer {
@@ -50,18 +48,18 @@ impl VkBuffer {
                                 handle_cinfo = handle_cinfo
                                         .sharing_mode(vk::SharingMode::CONCURRENT)
                                         .queue_family_indices(q_family_indices)
-                        }
+                        },
                         None => handle_cinfo = handle_cinfo.sharing_mode(vk::SharingMode::EXCLUSIVE),
                 };
 
                 let alloc_cinfo = vma::AllocationCreateInfo {
-                        usage: create_info.mem_usage,
-                        flags: create_info.alloc_flags,
-                        required_flags: create_info.req_mem_flags,
-                        preferred_flags: create_info.pref_mem_flags,
+                        usage:            create_info.mem_usage,
+                        flags:            create_info.alloc_flags,
+                        required_flags:   create_info.req_mem_flags,
+                        preferred_flags:  create_info.pref_mem_flags,
                         memory_type_bits: create_info.mem_type_bits,
-                        pool: None,
-                        user_data: None,
+                        pool:             None,
+                        user_data:        None,
                 };
 
                 let (handle, alloc, ainfo) = create_info.allocator.create_buffer(&handle_cinfo, &alloc_cinfo)?;
@@ -126,7 +124,7 @@ impl VkBuffer {
                                 let regions = [vk::BufferCopy {
                                         src_offset: 0,
                                         dst_offset: 0,
-                                        size: buffer_size,
+                                        size:       buffer_size,
                                 }];
 
                                 device.cmd_copy_buffer(cmd_buffer, staging_buffer.handle, buffer.handle, &regions);

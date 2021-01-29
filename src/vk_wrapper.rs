@@ -16,7 +16,8 @@ use log::trace;
 
 
 pub struct VkInstance {
-        entry:  Arc<ash::Entry>,
+        _entry: Arc<ash::Entry>,
+
         handle: ash::Instance,
 }
 
@@ -26,7 +27,8 @@ impl VkInstance {
                 create_info: &vk::InstanceCreateInfo,
         ) -> Result<Self, ash::InstanceError> {
                 Ok(Self {
-                        entry:  Arc::clone(entry),
+                        _entry: Arc::clone(entry),
+
                         handle: entry.create_instance(create_info, None)?,
                 })
         }
@@ -58,7 +60,7 @@ impl Drop for VkInstance {
 
 
 pub struct VkDevice {
-        instance: Arc<VkInstance>,
+        _instance: Arc<VkInstance>,
 
         handle: ash::Device,
 }
@@ -70,8 +72,9 @@ impl VkDevice {
                 create_info: &vk::DeviceCreateInfo,
         ) -> VkResult<Self> {
                 Ok(Self {
-                        instance: Arc::clone(instance),
-                        handle:   instance.create_device(physical_device, create_info, None)?,
+                        _instance: Arc::clone(instance),
+
+                        handle: instance.create_device(physical_device, create_info, None)?,
                 })
         }
 }
@@ -102,20 +105,23 @@ impl Drop for VkDevice {
 
 
 pub struct VkDebugUtilsMessenger {
+        _entry: Arc<ash::Entry>,
+
         loader: DebugUtils,
         handle: vk::DebugUtilsMessengerEXT,
 }
 
 impl VkDebugUtilsMessenger {
         pub unsafe fn new(
-                entry: &ash::Entry,
+                entry: &Arc<ash::Entry>,
                 instance: &ash::Instance,
                 create_info: &vk::DebugUtilsMessengerCreateInfoEXT,
         ) -> VkResult<Self> {
-                let loader = DebugUtils::new(entry, instance);
+                let loader = DebugUtils::new(entry.deref(), instance);
                 let handle = loader.create_debug_utils_messenger(create_info, None)?;
 
                 Ok(Self {
+                        _entry: Arc::clone(entry),
                         loader,
                         handle,
                 })
@@ -146,8 +152,9 @@ impl Drop for VkDebugUtilsMessenger {
 
 
 pub struct VkSurface {
-        window:   Arc<winit::window::Window>,
-        instance: Arc<VkInstance>,
+        _window:   Arc<winit::window::Window>,
+        _entry:    Arc<ash::Entry>,
+        _instance: Arc<VkInstance>,
 
         loader: ash::extensions::khr::Surface,
         handle: vk::SurfaceKHR,
@@ -155,16 +162,17 @@ pub struct VkSurface {
 
 impl VkSurface {
         pub unsafe fn new(
-                entry: &ash::Entry,
-                instance: &Arc<VkInstance>,
                 window: &Arc<winit::window::Window>,
+                entry: &Arc<ash::Entry>,
+                instance: &Arc<VkInstance>,
         ) -> VkResult<Self> {
-                let loader = ash::extensions::khr::Surface::new(entry, &***instance);
-                let handle = ash_window::create_surface(entry, &***instance, &**window, None)?;
+                let loader = ash::extensions::khr::Surface::new(entry.deref(), &***instance);
+                let handle = ash_window::create_surface(entry.deref(), &***instance, &**window, None)?;
 
                 Ok(Self {
-                        window: Arc::clone(window),
-                        instance: Arc::clone(instance),
+                        _window: Arc::clone(window),
+                        _entry: Arc::clone(entry),
+                        _instance: Arc::clone(instance),
 
                         loader,
                         handle,
@@ -359,6 +367,7 @@ impl Drop for VkRenderPass {
 
 pub struct VkCommandPool {
         device: Arc<VkDevice>,
+
         handle: vk::CommandPool,
 }
 
@@ -366,6 +375,7 @@ impl VkCommandPool {
         pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::CommandPoolCreateInfo) -> VkResult<Self> {
                 Ok(Self {
                         device: Arc::clone(device),
+
                         handle: device.create_command_pool(create_info, None)?,
                 })
         }
@@ -398,6 +408,7 @@ impl Drop for VkCommandPool {
 
 pub struct VkDescriptorPool {
         device: Arc<VkDevice>,
+
         handle: vk::DescriptorPool,
 }
 
@@ -405,6 +416,7 @@ impl VkDescriptorPool {
         pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::DescriptorPoolCreateInfo) -> VkResult<Self> {
                 Ok(Self {
                         device: Arc::clone(device),
+
                         handle: device.create_descriptor_pool(create_info, None)?,
                 })
         }
