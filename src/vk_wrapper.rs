@@ -211,6 +211,7 @@ impl Drop for VkSurface {
 
 pub struct VkImageView {
         device: Arc<VkDevice>,
+
         handle: vk::ImageView,
 }
 
@@ -218,6 +219,7 @@ impl VkImageView {
         pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
                 Ok(Self {
                         device: Arc::clone(device),
+
                         handle: device.create_image_view(create_info, None)?,
                 })
         }

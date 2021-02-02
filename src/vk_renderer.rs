@@ -22,6 +22,10 @@ use crate::{
         },
 };
 
+
+
+
+
 pub struct VkRenderer {
         window:     Arc<Window>,
         vk_context: VkContext,
@@ -57,9 +61,13 @@ pub struct VkRenderer {
         present_complete_semaphores: Vec<VkSemaphore>,
 
         creation_instant: Instant,
-        frame_i:          usize,
+        framei:           usize,
         frame_counter:    u32,
 }
+
+
+
+
 
 impl VkRenderer {
         pub fn new(window: &Arc<Window>, imgui_context: &mut imgui::Context) -> Result<Self, Box<dyn Error>> {
@@ -125,6 +133,8 @@ impl VkRenderer {
 
 
                 let (tex_vk_img, tex_vk_img_view, tex_vk_img_sampler) = Self::create_texture_image(
+                        &vk_context.instance,
+                        vk_context.physical_device,
                         &vk_context.physical_device_limits,
                         &vk_context.device,
                         &vk_context.allocator,
@@ -199,15 +209,19 @@ impl VkRenderer {
 
                         creation_instant: Instant::now(),
 
-                        frame_i: 0,
+                        framei: 0,
                         frame_counter: 0,
                 })
         }
 }
 
+
+
+
+
 impl Renderer for VkRenderer {
         fn draw(&mut self, imgui_draw_data: &DrawData) -> Result<(), Box<dyn Error>> {
-                let (img_i, frame_i, draw_cmd_buffer) = match unsafe { self.begin_frame()? } {
+                let (imgi, frame_i, draw_cmd_buffer) = match unsafe { self.begin_frame()? } {
                         Some(v) => v,
                         None => return Ok(()),
                 };
@@ -245,7 +259,7 @@ impl Renderer for VkRenderer {
                                 vk::PipelineBindPoint::GRAPHICS,
                                 *self.graphics_pipeline_layout,
                                 0,
-                                &[self.desc_sets[img_i as usize]],
+                                &[self.desc_sets[imgi as usize]],
                                 &[],
                         );
 
@@ -256,7 +270,7 @@ impl Renderer for VkRenderer {
                         self.imgui_renderer
                                 .cmd_draw(&self.vk_context, draw_cmd_buffer, imgui_draw_data)?;
 
-                        self.end_frame(img_i)?;
+                        self.end_frame(imgi)?;
                 }
 
                 Ok(())
@@ -268,6 +282,10 @@ impl Renderer for VkRenderer {
         }
 }
 
+
+
+
+
 impl VkRenderer {
         fn recreate_swapchain_maybe(&mut self) -> Result<(), Box<dyn Error>> {
                 match self.swapchain_outdated_causes {
@@ -276,11 +294,10 @@ impl VkRenderer {
                         },
                         // If resize is the only cause, then check that we actually need to resize
                         VkSwapchainOutdatedCauses::WINDOW_RESIZE => {
-                                let wsize = self.window.inner_size();
+                                let wsize = &self.window.inner_size();
+                                let ssize = &self.swapchain.extent;
 
-                                if wsize.width == self.swapchain.extent.width
-                                        && wsize.height == self.swapchain.extent.height
-                                {
+                                if (wsize.width == ssize.width) && (wsize.height == ssize.height) {
                                         self.swapchain_outdated_causes = VkSwapchainOutdatedCauses::NONE;
 
                                         return Ok(());
@@ -299,13 +316,16 @@ impl VkRenderer {
 
                 unsafe { self.vk_context.device.device_wait_idle()? };
 
-                let swapchain_recreate_info = self.swapchain.recreate()?;
+                let swch_recreation_info = self.swapchain.recreate()?;
 
-                let (viewport, scissor) = Self::create_viewport_and_scissor(self.swapchain.extent);
-                self.viewport = viewport;
-                self.scissor = scissor;
+                {
+                        let (viewport, scissor) = Self::create_viewport_and_scissor(self.swapchain.extent);
 
-                if swapchain_recreate_info.color_format_changed || swapchain_recreate_info.samples_changed {
+                        self.viewport = viewport;
+                        self.scissor = scissor;
+                }
+
+                if swch_recreation_info.color_format_changed || swch_recreation_info.samples_changed {
                         recreate_render_pass = true;
                 }
 
@@ -330,7 +350,7 @@ impl VkRenderer {
 
                 self.swapchain.create_framebuffers(*self.render_pass)?;
 
-                if swapchain_recreate_info.img_count_changed {
+                if swch_recreation_info.img_count_changed {
                         trace!("Recreating VkObjects that depend on VkSwapchain img count...");
                         warn!("VkSwapchain image count changed!");
 
@@ -373,7 +393,7 @@ impl VkRenderer {
                         self.img_avail_semaphores = img_avail_semaphores;
                         self.present_complete_semaphores = present_complete_semaphores;
 
-                        self.frame_i = 0;
+                        self.framei = 0;
                 }
 
                 if recreate_pipeline {
@@ -393,15 +413,15 @@ impl VkRenderer {
 
         fn create_render_pass(
                 device: &Arc<VkDevice>,
-                swapchain_samples: vk::SampleCountFlags,
-                swapchain_color_format: vk::Format,
-                swapchain_depth_format: vk::Format,
+                swch_samples: vk::SampleCountFlags,
+                swch_color_format: vk::Format,
+                swch_depth_format: vk::Format,
         ) -> VkResult<VkRenderPass> {
                 let attachments = [
                         vk::AttachmentDescription {
                                 flags:            vk::AttachmentDescriptionFlags::empty(),
-                                format:           swapchain_color_format,
-                                samples:          swapchain_samples,
+                                format:           swch_color_format,
+                                samples:          swch_samples,
                                 load_op:          vk::AttachmentLoadOp::CLEAR,
                                 store_op:         vk::AttachmentStoreOp::STORE,
                                 stencil_load_op:  vk::AttachmentLoadOp::DONT_CARE,
@@ -411,8 +431,8 @@ impl VkRenderer {
                         },
                         vk::AttachmentDescription {
                                 flags:            vk::AttachmentDescriptionFlags::empty(),
-                                format:           swapchain_depth_format,
-                                samples:          swapchain_samples,
+                                format:           swch_depth_format,
+                                samples:          swch_samples,
                                 load_op:          vk::AttachmentLoadOp::CLEAR,
                                 store_op:         vk::AttachmentStoreOp::STORE,
                                 stencil_load_op:  vk::AttachmentLoadOp::DONT_CARE,
@@ -422,7 +442,7 @@ impl VkRenderer {
                         },
                         vk::AttachmentDescription {
                                 flags:            vk::AttachmentDescriptionFlags::empty(),
-                                format:           swapchain_color_format,
+                                format:           swch_color_format,
                                 samples:          vk::SampleCountFlags::TYPE_1,
                                 load_op:          vk::AttachmentLoadOp::DONT_CARE,
                                 store_op:         vk::AttachmentStoreOp::STORE,
@@ -452,8 +472,8 @@ impl VkRenderer {
                         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
                         .color_attachments(slice::from_ref(&color_attachment_ref))
                         .depth_stencil_attachment(&depth_attachment_ref)
-                        //.input_attachments(&[])
                         .resolve_attachments(slice::from_ref(&resolve_attachment_ref))
+                        //.input_attachments(&[])
                         //.preserve_attachments(&[])
                         .build()];
 
@@ -712,166 +732,33 @@ impl VkRenderer {
         }
 
         fn create_texture_image(
+                instance: &ash::Instance,
+                pdevice: vk::PhysicalDevice,
                 pd_limits: &vk::PhysicalDeviceLimits,
                 device: &Arc<VkDevice>,
                 allocator: &Arc<vma::Allocator>,
-                cmd_buffer: &VkReusableCommandBuffer,
+                setup_cmd_buffer: &VkReusableCommandBuffer,
                 transfer_queue: vk::Queue,
         ) -> Result<(VkImage, VkImageView, VkSampler), Box<dyn Error>> {
                 unsafe { stb_image::stb_image::bindgen::stbi_set_flip_vertically_on_load(1) };
 
                 let img = Image2D::new(const_cstr!("res/tex/wall.jpg").as_cstr(), 4)?;
+                let mip_levels = f32::max(img.width() as f32, img.height() as f32).log2().floor() as u32 + 1;
 
                 let vk_img_cinfo = VkImageCreateFromImage2DInfo {
                         image: &img,
                         format: vk::Format::R8G8B8A8_SRGB,
-                        mip_levels: 1,
+                        mip_levels,
                         samples: vk::SampleCountFlags::TYPE_1,
-                        transfer_cmd_buffer: cmd_buffer,
-                        transfer_queue,
+                        setup_cmd_buffer,
+                        graphics_queue: transfer_queue,
                 };
 
-                let vk_img = VkImage::from_image_2d(device, allocator, &vk_img_cinfo)?;
-                /*let staging_buffer = {
-                        let buffer_cinfo = VkBufferCreateInfo {
-                                device,
-                                allocator,
-                                buffer_size: img.data_size() as vk::DeviceSize,
-                                buffer_usage: vk::BufferUsageFlags::TRANSFER_SRC,
-                                mem_usage: vma::MemoryUsage::CpuToGpu,
-                                alloc_flags: vma::AllocationCreateFlags::NONE,
-                                req_mem_flags: vk::MemoryPropertyFlags::HOST_VISIBLE,
-                                pref_mem_flags: Default::default(),
-                                mem_type_bits: 0,
-                                q_family_indices: None,
-                        };
+                let vk_img = VkImage::from_image_2d(instance, pdevice, device, allocator, &vk_img_cinfo)?;
 
-                        VkBuffer::new(&buffer_cinfo)?
-                };
-
-                let buffer_data = staging_buffer.map_memory(&allocator)?;
                 unsafe {
-                        std::ptr::copy_nonoverlapping(img.data(), buffer_data, img.data_size());
+                        setup_cmd_buffer.wait(&device, u64::MAX)?;
                 }
-                staging_buffer.unmap_memory(&allocator)?;
-                staging_buffer.flush_memory(&allocator)?;
-
-                let vk_img_cinfo = VkImageCreateInfo {
-                        image_type:           vk::ImageType::TYPE_2D,
-                        format:               vk::Format::R8G8B8A8_SRGB,
-                        extent:               vk::Extent3D {
-                                width:  img.width(),
-                                height: img.height(),
-                                depth:  1,
-                        },
-                        mip_levels:           1,
-                        array_layers:         1,
-                        samples:              vk::SampleCountFlags::TYPE_1,
-                        tiling:               vk::ImageTiling::OPTIMAL,
-                        usage:                vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
-                        queue_family_indices: None,
-                        initial_layout:       vk::ImageLayout::UNDEFINED,
-                        mem_usage:            vma::MemoryUsage::GpuOnly,
-                        alloc_cflags:         vma::AllocationCreateFlags::DEDICATED_MEMORY,
-                        required_flags:       vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                        preferred_flags:      Default::default(),
-                };
-
-                let vk_img = unsafe { VkImage::new(allocator, &vk_img_cinfo)? };
-
-                cmd_buffer.record_and_submit(&device, transfer_queue, &[], &[], &[], |device, cmd_buffer| {
-                        let barrier = vk::ImageMemoryBarrier {
-                                src_access_mask: vk::AccessFlags::empty(),
-                                dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                                old_layout: vk::ImageLayout::UNDEFINED,
-                                new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                image: *vk_img,
-                                subresource_range: vk::ImageSubresourceRange {
-                                        aspect_mask:      vk::ImageAspectFlags::COLOR,
-                                        base_mip_level:   0,
-                                        level_count:      1,
-                                        base_array_layer: 0,
-                                        layer_count:      1,
-                                },
-                                ..vk::ImageMemoryBarrier::default()
-                        };
-
-                        unsafe {
-                                device.cmd_pipeline_barrier(
-                                        cmd_buffer,
-                                        vk::PipelineStageFlags::TOP_OF_PIPE,
-                                        vk::PipelineStageFlags::TRANSFER,
-                                        vk::DependencyFlags::empty(),
-                                        &[],
-                                        &[],
-                                        &[barrier],
-                                )
-                        };
-
-                        let region = vk::BufferImageCopy {
-                                buffer_offset:       0,
-                                buffer_row_length:   0,
-                                buffer_image_height: 0,
-                                image_subresource:   vk::ImageSubresourceLayers {
-                                        aspect_mask:      vk::ImageAspectFlags::COLOR,
-                                        mip_level:        0,
-                                        base_array_layer: 0,
-                                        layer_count:      1,
-                                },
-                                image_offset:        vk::Offset3D {
-                                        x: 0, y: 0, z: 0
-                                },
-                                image_extent:        vk::Extent3D {
-                                        width:  img.width(),
-                                        height: img.height(),
-                                        depth:  1,
-                                },
-                        };
-
-                        unsafe {
-                                device.cmd_copy_buffer_to_image(
-                                        cmd_buffer,
-                                        *staging_buffer,
-                                        *vk_img,
-                                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                        &[region],
-                                )
-                        };
-
-                        let barrier = vk::ImageMemoryBarrier {
-                                src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                                dst_access_mask: vk::AccessFlags::SHADER_READ,
-                                old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                image: *vk_img,
-                                subresource_range: vk::ImageSubresourceRange {
-                                        aspect_mask:      vk::ImageAspectFlags::COLOR,
-                                        base_mip_level:   0,
-                                        level_count:      1,
-                                        base_array_layer: 0,
-                                        layer_count:      1,
-                                },
-                                ..vk::ImageMemoryBarrier::default()
-                        };
-
-                        unsafe {
-                                device.cmd_pipeline_barrier(
-                                        cmd_buffer,
-                                        vk::PipelineStageFlags::TRANSFER,
-                                        vk::PipelineStageFlags::FRAGMENT_SHADER,
-                                        vk::DependencyFlags::empty(),
-                                        &[],
-                                        &[],
-                                        &[barrier],
-                                )
-                        };
-
-                        Ok(())
-                })?;*/
 
                 let vk_img_view = unsafe {
                         let vk_img_view_cinfo = vk::ImageViewCreateInfo {
@@ -882,7 +769,7 @@ impl VkRenderer {
                                 subresource_range: vk::ImageSubresourceRange {
                                         aspect_mask:      vk::ImageAspectFlags::COLOR,
                                         base_mip_level:   0,
-                                        level_count:      1,
+                                        level_count:      mip_levels,
                                         base_array_layer: 0,
                                         layer_count:      1,
                                 },
@@ -891,8 +778,6 @@ impl VkRenderer {
 
                         VkImageView::new(device, &vk_img_view_cinfo)?
                 };
-
-                cmd_buffer.wait(&device, u64::MAX)?;
 
                 let vk_img_sampler = unsafe {
                         let sampler_cinfo = vk::SamplerCreateInfo {
@@ -908,7 +793,7 @@ impl VkRenderer {
                                 mipmap_mode: vk::SamplerMipmapMode::LINEAR,
                                 mip_lod_bias: 0.0,
                                 min_lod: 0.0,
-                                max_lod: 0.0,
+                                max_lod: mip_levels as f32,
                                 border_color: vk::BorderColor::INT_OPAQUE_BLACK,
                                 unnormalized_coordinates: vk::FALSE,
                                 ..vk::SamplerCreateInfo::default()
@@ -1122,17 +1007,17 @@ impl VkRenderer {
         }
 
         unsafe fn begin_frame(&mut self) -> Result<Option<(u32, usize, vk::CommandBuffer)>, Box<dyn Error>> {
-                let window_size = self.window.inner_size();
-                if window_size.width == 0 || window_size.height == 0 {
+                let wsize = self.window.inner_size();
+                if (wsize.width == 0) || (wsize.height == 0) {
                         return Ok(None);
                 }
 
                 self.recreate_swapchain_maybe()?;
 
-                let frame_img_avail_semaphore = &self.img_avail_semaphores[self.frame_i];
+                let frame_img_avail_semaphore = &self.img_avail_semaphores[self.framei];
 
-                let img_i = {
-                        let (img_i, suboptimal) = self.swapchain.acquire_next_image(
+                let imgi = {
+                        let (imgi, suboptimal) = self.swapchain.acquire_next_image(
                                 u64::MAX,
                                 **frame_img_avail_semaphore,
                                 vk::Fence::null(),
@@ -1143,12 +1028,12 @@ impl VkRenderer {
                                         .insert(VkSwapchainOutdatedCauses::SUBOPTIMAL);
                         }
 
-                        img_i
+                        imgi
                 };
 
 
-                let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.frame_i];
-                let frame_framebuffer = &self.swapchain.framebuffers[img_i as usize];
+                let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.framei];
+                let frame_framebuffer = &self.swapchain.framebuffers[imgi as usize];
 
                 let time = self.creation_instant.elapsed().as_secs_f32();
                 let intensity = ((time.sin() + 1.0) / 2.0) * 0.05;
@@ -1197,13 +1082,13 @@ impl VkRenderer {
                         vk::SubpassContents::INLINE,
                 );
 
-                Ok(Some((img_i, self.frame_i, **frame_draw_cmd_buffer)))
+                Ok(Some((imgi, self.framei, **frame_draw_cmd_buffer)))
         }
 
         unsafe fn end_frame(&mut self, img_i: u32) -> Result<(), Box<dyn Error>> {
-                let frame_img_avail_semaphore = &self.img_avail_semaphores[self.frame_i];
-                let frame_present_complete_semaphore = &self.present_complete_semaphores[self.frame_i];
-                let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.frame_i];
+                let frame_img_avail_semaphore = &self.img_avail_semaphores[self.framei];
+                let frame_present_complete_semaphore = &self.present_complete_semaphores[self.framei];
+                let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.framei];
 
                 self.vk_context.device.cmd_end_render_pass(**frame_draw_cmd_buffer);
                 self.vk_context.device.end_command_buffer(**frame_draw_cmd_buffer)?;
@@ -1245,7 +1130,7 @@ impl VkRenderer {
                         _ => {},
                 };
 
-                self.frame_i = (self.frame_i + 1) % (self.swapchain.img_count as usize);
+                self.framei = (self.framei + 1) % (self.swapchain.img_count as usize);
                 self.frame_counter += 1;
 
                 Ok(())
@@ -1257,7 +1142,7 @@ impl VkRenderer {
                 let data = Matrices3D {
                         model: glm::rotate(&Mat4::identity(), time, &Vec3::new(0.0, 1.0, 0.0)),
                         view:  glm::look_at_lh(
-                                &Vec3::new(0.0, time.sin(), -1.0),
+                                &Vec3::new(0.0, time.sin() * 10.0, (((time.cos() + 1.0) / 2.0) * -25.0) - 1.0),
                                 &Vec3::new(0.0, 0.0, 0.0),
                                 &Vec3::y(),
                         ),

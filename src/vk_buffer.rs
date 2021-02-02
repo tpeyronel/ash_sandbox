@@ -133,7 +133,9 @@ impl VkBuffer {
                         },
                 )?;
 
-                create_info.cmd_buffer.wait(create_info.device, u64::MAX)?;
+                unsafe {
+                        create_info.cmd_buffer.wait(create_info.device, u64::MAX)?;
+                }
 
                 Ok(buffer)
         }

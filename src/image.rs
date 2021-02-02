@@ -1,11 +1,10 @@
 use std::ffi::CStr;
 
 pub struct Image2D {
-        data:      *mut u8,
-        data_size: usize,
-        width:     u32,
-        height:    u32,
-        channels:  u32,
+        data:     Vec<u8>,
+        width:    u32,
+        height:   u32,
+        channels: u32,
 }
 
 impl Image2D {
@@ -31,23 +30,22 @@ impl Image2D {
                         ));
                 }
 
-                let data_size = ((width as u32) * (height as u32) * desired_channels) as usize;
+                let data_len = (width as usize) * (height as usize) * (desired_channels as usize);
 
                 Ok(Self {
-                        data,
-                        data_size,
-                        width: width as u32,
-                        height: height as u32,
+                        data:     unsafe { Vec::from_raw_parts(data, data_len, data_len) },
+                        width:    width as u32,
+                        height:   height as u32,
                         channels: desired_channels,
                 })
         }
 
         pub fn data(&self) -> *const u8 {
-                self.data
+                self.data.as_ptr()
         }
 
-        pub fn data_size(&self) -> usize {
-                self.data_size
+        pub fn data_bsize(&self) -> usize {
+                self.data.len() * std::mem::size_of::<u8>()
         }
 
         pub fn width(&self) -> u32 {
@@ -60,13 +58,5 @@ impl Image2D {
 
         pub fn channels(&self) -> u32 {
                 self.channels
-        }
-}
-
-impl Drop for Image2D {
-        fn drop(&mut self) {
-                unsafe {
-                        libc::free(self.data as *mut _);
-                }
         }
 }

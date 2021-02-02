@@ -148,8 +148,10 @@ impl VkSwapchain {
                 })
         }
 
-        pub fn recreate(&mut self) -> VkmaResult<VkSwapchainRecreateInfo> {
-                let mut recreate_info = VkSwapchainRecreateInfo {
+        pub fn recreate(&mut self) -> VkmaResult<VkSwapchainRecreationInfo> {
+                self.framebuffers.clear();
+
+                let mut recreation_info = VkSwapchainRecreationInfo {
                         color_format_changed: false,
                         extent_changed:       false,
                         samples_changed:      false,
@@ -158,7 +160,7 @@ impl VkSwapchain {
 
                 let color_format = Self::choose_color_format(&self.surface, self.physical_device)?;
                 if color_format != self.color_format {
-                        recreate_info.color_format_changed = true;
+                        recreation_info.color_format_changed = true;
                 }
                 self.color_format = color_format;
                 debug!("VkSwapchain color format ({:?})", color_format);
@@ -191,7 +193,7 @@ impl VkSwapchain {
                         _ => surface_capabilities.current_extent,
                 };
                 if extent != self.extent {
-                        recreate_info.extent_changed = true;
+                        recreation_info.extent_changed = true;
                 }
                 self.extent = extent;
                 debug!("VkSwapchain extent: {:?}", extent);
@@ -223,16 +225,21 @@ impl VkSwapchain {
                         ..Default::default()
                 };
 
+                let old_handle = self.handle;
                 self.handle = unsafe { loader.create_swapchain(&swch_cinfo, None)? };
+                unsafe { self.loader.destroy_swapchain(old_handle, None) };
 
                 let samples = Self::choose_sample_count(&self.instance, self.physical_device);
                 if samples != self.samples {
-                        recreate_info.samples_changed = true;
+                        recreation_info.samples_changed = true;
                 }
                 self.samples = samples;
                 debug!("Swapchain samples: {:?}", samples);
 
-                if recreate_info.color_format_changed || recreate_info.extent_changed || recreate_info.samples_changed {
+                if recreation_info.color_format_changed
+                        || recreation_info.extent_changed
+                        || recreation_info.samples_changed
+                {
                         let (color_img, color_img_view) = Self::create_color_img_resources(
                                 &self.device,
                                 &self.allocator,
@@ -261,13 +268,11 @@ impl VkSwapchain {
 
                 let img_count = self.resolve_imgs.len() as u32;
                 if img_count != self.img_count {
-                        recreate_info.img_count_changed = true;
+                        recreation_info.img_count_changed = true;
                 }
                 self.img_count = img_count;
 
-                self.framebuffers.clear();
-
-                Ok(recreate_info)
+                Ok(recreation_info)
         }
 
         pub fn create_framebuffers(&mut self, render_pass: vk::RenderPass) -> VkResult<()> {
@@ -533,7 +538,7 @@ bitflags! {
         }
 }
 
-pub struct VkSwapchainRecreateInfo {
+pub struct VkSwapchainRecreationInfo {
         pub color_format_changed: bool,
         pub extent_changed:       bool,
         pub samples_changed:      bool,

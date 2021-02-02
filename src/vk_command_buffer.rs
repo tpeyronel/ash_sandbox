@@ -91,8 +91,39 @@ impl VkReusableCommandBuffer {
                 }
         }
 
-        pub fn wait(&self, device: &ash::Device, timeout: u64) -> VkResult<()> {
-                unsafe { device.wait_for_fences(&[*self.fence], true, timeout) }
+        pub unsafe fn begin(&self, device: &ash::Device) -> VkResult<()> {
+                device.wait_for_fences(&[*self.fence], true, u64::MAX)?;
+                device.reset_fences(&[*self.fence])?;
+                device.reset_command_buffer(self.handle, vk::CommandBufferResetFlags::RELEASE_RESOURCES)?;
+
+                let cmd_buffer_binfo =
+                        vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+                device.begin_command_buffer(self.handle, &cmd_buffer_binfo)
+        }
+
+        pub unsafe fn end_and_submit(
+                &self,
+                device: &ash::Device,
+                submit_queue: vk::Queue,
+                wait_semaphores: &[vk::Semaphore],
+                wait_stages: &[vk::PipelineStageFlags],
+                signal_semaphores: &[vk::Semaphore],
+        ) -> VkResult<()> {
+                device.end_command_buffer(self.handle)?;
+
+                let submit_info = vk::SubmitInfo::builder()
+                        .command_buffers(std::slice::from_ref(&self.handle))
+                        .wait_semaphores(wait_semaphores)
+                        .wait_dst_stage_mask(wait_stages)
+                        .signal_semaphores(signal_semaphores)
+                        .build();
+
+                device.queue_submit(submit_queue, std::slice::from_ref(&submit_info), *self.fence)
+        }
+
+        pub unsafe fn wait(&self, device: &ash::Device, timeout: u64) -> VkResult<()> {
+                device.wait_for_fences(&[*self.fence], true, timeout)
         }
 }
 
