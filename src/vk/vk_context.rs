@@ -7,20 +7,22 @@ use std::{
 
 extern crate vk_mem as vma;
 
-use std::sync::Arc;
+use std::rc::Rc;
 
 use ash::{
         extensions::khr::Swapchain,
         prelude::VkResult,
-        version::{DeviceV1_0, InstanceV1_0},
+        version::{DeviceV1_0},
         vk, Device, Instance,
 };
+#[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use winit::window::Window;
 
+use super::vk_wrapper::{VkCommandPool, VkDebugUtilsMessenger, VkDescriptorPool, VkDevice, VkInstance, VkSurface};
 use crate::{
         timer::Timer,
-        vk_wrapper::{VkCommandPool, VkDebugUtilsMessenger, VkDescriptorPool, VkDevice, VkInstance, VkSurface},
+        vk::vk_wrapper::{VkPhysicalDevice, VkQueueFamilyIndices, VkQueues},
 };
 
 macro_rules! cstring {
@@ -30,23 +32,21 @@ macro_rules! cstring {
 }
 
 pub struct VkContext {
-        pub instance: Arc<VkInstance>,
+        pub instance: Rc<VkInstance>,
 
         _debug_utils_messenger: Option<VkDebugUtilsMessenger>,
 
-        pub surface: Arc<VkSurface>,
+        pub surface: Rc<VkSurface>,
 
-        pub physical_device:            vk::PhysicalDevice,
-        pub physical_device_limits:     vk::PhysicalDeviceLimits,
-        pub physical_device_properties: vk::PhysicalDeviceProperties,
+        pub pdevice: VkPhysicalDevice,
 
-        pub device: Arc<VkDevice>,
+        pub device: Rc<VkDevice>,
 
-        qfamily_is: VkQueueFamilyIndices,
+        qfamilyi: VkQueueFamilyIndices,
         pub queues: VkQueues,
 
-        pub allocator: Arc<vma::Allocator>,
-        pub cmd_pool:  VkCommandPool,
+        pub allocator: Rc<vma::Allocator>,
+        pub cmd_pool: Rc<VkCommandPool>,
         pub desc_pool: VkDescriptorPool,
 }
 
@@ -56,10 +56,10 @@ const ENABLE_VALIDATION_LAYERS: bool = true;
 const ENABLE_VALIDATION_LAYERS: bool = false;
 
 impl VkContext {
-        pub fn new(window: &Arc<Window>) -> Result<Self, Box<dyn Error>> {
+        pub fn new(window: &Rc<Window>) -> Result<Self, Box<dyn Error>> {
                 let _t = Timer::new("Initialized VkContext in: ");
 
-                let entry = Arc::new(ash::Entry::new()?);
+                let entry = Rc::new(ash::Entry::new()?);
 
                 let instance = Self::create_instance(window, &entry)?;
                 trace!("Created VkInstance");
@@ -77,31 +77,24 @@ impl VkContext {
                         Some(debug_messenger)
                 };
 
-                let surface = Arc::new(unsafe { VkSurface::new(window, &entry, &instance)? });
+                let surface = Rc::new(unsafe { VkSurface::new(window, &entry, &instance)? });
                 trace!("Created VkSurface");
 
-                let (physical_device, q_family_i) = Self::choose_physical_device(&instance, &surface)?;
-
-                let physical_device_properties = unsafe { instance.get_physical_device_properties(physical_device) };
-                let physical_device_limits = physical_device_properties.limits;
+                let (pdevice, qfamilyi) = VkPhysicalDevice::new(&instance, &surface)?;
 
                 trace!("Chose VkPhysicalDevice");
                 info!("Chosen physical device: {:?}", unsafe {
-                        CStr::from_ptr(
-                                instance.get_physical_device_properties(physical_device)
-                                        .device_name
-                                        .as_ptr(),
-                        )
+                        CStr::from_ptr(pdevice.props.device_name.as_ptr())
                 });
-                info!("Queue family indices: {:?}", &q_family_i);
+                info!("Queue family indices: {:?}", &qfamilyi);
 
-                let (device, queues) = Self::create_device(&instance, physical_device, &q_family_i)?;
+                let (device, queues) = Self::create_device(&instance, *pdevice, &qfamilyi)?;
                 trace!("Created VkDevice");
 
-                let allocator = Self::create_allocator(&instance, physical_device, &device)?;
+                let allocator = Self::create_allocator(&instance, *pdevice, &device)?;
                 trace!("Created VmaAllocator");
 
-                let cmd_pool = Self::create_command_pool(&device, &q_family_i)?;
+                let cmd_pool = Self::create_command_pool(&device, &qfamilyi)?;
                 trace!("Created VkCommandPool");
 
                 let desc_pool = Self::create_descriptor_pool(&device)?;
@@ -114,13 +107,11 @@ impl VkContext {
 
                         surface,
 
-                        physical_device,
-                        physical_device_properties,
-                        physical_device_limits,
+                        pdevice,
 
                         device,
 
-                        qfamily_is: q_family_i,
+                        qfamilyi,
                         queues,
 
                         allocator,
@@ -131,7 +122,7 @@ impl VkContext {
                 })
         }
 
-        fn create_instance(window: &Window, entry: &Arc<ash::Entry>) -> Result<Arc<VkInstance>, Box<dyn Error>> {
+        fn create_instance(window: &Window, entry: &Rc<ash::Entry>) -> Result<Rc<VkInstance>, Box<dyn Error>> {
                 unsafe {
                         let mut req_layers = Vec::new();
                         if ENABLE_VALIDATION_LAYERS {
@@ -175,7 +166,7 @@ impl VkContext {
                                         &debug_info as *const vk::DebugUtilsMessengerCreateInfoEXT as *const c_void;
                         }
 
-                        Ok(Arc::new(VkInstance::new(entry, &instance_cinfo)?))
+                        Ok(Rc::new(VkInstance::new(entry, &instance_cinfo)?))
                 }
         }
 
@@ -191,53 +182,11 @@ impl VkContext {
                         .build()
         }
 
-        fn choose_physical_device(
-                instance: &ash::Instance,
-                surface: &VkSurface,
-        ) -> Result<(vk::PhysicalDevice, VkQueueFamilyIndices), Box<dyn Error>> {
-                Ok(unsafe {
-                        let ph_devices = instance.enumerate_physical_devices()?;
-
-                        ph_devices
-                                .iter()
-                                .filter_map(|&pd| Self::is_device_suitable(instance, surface, pd))
-                                .find(|&(pd, _)| {
-                                        let name = CStr::from_ptr(
-                                                instance.get_physical_device_properties(pd).device_name.as_ptr(),
-                                        )
-                                        .to_str()
-                                        .unwrap();
-
-                                        name == "GeForce GTX 970"
-                                })
-                                .expect("Couldn't find suitable device")
-                })
-        }
-
-        fn is_device_suitable(
-                instance: &ash::Instance,
-                surface: &VkSurface,
-                pd: vk::PhysicalDevice,
-        ) -> Option<(vk::PhysicalDevice, VkQueueFamilyIndices)> {
-                let q_family_i = match VkQueueFamilyIndices::new(instance, surface, pd) {
-                        Some(q_family_i) => q_family_i,
-                        None => return None,
-                };
-
-                let supported_features = unsafe { instance.get_physical_device_features(pd) };
-
-                if supported_features.sampler_anisotropy == vk::FALSE {
-                        return None;
-                }
-
-                Some((pd, q_family_i))
-        }
-
         fn create_device(
-                instance: &Arc<VkInstance>,
+                instance: &Rc<VkInstance>,
                 physical_device: vk::PhysicalDevice,
                 q_family_i: &VkQueueFamilyIndices,
-        ) -> Result<(Arc<VkDevice>, VkQueues), Box<dyn Error>> {
+        ) -> Result<(Rc<VkDevice>, VkQueues), Box<dyn Error>> {
                 let memory_budget_ext = CStr::from_bytes_with_nul(b"VK_EXT_memory_budget\0").unwrap();
 
                 let req_device_extensions_raw = vec![Swapchain::name().as_ptr(), memory_budget_ext.as_ptr()];
@@ -274,11 +223,11 @@ impl VkContext {
                         .enabled_extension_names(&req_device_extensions_raw)
                         .enabled_features(&req_device_features);
 
-                let device = unsafe { Arc::new(VkDevice::new(instance, physical_device, &device_cinfo)?) };
+                let device = unsafe { Rc::new(VkDevice::new(instance, physical_device, &device_cinfo)?) };
 
                 let queues = VkQueues {
                         graphics: unsafe { device.get_device_queue(q_family_i.graphics, 0) },
-                        present:  unsafe { device.get_device_queue(q_family_i.present, 0) },
+                        present: unsafe { device.get_device_queue(q_family_i.present, 0) },
                 };
 
                 Ok((device, queues))
@@ -288,7 +237,7 @@ impl VkContext {
                 instance: &ash::Instance,
                 physical_device: vk::PhysicalDevice,
                 device: &ash::Device,
-        ) -> vma::Result<Arc<vma::Allocator>> {
+        ) -> vma::Result<Rc<vma::Allocator>> {
                 let allocator_cinfo = vma::AllocatorCreateInfo {
                         physical_device,
                         device: device.clone(),
@@ -299,17 +248,17 @@ impl VkContext {
                         heap_size_limits: None,
                 };
 
-                Ok(Arc::new(vma::Allocator::new(&allocator_cinfo)?))
+                Ok(Rc::new(vma::Allocator::new(&allocator_cinfo)?))
         }
 
-        fn create_descriptor_pool(device: &Arc<VkDevice>) -> VkResult<VkDescriptorPool> {
+        fn create_descriptor_pool(device: &Rc<VkDevice>) -> VkResult<VkDescriptorPool> {
                 let pool_sizes = [
                         vk::DescriptorPoolSize {
-                                ty:               vk::DescriptorType::UNIFORM_BUFFER,
+                                ty: vk::DescriptorType::UNIFORM_BUFFER,
                                 descriptor_count: 100,
                         },
                         vk::DescriptorPoolSize {
-                                ty:               vk::DescriptorType::SAMPLED_IMAGE,
+                                ty: vk::DescriptorType::SAMPLED_IMAGE,
                                 descriptor_count: 100,
                         },
                 ];
@@ -322,12 +271,15 @@ impl VkContext {
                 unsafe { VkDescriptorPool::new(device, &desc_pool_cinfo) }
         }
 
-        fn create_command_pool(device: &Arc<VkDevice>, q_family_i: &VkQueueFamilyIndices) -> VkResult<VkCommandPool> {
+        fn create_command_pool(
+                device: &Rc<VkDevice>,
+                q_family_i: &VkQueueFamilyIndices,
+        ) -> VkResult<Rc<VkCommandPool>> {
                 let cmd_pool_cinfo = vk::CommandPoolCreateInfo::builder()
                         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
                         .queue_family_index(q_family_i.graphics);
 
-                unsafe { VkCommandPool::new(device, &cmd_pool_cinfo) }
+                Ok(Rc::new(unsafe { VkCommandPool::new(device, &cmd_pool_cinfo)? }))
         }
 }
 
@@ -484,7 +436,7 @@ impl imgui_rs_vulkan_renderer::RendererVkContext for VkContext {
         }
 
         fn physical_device(&self) -> vk::PhysicalDevice {
-                self.physical_device
+                *self.pdevice
         }
 
         fn device(&self) -> &Device {
@@ -496,92 +448,9 @@ impl imgui_rs_vulkan_renderer::RendererVkContext for VkContext {
         }
 
         fn command_pool(&self) -> vk::CommandPool {
-                *self.cmd_pool
+                **self.cmd_pool
         }
 }
-
-
-
-
-
-
-
-
-#[derive(Debug)]
-struct VkQueueFamilyIndices {
-        graphics: u32,
-        present:  u32,
-}
-
-impl VkQueueFamilyIndices {
-        fn new(instance: &ash::Instance, surface: &VkSurface, pd: vk::PhysicalDevice) -> Option<Self> {
-                let q_families_props = unsafe { instance.get_physical_device_queue_family_properties(pd) };
-
-                fn find_queue_family<F>(q_families_props: &[vk::QueueFamilyProperties], cond: F) -> Option<u32>
-                where F: Fn(usize, &vk::QueueFamilyProperties) -> bool {
-                        q_families_props
-                                .iter()
-                                .enumerate()
-                                .filter_map(
-                                        |(i, q_fam_props)| {
-                                                if cond(i, q_fam_props) {
-                                                        Some(i as u32)
-                                                } else {
-                                                        None
-                                                }
-                                        },
-                                )
-                                .next()
-                }
-
-                let supports_graphics = |_i: usize, q_fam_props: &vk::QueueFamilyProperties| {
-                        q_fam_props.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                };
-
-                let supports_present = |i: usize, _q_fam_props: &vk::QueueFamilyProperties| unsafe {
-                        surface.loader()
-                                .get_physical_device_surface_support(pd, i as u32, **surface)
-                                .unwrap()
-                };
-
-                let supports_both = |i: usize, q_fam_props: &vk::QueueFamilyProperties| {
-                        supports_graphics(i, q_fam_props) && supports_present(i, q_fam_props)
-                };
-
-                let graphics_and_present = find_queue_family(&q_families_props, supports_both);
-
-                if let Some(graphics_and_present) = graphics_and_present {
-                        return Some(Self {
-                                graphics: graphics_and_present,
-                                present:  graphics_and_present,
-                        });
-                }
-
-                let graphics = find_queue_family(&q_families_props, supports_graphics);
-                let present = find_queue_family(&q_families_props, supports_present);
-
-                if let (Some(graphics), Some(present)) = (graphics, present) {
-                        return Some(Self {
-                                graphics,
-                                present,
-                        });
-                }
-
-                None
-        }
-}
-
-pub struct VkQueues {
-        pub graphics: vk::Queue,
-        pub present:  vk::Queue,
-}
-
-
-
-
-
-
-
 
 unsafe extern "system" fn vk_debug_callback(
         message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,

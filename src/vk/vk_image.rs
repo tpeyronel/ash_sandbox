@@ -1,18 +1,24 @@
-use std::{error::Error, ops::Deref, sync::Arc};
+use std::{error::Error, ops::Deref, rc::Rc};
 
 use ash::{
         version::{DeviceV1_0, InstanceV1_0},
         vk,
 };
+#[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 
-use crate::{
-        image::Image2D,
+use super::{
         vk_buffer::{VkBuffer, VkBufferCreateInfo},
         vk_command_buffer::VkReusableCommandBuffer,
-        vk_wrapper::{VkDevice, VkImageView, VkSampler},
         vkma_error::VkmaResult,
 };
+
+#[allow(dead_code)]
+pub enum MipLevels {
+        Log2,
+        One,
+        Number(u32),
+}
 
 pub struct VkImageCreateInfo {
         pub image_type:           vk::ImageType,
@@ -32,25 +38,30 @@ pub struct VkImageCreateInfo {
         pub preferred_flags: vk::MemoryPropertyFlags,
 }
 
-pub struct VkImageCreateFromImage2DInfo<'a> {
-        pub image:            &'a Image2D,
+pub struct VkImageCreateFromDataInfo<'a> {
+        pub data:             &'a [u8],
+        pub width:            u32,
+        pub height:           u32,
         pub format:           vk::Format,
-        pub mip_levels:       u32,
+        pub mip_levels:       MipLevels,
         pub samples:          vk::SampleCountFlags,
         pub setup_cmd_buffer: &'a VkReusableCommandBuffer,
-        pub graphics_queue:   vk::Queue,
+        pub transfer_queue:   vk::Queue,
 }
 
+#[allow(dead_code)]
 pub struct VkImage {
-        allocator: Arc<vma::Allocator>,
+        allocator: Rc<vma::Allocator>,
 
         handle: vk::Image,
         alloc:  vma::Allocation,
         ainfo:  vma::AllocationInfo,
+
+        pub mip_levels: u32,
 }
 
 impl VkImage {
-        pub unsafe fn new(allocator: &Arc<vma::Allocator>, create_info: &VkImageCreateInfo) -> VkmaResult<Self> {
+        pub unsafe fn new(allocator: &Rc<vma::Allocator>, create_info: &VkImageCreateInfo) -> VkmaResult<Self> {
                 let (handle, alloc, ainfo) = {
                         let mut vk_img_cinfo = vk::ImageCreateInfo {
                                 image_type: create_info.image_type,
@@ -94,101 +105,105 @@ impl VkImage {
                 };
 
                 Ok(Self {
-                        allocator: Arc::clone(allocator),
+                        allocator: Rc::clone(allocator),
                         handle,
                         alloc,
                         ainfo,
+                        mip_levels: create_info.mip_levels,
                 })
         }
 
-        pub fn from_image_2d(
+        pub unsafe fn from_data(
                 instance: &ash::Instance,
-                pdevice: vk::PhysicalDevice,
-                device: &Arc<VkDevice>,
-                allocator: &Arc<vma::Allocator>,
-                cinfo: &VkImageCreateFromImage2DInfo,
+                pdevice: &vk::PhysicalDevice,
+                device: &ash::Device,
+                allocator: &Rc<vma::Allocator>,
+                cinfo: &VkImageCreateFromDataInfo,
         ) -> Result<Self, Box<dyn Error>> {
-                let staging_buffer =
-                        Self::create_staging_buffer(device, allocator, cinfo.image.data(), cinfo.image.data_bsize())?;
+                let mip_levels = match cinfo.mip_levels {
+                        MipLevels::Log2 => (u32::max(cinfo.width, cinfo.height) as f32).log2().floor() as u32 + 1,
+                        MipLevels::One => 1,
+                        MipLevels::Number(n) => n,
+                };
+
+                let staging_buffer = Self::create_staging_buffer(device, allocator, &cinfo.data, cinfo.data.len())?;
 
                 let vk_img_cinfo = VkImageCreateInfo {
-                        image_type:           vk::ImageType::TYPE_2D,
-                        format:               vk::Format::R8G8B8A8_SRGB,
-                        extent:               vk::Extent3D {
-                                width:  cinfo.image.width(),
-                                height: cinfo.image.height(),
+                        image_type: vk::ImageType::TYPE_2D,
+                        format: cinfo.format,
+                        extent: vk::Extent3D {
+                                width:  cinfo.width,
+                                height: cinfo.height,
                                 depth:  1,
                         },
-                        mip_levels:           cinfo.mip_levels,
-                        array_layers:         1,
-                        samples:              vk::SampleCountFlags::TYPE_1,
-                        tiling:               vk::ImageTiling::OPTIMAL,
-                        usage:                vk::ImageUsageFlags::TRANSFER_SRC
+                        mip_levels,
+                        array_layers: 1,
+                        samples: cinfo.samples,
+                        tiling: vk::ImageTiling::OPTIMAL,
+                        usage: vk::ImageUsageFlags::TRANSFER_SRC
                                 | vk::ImageUsageFlags::TRANSFER_DST
                                 | vk::ImageUsageFlags::SAMPLED,
                         queue_family_indices: None,
-                        initial_layout:       vk::ImageLayout::UNDEFINED,
-                        mem_usage:            vma::MemoryUsage::GpuOnly,
-                        alloc_cflags:         vma::AllocationCreateFlags::DEDICATED_MEMORY,
-                        required_flags:       vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                        preferred_flags:      Default::default(),
+                        initial_layout: vk::ImageLayout::UNDEFINED,
+                        mem_usage: vma::MemoryUsage::GpuOnly,
+                        alloc_cflags: vma::AllocationCreateFlags::DEDICATED_MEMORY,
+                        required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                        preferred_flags: Default::default(),
                 };
 
-                let vk_img = unsafe { VkImage::new(allocator, &vk_img_cinfo)? };
+                let vk_img = VkImage::new(allocator, &vk_img_cinfo)?;
 
 
-                unsafe {
-                        let cmd_buffer = **cinfo.setup_cmd_buffer;
+                let cmd_buffer = **cinfo.setup_cmd_buffer;
 
-                        cinfo.setup_cmd_buffer.begin(&device)?;
+                cinfo.setup_cmd_buffer.begin(&device)?;
 
-                        Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
-                                device,
-                                cmd_buffer,
+                Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
+                        device,
+                        cmd_buffer,
 
-                                old_layout: vk::ImageLayout::UNDEFINED,
-                                new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
 
-                                image: *vk_img,
-                                base_mip_level: 0,
-                                mip_level_count: cinfo.mip_levels,
-                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                        image: *vk_img,
+                        base_mip_level: 0,
+                        mip_levels,
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
 
-                                src_access_mask: vk::AccessFlags::empty(),
-                                dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                        src_access_mask: vk::AccessFlags::empty(),
+                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
 
-                                src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
-                                dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                        });
+                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
+                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                });
 
-                        Self::cmd_copy_buffer_to_image(
-                                device,
-                                cmd_buffer,
-                                cinfo.image.width(),
-                                cinfo.image.height(),
-                                *staging_buffer,
-                                *vk_img,
-                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        );
+                Self::cmd_copy_buffer_to_image(
+                        device,
+                        cmd_buffer,
+                        cinfo.width,
+                        cinfo.height,
+                        *staging_buffer,
+                        *vk_img,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                );
 
-                        Self::cmd_gen_mipmaps(
-                                instance,
-                                pdevice,
-                                device,
-                                cmd_buffer,
-                                *vk_img,
-                                vk::Format::R8G8B8A8_SRGB,
-                                cinfo.image.width(),
-                                cinfo.image.height(),
-                                cinfo.mip_levels,
-                        );
+                Self::cmd_gen_mipmaps(&GenerateMipmapsInfo {
+                        instance,
+                        pdevice,
+                        device,
+                        cmd_buffer,
+                        image: *vk_img,
+                        image_format: vk::Format::R8G8B8A8_SRGB,
+                        width: cinfo.width,
+                        height: cinfo.height,
+                        mip_levels,
+                });
 
 
-                        cinfo.setup_cmd_buffer
-                                .end_and_submit(&device, cinfo.graphics_queue, &[], &[], &[])?;
+                cinfo.setup_cmd_buffer
+                        .end_and_submit(&device, cinfo.transfer_queue, &[], &[], &[])?;
 
-                        cinfo.setup_cmd_buffer.wait(device, u64::MAX)?;
-                }
+                cinfo.setup_cmd_buffer.wait(device, u64::MAX)?;
 
 
                 Ok(vk_img)
@@ -196,8 +211,8 @@ impl VkImage {
 
         fn create_staging_buffer(
                 device: &ash::Device,
-                allocator: &Arc<vma::Allocator>,
-                data: *const u8,
+                allocator: &Rc<vma::Allocator>,
+                data: &[u8],
                 data_bsize: usize,
         ) -> VkmaResult<VkBuffer> {
                 let staging_buffer = {
@@ -207,7 +222,7 @@ impl VkImage {
 
                                 buffer_size: data_bsize as vk::DeviceSize,
                                 buffer_usage: vk::BufferUsageFlags::TRANSFER_SRC,
-                                mem_usage: vma::MemoryUsage::CpuToGpu,
+                                mem_usage: vma::MemoryUsage::CpuOnly,
                                 alloc_flags: vma::AllocationCreateFlags::NONE,
                                 req_mem_flags: vk::MemoryPropertyFlags::HOST_VISIBLE
                                         | vk::MemoryPropertyFlags::HOST_COHERENT,
@@ -221,7 +236,7 @@ impl VkImage {
 
                 let buffer_data = staging_buffer.map_memory(&allocator)?;
                 unsafe {
-                        std::ptr::copy_nonoverlapping(data, buffer_data, data_bsize);
+                        std::ptr::copy_nonoverlapping(data.as_ptr(), buffer_data, data_bsize);
                 }
                 staging_buffer.unmap_memory(&allocator)?;
 
@@ -240,7 +255,7 @@ impl VkImage {
                         subresource_range: vk::ImageSubresourceRange {
                                 aspect_mask:      tinfo.aspect_mask,
                                 base_mip_level:   tinfo.base_mip_level,
-                                level_count:      tinfo.mip_level_count,
+                                level_count:      tinfo.mip_levels,
                                 base_array_layer: 0,
                                 layer_count:      1,
                         },
@@ -300,46 +315,40 @@ impl VkImage {
                 };
         }
 
-        fn cmd_gen_mipmaps(
-                instance: &ash::Instance,
-                pdevice: vk::PhysicalDevice,
-                device: &ash::Device,
-                cmd_buffer: vk::CommandBuffer,
-                image: vk::Image,
-                image_format: vk::Format,
-                width: u32,
-                height: u32,
-                mip_levels: u32,
-        ) {
-                assert!(unsafe {
-                        instance.get_physical_device_format_properties(pdevice, image_format)
-                                .optimal_tiling_features
-                                .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR)
-                });
+        fn cmd_gen_mipmaps(minfo: &GenerateMipmapsInfo) {
+                assert!(
+                        unsafe {
+                                minfo.instance
+                                        .get_physical_device_format_properties(*minfo.pdevice, minfo.image_format)
+                                        .optimal_tiling_features
+                                        .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR)
+                        },
+                        "vk::ImageFormat does not support linear filter!"
+                );
 
                 let mut tinfo = TransitionImageLayoutInfo {
-                        device,
-                        cmd_buffer,
+                        device:     minfo.device,
+                        cmd_buffer: minfo.cmd_buffer,
 
-                        image,
+                        image:       minfo.image,
                         aspect_mask: vk::ImageAspectFlags::COLOR,
 
                         base_mip_level: Default::default(),
-                        mip_level_count: 1,
+                        mip_levels:     1,
 
                         src_access_mask: Default::default(),
                         dst_access_mask: Default::default(),
-                        old_layout: Default::default(),
-                        new_layout: Default::default(),
+                        old_layout:      Default::default(),
+                        new_layout:      Default::default(),
 
                         src_stage_mask: Default::default(),
                         dst_stage_mask: Default::default(),
                 };
 
-                let mut prev_mip_width = width;
-                let mut prev_mip_height = height;
+                let mut prev_mip_width = minfo.width;
+                let mut prev_mip_height = minfo.height;
 
-                for i in 1..mip_levels {
+                for i in 1..minfo.mip_levels {
                         let this_mip_width = if prev_mip_width > 1 { prev_mip_width / 2 } else { 1 };
                         let this_mip_height = if prev_mip_height > 1 { prev_mip_height / 2 } else { 1 };
 
@@ -380,11 +389,11 @@ impl VkImage {
                         blit.dst_offsets[1].z = 1;
 
                         unsafe {
-                                device.cmd_blit_image(
-                                        cmd_buffer,
-                                        image,
+                                minfo.device.cmd_blit_image(
+                                        minfo.cmd_buffer,
+                                        minfo.image,
                                         vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                                        image,
+                                        minfo.image,
                                         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                                         std::slice::from_ref(&blit),
                                         vk::Filter::LINEAR,
@@ -405,7 +414,7 @@ impl VkImage {
                         prev_mip_height = this_mip_height;
                 }
 
-                tinfo.base_mip_level = mip_levels - 1;
+                tinfo.base_mip_level = minfo.mip_levels - 1;
                 tinfo.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
                 tinfo.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
                 tinfo.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
@@ -446,7 +455,7 @@ struct TransitionImageLayoutInfo<'a> {
         cmd_buffer:      vk::CommandBuffer,
         image:           vk::Image,
         base_mip_level:  u32,
-        mip_level_count: u32,
+        mip_levels:      u32,
         aspect_mask:     vk::ImageAspectFlags,
         src_access_mask: vk::AccessFlags,
         dst_access_mask: vk::AccessFlags,
@@ -454,4 +463,18 @@ struct TransitionImageLayoutInfo<'a> {
         new_layout:      vk::ImageLayout,
         src_stage_mask:  vk::PipelineStageFlags,
         dst_stage_mask:  vk::PipelineStageFlags,
+}
+
+
+
+struct GenerateMipmapsInfo<'a> {
+        instance:     &'a ash::Instance,
+        pdevice:      &'a vk::PhysicalDevice,
+        device:       &'a ash::Device,
+        cmd_buffer:   vk::CommandBuffer,
+        image:        vk::Image,
+        image_format: vk::Format,
+        width:        u32,
+        height:       u32,
+        mip_levels:   u32,
 }

@@ -1,18 +1,21 @@
-use std::{error::Error, ops::Deref, sync::Arc};
+use std::{error::Error, ops::Deref, rc::Rc};
 
 use ash::{prelude::VkResult, version::DeviceV1_0, vk};
 
-use crate::vk_wrapper::{VkDevice, VkFence};
+use super::vk_wrapper::{VkCommandPool, VkDevice, VkFence};
 
 pub struct VkReusableCommandBuffer {
+        device:   Rc<VkDevice>,
+        cmd_pool: Rc<VkCommandPool>,
+
         handle:    vk::CommandBuffer,
         pub fence: VkFence,
 }
 
 impl VkReusableCommandBuffer {
-        pub fn new(device: &Arc<VkDevice>, cmd_pool: vk::CommandPool) -> VkResult<Self> {
+        pub fn new(device: &Rc<VkDevice>, cmd_pool: &Rc<VkCommandPool>) -> VkResult<Self> {
                 let cmd_buffer_ainfo = vk::CommandBufferAllocateInfo::builder()
-                        .command_pool(cmd_pool)
+                        .command_pool(***cmd_pool)
                         .command_buffer_count(1)
                         .level(vk::CommandBufferLevel::PRIMARY);
 
@@ -22,14 +25,17 @@ impl VkReusableCommandBuffer {
                 let fence = unsafe { VkFence::new(device, &fence_cinfo)? };
 
                 Ok(Self {
+                        device: Rc::clone(device),
+                        cmd_pool: Rc::clone(cmd_pool),
+
                         handle,
                         fence,
                 })
         }
 
-        pub fn new_vec(device: &Arc<VkDevice>, cmd_pool: vk::CommandPool, count: u32) -> VkResult<Vec<Self>> {
+        pub fn new_vec(device: &Rc<VkDevice>, cmd_pool: &Rc<VkCommandPool>, count: u32) -> VkResult<Vec<Self>> {
                 let cmd_buffer_ainfo = vk::CommandBufferAllocateInfo::builder()
-                        .command_pool(cmd_pool)
+                        .command_pool(***cmd_pool)
                         .command_buffer_count(count)
                         .level(vk::CommandBufferLevel::PRIMARY);
 
@@ -42,6 +48,9 @@ impl VkReusableCommandBuffer {
                                 let fence = unsafe { VkFence::new(device, &fence_cinfo)? };
 
                                 Ok(Self {
+                                        device: Rc::clone(device),
+                                        cmd_pool: Rc::clone(cmd_pool),
+
                                         handle,
                                         fence,
                                 })
@@ -51,7 +60,6 @@ impl VkReusableCommandBuffer {
 
         pub fn record_and_submit<F>(
                 &self,
-                device: &ash::Device,
                 submit_queue: vk::Queue,
                 wait_semaphores: &[vk::Semaphore],
                 wait_stages: &[vk::PipelineStageFlags],
@@ -62,20 +70,18 @@ impl VkReusableCommandBuffer {
                 F: FnOnce(&ash::Device, vk::CommandBuffer) -> Result<(), Box<dyn Error>>,
         {
                 unsafe {
-                        {
-                                //let t = Timer::new("wait_for_fences took: ");
+                        self.device.wait_for_fences(&[*self.fence], true, u64::MAX)?;
 
-                                device.wait_for_fences(&[*self.fence], true, u64::MAX)?;
-                        }
-                        device.reset_fences(&[*self.fence])?;
-                        device.reset_command_buffer(self.handle, vk::CommandBufferResetFlags::RELEASE_RESOURCES)?;
+                        self.device.reset_fences(&[*self.fence])?;
+                        self.device
+                                .reset_command_buffer(self.handle, vk::CommandBufferResetFlags::RELEASE_RESOURCES)?;
 
                         let cmd_buffer_binfo = vk::CommandBufferBeginInfo::builder()
                                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
-                        device.begin_command_buffer(self.handle, &cmd_buffer_binfo)?;
-                        f(&device, self.handle)?;
-                        device.end_command_buffer(self.handle)?;
+                        self.device.begin_command_buffer(self.handle, &cmd_buffer_binfo)?;
+                        f(&self.device, self.handle)?;
+                        self.device.end_command_buffer(self.handle)?;
 
                         let cmd_buffers = [self.handle];
 
@@ -85,7 +91,8 @@ impl VkReusableCommandBuffer {
                                 .wait_dst_stage_mask(wait_stages)
                                 .signal_semaphores(signal_semaphores);
 
-                        device.queue_submit(submit_queue, &[submit_info.build()], *self.fence)?;
+                        self.device
+                                .queue_submit(submit_queue, &[submit_info.build()], *self.fence)?;
 
                         Ok(())
                 }
@@ -132,5 +139,14 @@ impl Deref for VkReusableCommandBuffer {
 
         fn deref(&self) -> &Self::Target {
                 &self.handle
+        }
+}
+
+impl Drop for VkReusableCommandBuffer {
+        fn drop(&mut self) {
+                unsafe {
+                        self.device
+                                .free_command_buffers(**self.cmd_pool, std::slice::from_ref(&self.handle));
+                }
         }
 }

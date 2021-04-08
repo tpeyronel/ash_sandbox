@@ -1,10 +1,11 @@
-use std::{error::Error, ops::Deref, sync::Arc};
+use std::{error::Error, ops::Deref, rc::Rc};
 
 use ash::{extensions::khr::Swapchain, prelude::VkResult, version::InstanceV1_0, vk};
 use bitflags::bitflags;
+#[allow(unused_imports)]
 use log::{debug, trace};
 
-use crate::{
+use super::{
         vk_image::{VkImage, VkImageCreateInfo},
         vk_wrapper::{VkDevice, VkFramebuffer, VkImageView, VkInstance, VkSurface},
         vkma_error::VkmaResult,
@@ -13,18 +14,20 @@ use crate::{
 pub struct VkSwapchain {
         loader: Swapchain,
 
-        window:          Arc<winit::window::Window>,
-        instance:        Arc<VkInstance>,
-        surface:         Arc<VkSurface>,
+        window:          Rc<winit::window::Window>,
+        instance:        Rc<VkInstance>,
+        surface:         Rc<VkSurface>,
         physical_device: vk::PhysicalDevice,
-        device:          Arc<VkDevice>,
-        allocator:       Arc<vma::Allocator>,
+        device:          Rc<VkDevice>,
+        allocator:       Rc<vma::Allocator>,
 
         handle: vk::SwapchainKHR,
 
         pub color_format: vk::SurfaceFormatKHR,
         pub depth_format: vk::Format,
         pub extent:       vk::Extent2D,
+        pub viewport:     vk::Viewport,
+        pub scissor:      vk::Rect2D,
         pub present_mode: vk::PresentModeKHR,
         pub samples:      vk::SampleCountFlags,
 
@@ -42,12 +45,12 @@ pub struct VkSwapchain {
 
 impl VkSwapchain {
         pub fn new(
-                window: &Arc<winit::window::Window>,
-                instance: &Arc<VkInstance>,
-                surface: &Arc<VkSurface>,
+                window: &Rc<winit::window::Window>,
+                instance: &Rc<VkInstance>,
+                surface: &Rc<VkSurface>,
                 physical_device: vk::PhysicalDevice,
-                device: &Arc<VkDevice>,
-                allocator: &Arc<vma::Allocator>,
+                device: &Rc<VkDevice>,
+                allocator: &Rc<vma::Allocator>,
         ) -> Result<Self, Box<dyn Error>> {
                 let color_format = Self::choose_color_format(surface, physical_device)?;
                 debug!("VkSwapchain color format ({:?})", color_format);
@@ -69,14 +72,11 @@ impl VkSwapchain {
 
                 debug!("VkSwapchain image count: {}", desired_img_count);
 
-                let extent = match surface_capabilities.current_extent.width {
-                        u32::MAX => vk::Extent2D {
-                                width:  window.inner_size().width,
-                                height: window.inner_size().height,
-                        },
-                        _ => surface_capabilities.current_extent,
-                };
+                let extent = Self::create_extent(window, &surface_capabilities);
                 debug!("VkSwapchain extent: {:?}", extent);
+
+                let viewport = Self::create_viewport(&extent);
+                let scissor = Self::create_scissor(&extent);
 
                 let pre_transform = surface_capabilities.current_transform;
 
@@ -118,12 +118,12 @@ impl VkSwapchain {
                 Ok(Self {
                         loader,
 
-                        window: Arc::clone(window),
-                        instance: Arc::clone(instance),
-                        surface: Arc::clone(surface),
+                        window: Rc::clone(window),
+                        instance: Rc::clone(instance),
+                        surface: Rc::clone(surface),
                         physical_device,
-                        device: Arc::clone(device),
-                        allocator: Arc::clone(allocator),
+                        device: Rc::clone(device),
+                        allocator: Rc::clone(allocator),
 
                         handle,
 
@@ -131,6 +131,8 @@ impl VkSwapchain {
                         depth_format,
 
                         extent,
+                        viewport,
+                        scissor,
                         present_mode,
                         samples,
 
@@ -158,12 +160,10 @@ impl VkSwapchain {
                         img_count_changed:    false,
                 };
 
-                let color_format = Self::choose_color_format(&self.surface, self.physical_device)?;
-                if color_format != self.color_format {
-                        recreation_info.color_format_changed = true;
-                }
-                self.color_format = color_format;
-                debug!("VkSwapchain color format ({:?})", color_format);
+                let old_color_format = self.color_format;
+                self.color_format = Self::choose_color_format(&self.surface, self.physical_device)?;
+                recreation_info.color_format_changed = old_color_format != self.color_format;
+                debug!("VkSwapchain color format ({:?})", self.color_format);
 
                 let depth_format = vk::Format::D24_UNORM_S8_UINT;
                 self.depth_format = depth_format;
@@ -182,42 +182,34 @@ impl VkSwapchain {
                                 _ => surface_capabilities.max_image_count,
                         },
                 );
-
                 debug!("VkSwapchain image count: {}", desired_img_count);
 
-                let extent = match surface_capabilities.current_extent.width {
-                        u32::MAX => vk::Extent2D {
-                                width:  self.window.inner_size().width,
-                                height: self.window.inner_size().height,
-                        },
-                        _ => surface_capabilities.current_extent,
-                };
-                if extent != self.extent {
-                        recreation_info.extent_changed = true;
-                }
-                self.extent = extent;
-                debug!("VkSwapchain extent: {:?}", extent);
+                let old_extent = self.extent;
+                self.extent = Self::create_extent(&self.window, &surface_capabilities);
+                self.viewport = Self::create_viewport(&self.extent);
+                self.scissor = Self::create_scissor(&self.extent);
+                recreation_info.extent_changed = old_extent != self.extent;
+                debug!("VkSwapchain extent: {:?}", self.extent);
 
-                let pre_transform = surface_capabilities.current_transform;
 
                 let present_mode = Self::choose_present_mode(&self.surface, self.physical_device)?;
-                debug!("VkSwapchain present mode: {:?}", present_mode);
                 self.present_mode = present_mode;
+                debug!("VkSwapchain present mode: {:?}", self.present_mode);
 
                 let loader = Swapchain::new(&**self.instance, &**self.device);
 
                 let swch_cinfo = vk::SwapchainCreateInfoKHR {
                         surface: **self.surface,
                         min_image_count: desired_img_count,
-                        image_format: color_format.format,
-                        image_color_space: color_format.color_space,
-                        image_extent: extent,
+                        image_format: self.color_format.format,
+                        image_color_space: self.color_format.color_space,
+                        image_extent: self.extent,
                         image_array_layers: 1,
                         image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
                         image_sharing_mode: vk::SharingMode::EXCLUSIVE,
                         queue_family_index_count: 0,
                         p_queue_family_indices: std::ptr::null(),
-                        pre_transform,
+                        pre_transform: surface_capabilities.current_transform,
                         composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
                         present_mode,
                         clipped: vk::TRUE,
@@ -229,12 +221,10 @@ impl VkSwapchain {
                 self.handle = unsafe { loader.create_swapchain(&swch_cinfo, None)? };
                 unsafe { self.loader.destroy_swapchain(old_handle, None) };
 
-                let samples = Self::choose_sample_count(&self.instance, self.physical_device);
-                if samples != self.samples {
-                        recreation_info.samples_changed = true;
-                }
-                self.samples = samples;
-                debug!("Swapchain samples: {:?}", samples);
+                let old_samples = self.samples;
+                self.samples = Self::choose_sample_count(&self.instance, self.physical_device);
+                recreation_info.samples_changed = old_samples != self.samples;
+                debug!("Swapchain samples: {:?}", self.samples);
 
                 if recreation_info.color_format_changed
                         || recreation_info.extent_changed
@@ -243,9 +233,9 @@ impl VkSwapchain {
                         let (color_img, color_img_view) = Self::create_color_img_resources(
                                 &self.device,
                                 &self.allocator,
-                                color_format.format,
-                                &extent,
-                                samples,
+                                self.color_format.format,
+                                &self.extent,
+                                self.samples,
                         )?;
                         self.color_img = color_img;
                         self.color_img_view = color_img_view;
@@ -254,23 +244,20 @@ impl VkSwapchain {
                                 &self.device,
                                 &self.allocator,
                                 depth_format,
-                                &extent,
-                                samples,
+                                &self.extent,
+                                self.samples,
                         )?;
-
                         self.depth_img = depth_img;
                         self.depth_img_view = depth_img_view;
                 }
 
                 self.resolve_imgs = unsafe { loader.get_swapchain_images(self.handle)? };
                 self.resolve_img_views =
-                        Self::create_resolve_img_views(&self.device, &self.resolve_imgs, color_format.format)?;
+                        Self::create_resolve_img_views(&self.device, &self.resolve_imgs, self.color_format.format)?;
 
-                let img_count = self.resolve_imgs.len() as u32;
-                if img_count != self.img_count {
-                        recreation_info.img_count_changed = true;
-                }
-                self.img_count = img_count;
+                let old_img_count = self.img_count;
+                self.img_count = self.resolve_imgs.len() as u32;
+                recreation_info.img_count_changed = old_img_count != self.img_count;
 
                 Ok(recreation_info)
         }
@@ -333,6 +320,39 @@ impl VkSwapchain {
                 }
         }
 
+        fn create_extent(
+                window: &winit::window::Window,
+                surface_capabilities: &vk::SurfaceCapabilitiesKHR,
+        ) -> vk::Extent2D {
+                match surface_capabilities.current_extent.width {
+                        u32::MAX => vk::Extent2D {
+                                width:  window.inner_size().width,
+                                height: window.inner_size().height,
+                        },
+                        _ => surface_capabilities.current_extent,
+                }
+        }
+
+        fn create_viewport(extent: &vk::Extent2D) -> vk::Viewport {
+                vk::Viewport {
+                        x:         0.0,
+                        y:         extent.height as f32,
+                        width:     extent.width as f32,
+                        height:    -(extent.height as f32),
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                }
+        }
+
+        fn create_scissor(extent: &vk::Extent2D) -> vk::Rect2D {
+                vk::Rect2D {
+                        offset: vk::Offset2D {
+                                x: 0, y: 0
+                        },
+                        extent: *extent,
+                }
+        }
+
         fn choose_present_mode(
                 surface: &VkSurface,
                 physical_device: vk::PhysicalDevice,
@@ -376,8 +396,8 @@ impl VkSwapchain {
         }
 
         fn create_color_img_resources(
-                device: &Arc<VkDevice>,
-                allocator: &Arc<vma::Allocator>,
+                device: &Rc<VkDevice>,
+                allocator: &Rc<vma::Allocator>,
                 format: vk::Format,
                 extent: &vk::Extent2D,
                 samples: vk::SampleCountFlags,
@@ -432,8 +452,8 @@ impl VkSwapchain {
         }
 
         fn create_depth_img_resources(
-                device: &Arc<VkDevice>,
-                allocator: &Arc<vma::Allocator>,
+                device: &Rc<VkDevice>,
+                allocator: &Rc<vma::Allocator>,
                 format: vk::Format,
                 extent: &vk::Extent2D,
                 samples: vk::SampleCountFlags,
@@ -487,7 +507,7 @@ impl VkSwapchain {
         }
 
         fn create_resolve_img_views(
-                device: &Arc<VkDevice>,
+                device: &Rc<VkDevice>,
                 resolve_imgs: &Vec<vk::Image>,
                 format: vk::Format,
         ) -> VkResult<Vec<VkImageView>> {

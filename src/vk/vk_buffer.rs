@@ -1,13 +1,13 @@
-use std::{error::Error, ops::Deref, sync::Arc};
+use std::{error::Error, ops::Deref, rc::Rc};
 
 use ash::{version::DeviceV1_0, vk};
 use log::trace;
 
-use crate::vk_command_buffer::VkReusableCommandBuffer;
+use super::vk_command_buffer::VkReusableCommandBuffer;
 
 pub struct VkBufferCreateInfo<'a> {
         pub device:    &'a ash::Device,
-        pub allocator: &'a Arc<vma::Allocator>,
+        pub allocator: &'a Rc<vma::Allocator>,
 
         pub buffer_size:      vk::DeviceSize,
         pub buffer_usage:     vk::BufferUsageFlags,
@@ -19,18 +19,27 @@ pub struct VkBufferCreateInfo<'a> {
         pub q_family_indices: Option<&'a [u32]>,
 }
 
+pub enum BufferData<'a, T> {
+        FullSlice(&'a [T]),
+        OffsetLength {
+                data:   &'a [T],
+                offset: usize,
+                length: usize,
+        },
+}
+
 pub struct VkImmutableBufferCreateInfo<'a, T> {
         pub device:    &'a ash::Device,
-        pub allocator: &'a Arc<vma::Allocator>,
+        pub allocator: &'a Rc<vma::Allocator>,
 
         pub cmd_buffer:     &'a VkReusableCommandBuffer,
         pub transfer_queue: vk::Queue,
         pub buffer_usage:   vk::BufferUsageFlags,
-        pub data:           &'a [T],
+        pub data:           BufferData<'a, T>,
 }
 
 pub struct VkBuffer {
-        allocator: Arc<vma::Allocator>,
+        allocator: Rc<vma::Allocator>,
 
         handle: vk::Buffer,
         alloc:  vma::Allocation,
@@ -65,7 +74,7 @@ impl VkBuffer {
                 let (handle, alloc, ainfo) = create_info.allocator.create_buffer(&handle_cinfo, &alloc_cinfo)?;
 
                 Ok(Self {
-                        allocator: Arc::clone(create_info.allocator),
+                        allocator: Rc::clone(create_info.allocator),
                         handle,
                         alloc,
                         ainfo,
@@ -73,14 +82,27 @@ impl VkBuffer {
         }
 
         pub fn new_immutable<T>(create_info: &VkImmutableBufferCreateInfo<T>) -> Result<Self, Box<dyn Error>> {
-                let buffer_size = (std::mem::size_of::<T>() * create_info.data.len()) as vk::DeviceSize;
+                let (buffer_data, buffer_size) = match create_info.data {
+                        BufferData::FullSlice(s) => (
+                                s.as_ptr() as *const u8,
+                                (std::mem::size_of::<T>() * s.len()) as vk::DeviceSize,
+                        ),
+                        BufferData::OffsetLength {
+                                data,
+                                offset,
+                                length,
+                        } => (
+                                unsafe { (data.as_ptr() as *const u8).offset(offset as isize) },
+                                length as vk::DeviceSize,
+                        ),
+                };
 
                 let staging_buffer_cinfo = VkBufferCreateInfo {
                         device: create_info.device,
                         allocator: create_info.allocator,
                         buffer_size,
                         buffer_usage: vk::BufferUsageFlags::TRANSFER_SRC,
-                        mem_usage: vma::MemoryUsage::CpuToGpu,
+                        mem_usage: vma::MemoryUsage::CpuOnly,
                         alloc_flags: vma::AllocationCreateFlags::NONE,
                         req_mem_flags: vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
                         pref_mem_flags: Default::default(),
@@ -92,11 +114,7 @@ impl VkBuffer {
 
                 let map = staging_buffer.map_memory(create_info.allocator)?;
                 unsafe {
-                        std::ptr::copy_nonoverlapping(
-                                create_info.data.as_ptr() as *const u8,
-                                map,
-                                buffer_size as usize,
-                        );
+                        std::ptr::copy_nonoverlapping(buffer_data, map, buffer_size as usize);
                 }
                 staging_buffer.unmap_memory(create_info.allocator)?;
 
@@ -115,7 +133,6 @@ impl VkBuffer {
                 let buffer = VkBuffer::new(&buffer_cinfo)?;
 
                 create_info.cmd_buffer.record_and_submit(
-                        create_info.device,
                         create_info.transfer_queue,
                         &[],
                         &[],
@@ -148,7 +165,8 @@ impl VkBuffer {
                 allocator.unmap_memory(&self.alloc)
         }
 
-        pub fn flush_memory(&self, allocator: &vma::Allocator) -> vma::Result<()> {
+        #[allow(dead_code)]
+        pub fn flush_all_memory(&self, allocator: &vma::Allocator) -> vma::Result<()> {
                 allocator.flush_allocation(&self.alloc, 0, self.ainfo.get_size())
         }
 }

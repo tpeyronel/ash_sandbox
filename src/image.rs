@@ -40,22 +40,32 @@ impl Image2D {
                 })
         }
 
-        pub fn data(&self) -> *const u8 {
+        #[allow(dead_code)]
+        pub fn data(&self) -> &[u8] {
+                self.data.as_slice()
+        }
+
+        #[allow(dead_code)]
+        pub fn data_raw(&self) -> *const u8 {
                 self.data.as_ptr()
         }
 
+        #[allow(dead_code)]
         pub fn data_bsize(&self) -> usize {
                 self.data.len() * std::mem::size_of::<u8>()
         }
 
+        #[allow(dead_code)]
         pub fn width(&self) -> u32 {
                 self.width
         }
 
+        #[allow(dead_code)]
         pub fn height(&self) -> u32 {
                 self.height
         }
 
+        #[allow(dead_code)]
         pub fn channels(&self) -> u32 {
                 self.channels
         }

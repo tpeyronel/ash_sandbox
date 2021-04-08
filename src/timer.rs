@@ -24,3 +24,9 @@ impl Drop for Timer {
                 info!("{}{:.3}ms", self.msg, time.as_micros() as f32 / 1000.0);
         }
 }
+
+macro_rules! timer {
+        ($t:expr) => {
+                let _t = Timer::new($t);
+        };
+}

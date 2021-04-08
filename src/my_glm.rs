@@ -1,6 +1,11 @@
 extern crate nalgebra_glm as glm;
 
 #[allow(dead_code)]
+pub type Quat = glm::Quat;
+#[allow(dead_code)]
+pub type UnitQuat = nalgebra::UnitQuaternion<f32>;
+
+#[allow(dead_code)]
 pub type Vec1 = glm::Vec1;
 #[allow(dead_code)]
 pub type Vec2 = glm::Vec2;

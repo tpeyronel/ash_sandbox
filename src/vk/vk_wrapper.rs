@@ -1,4 +1,4 @@
-use std::{ops::Deref, sync::Arc};
+use std::{ffi::CStr, ops::Deref, rc::Rc};
 
 use ash::{
         extensions::ext::DebugUtils,
@@ -9,25 +9,19 @@ use ash::{
 use log::trace;
 
 
-
-
-
-
-
-
 pub struct VkInstance {
-        _entry: Arc<ash::Entry>,
+        _entry: Rc<ash::Entry>,
 
         handle: ash::Instance,
 }
 
 impl VkInstance {
         pub unsafe fn new(
-                entry: &Arc<ash::Entry>,
+                entry: &Rc<ash::Entry>,
                 create_info: &vk::InstanceCreateInfo,
         ) -> Result<Self, ash::InstanceError> {
                 Ok(Self {
-                        _entry: Arc::clone(entry),
+                        _entry: Rc::clone(entry),
 
                         handle: entry.create_instance(create_info, None)?,
                 })
@@ -59,20 +53,183 @@ impl Drop for VkInstance {
 
 
 
+pub struct VkPhysicalDevice {
+        handle: vk::PhysicalDevice,
+
+        pub props:                  vk::PhysicalDeviceProperties,
+        pub max_sampler_anisotropy: f32,
+}
+
+impl VkPhysicalDevice {
+        pub fn new(instance: &ash::Instance, surface: &VkSurface) -> VkResult<(Self, VkQueueFamilyIndices)> {
+                let (pdevice, qfamilies_indices) = Self::choose_physical_device(instance, surface)?;
+
+                let props = unsafe { instance.get_physical_device_properties(pdevice) };
+                let limits = &props.limits;
+
+                Ok((
+                        Self {
+                                handle: pdevice,
+                                props,
+                                max_sampler_anisotropy: limits.max_sampler_anisotropy,
+                        },
+                        qfamilies_indices,
+                ))
+        }
+
+        fn choose_physical_device(
+                instance: &ash::Instance,
+                surface: &VkSurface,
+        ) -> VkResult<(vk::PhysicalDevice, VkQueueFamilyIndices)> {
+                let pdevices = unsafe { instance.enumerate_physical_devices()? };
+
+                Ok(pdevices
+                        .iter()
+                        .filter_map(|&pd| Self::is_device_suitable(instance, surface, pd))
+                        .find(|&(pd, _)| {
+                                let name = unsafe {
+                                        CStr::from_ptr(instance.get_physical_device_properties(pd).device_name.as_ptr())
+                                                .to_str()
+                                                .unwrap()
+                                };
+
+                                name == "GeForce GTX 970"
+                        })
+                        .unwrap())
+        }
+
+        fn is_device_suitable(
+                instance: &ash::Instance,
+                surface: &VkSurface,
+                pd: vk::PhysicalDevice,
+        ) -> Option<(vk::PhysicalDevice, VkQueueFamilyIndices)> {
+                let q_family_i = match VkQueueFamilyIndices::new(instance, surface, pd) {
+                        Some(q_family_i) => q_family_i,
+                        None => return None,
+                };
+
+                let supported_features = unsafe { instance.get_physical_device_features(pd) };
+
+                if supported_features.sampler_anisotropy == vk::FALSE {
+                        return None;
+                }
+
+                Some((pd, q_family_i))
+        }
+}
+
+impl Deref for VkPhysicalDevice {
+        type Target = vk::PhysicalDevice;
+
+        fn deref(&self) -> &Self::Target {
+                &self.handle
+        }
+}
+
+
+
+
+
+
+
+
+#[derive(Debug)]
+pub struct VkQueueFamilyIndices {
+        pub graphics: u32,
+        pub present:  u32,
+}
+
+impl VkQueueFamilyIndices {
+        pub fn new(instance: &ash::Instance, surface: &VkSurface, pd: vk::PhysicalDevice) -> Option<Self> {
+                let q_families_props = unsafe { instance.get_physical_device_queue_family_properties(pd) };
+
+                fn find_queue_family<F>(q_families_props: &[vk::QueueFamilyProperties], cond: F) -> Option<u32>
+                where F: Fn(usize, &vk::QueueFamilyProperties) -> bool {
+                        q_families_props
+                                .iter()
+                                .enumerate()
+                                .filter_map(
+                                        |(i, q_fam_props)| {
+                                                if cond(i, q_fam_props) {
+                                                        Some(i as u32)
+                                                } else {
+                                                        None
+                                                }
+                                        },
+                                )
+                                .next()
+                }
+
+                let supports_graphics = |_i: usize, q_fam_props: &vk::QueueFamilyProperties| {
+                        q_fam_props.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+                };
+
+                let supports_present = |i: usize, _q_fam_props: &vk::QueueFamilyProperties| unsafe {
+                        surface.loader()
+                                .get_physical_device_surface_support(pd, i as u32, **surface)
+                                .unwrap()
+                };
+
+                let supports_both = |i: usize, q_fam_props: &vk::QueueFamilyProperties| {
+                        supports_graphics(i, q_fam_props) && supports_present(i, q_fam_props)
+                };
+
+                let graphics_and_present = find_queue_family(&q_families_props, supports_both);
+
+                if let Some(graphics_and_present) = graphics_and_present {
+                        return Some(Self {
+                                graphics: graphics_and_present,
+                                present:  graphics_and_present,
+                        });
+                }
+
+                let graphics = find_queue_family(&q_families_props, supports_graphics);
+                let present = find_queue_family(&q_families_props, supports_present);
+
+                if let (Some(graphics), Some(present)) = (graphics, present) {
+                        return Some(Self {
+                                graphics,
+                                present,
+                        });
+                }
+
+                None
+        }
+}
+
+
+
+
+
+
+
+
+pub struct VkQueues {
+        pub graphics: vk::Queue,
+        pub present:  vk::Queue,
+}
+
+
+
+
+
+
+
+
 pub struct VkDevice {
-        _instance: Arc<VkInstance>,
+        _instance: Rc<VkInstance>,
 
         handle: ash::Device,
 }
 
 impl VkDevice {
         pub unsafe fn new(
-                instance: &Arc<VkInstance>,
+                instance: &Rc<VkInstance>,
                 physical_device: vk::PhysicalDevice,
                 create_info: &vk::DeviceCreateInfo,
         ) -> VkResult<Self> {
                 Ok(Self {
-                        _instance: Arc::clone(instance),
+                        _instance: Rc::clone(instance),
 
                         handle: instance.create_device(physical_device, create_info, None)?,
                 })
@@ -105,7 +262,7 @@ impl Drop for VkDevice {
 
 
 pub struct VkDebugUtilsMessenger {
-        _entry: Arc<ash::Entry>,
+        _entry: Rc<ash::Entry>,
 
         loader: DebugUtils,
         handle: vk::DebugUtilsMessengerEXT,
@@ -113,7 +270,7 @@ pub struct VkDebugUtilsMessenger {
 
 impl VkDebugUtilsMessenger {
         pub unsafe fn new(
-                entry: &Arc<ash::Entry>,
+                entry: &Rc<ash::Entry>,
                 instance: &ash::Instance,
                 create_info: &vk::DebugUtilsMessengerCreateInfoEXT,
         ) -> VkResult<Self> {
@@ -121,7 +278,7 @@ impl VkDebugUtilsMessenger {
                 let handle = loader.create_debug_utils_messenger(create_info, None)?;
 
                 Ok(Self {
-                        _entry: Arc::clone(entry),
+                        _entry: Rc::clone(entry),
                         loader,
                         handle,
                 })
@@ -152,9 +309,9 @@ impl Drop for VkDebugUtilsMessenger {
 
 
 pub struct VkSurface {
-        _window:   Arc<winit::window::Window>,
-        _entry:    Arc<ash::Entry>,
-        _instance: Arc<VkInstance>,
+        _window:   Rc<winit::window::Window>,
+        _entry:    Rc<ash::Entry>,
+        _instance: Rc<VkInstance>,
 
         loader: ash::extensions::khr::Surface,
         handle: vk::SurfaceKHR,
@@ -162,17 +319,17 @@ pub struct VkSurface {
 
 impl VkSurface {
         pub unsafe fn new(
-                window: &Arc<winit::window::Window>,
-                entry: &Arc<ash::Entry>,
-                instance: &Arc<VkInstance>,
+                window: &Rc<winit::window::Window>,
+                entry: &Rc<ash::Entry>,
+                instance: &Rc<VkInstance>,
         ) -> VkResult<Self> {
                 let loader = ash::extensions::khr::Surface::new(entry.deref(), &***instance);
                 let handle = ash_window::create_surface(entry.deref(), &***instance, &**window, None)?;
 
                 Ok(Self {
-                        _window: Arc::clone(window),
-                        _entry: Arc::clone(entry),
-                        _instance: Arc::clone(instance),
+                        _window: Rc::clone(window),
+                        _entry: Rc::clone(entry),
+                        _instance: Rc::clone(instance),
 
                         loader,
                         handle,
@@ -210,15 +367,15 @@ impl Drop for VkSurface {
 
 
 pub struct VkImageView {
-        device: Arc<VkDevice>,
+        device: Rc<VkDevice>,
 
         handle: vk::ImageView,
 }
 
 impl VkImageView {
-        pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
                 Ok(Self {
-                        device: Arc::clone(device),
+                        device: Rc::clone(device),
 
                         handle: device.create_image_view(create_info, None)?,
                 })
@@ -251,14 +408,14 @@ impl Drop for VkImageView {
 
 
 pub struct VkSampler {
-        device: Arc<VkDevice>,
+        device: Rc<VkDevice>,
         handle: vk::Sampler,
 }
 
 impl VkSampler {
-        pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::SamplerCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::SamplerCreateInfo) -> VkResult<Self> {
                 Ok(Self {
-                        device: Arc::clone(device),
+                        device: Rc::clone(device),
                         handle: device.create_sampler(create_info, None)?,
                 })
         }
@@ -290,14 +447,14 @@ impl Drop for VkSampler {
 
 
 pub struct VkFramebuffer {
-        device: Arc<VkDevice>,
+        device: Rc<VkDevice>,
         handle: vk::Framebuffer,
 }
 
 impl VkFramebuffer {
-        pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::FramebufferCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::FramebufferCreateInfo) -> VkResult<Self> {
                 Ok(Self {
-                        device: Arc::clone(device),
+                        device: Rc::clone(device),
                         handle: device.create_framebuffer(create_info, None)?,
                 })
         }
@@ -329,14 +486,14 @@ impl Drop for VkFramebuffer {
 
 
 pub struct VkRenderPass {
-        device: Arc<VkDevice>,
+        device: Rc<VkDevice>,
         handle: vk::RenderPass,
 }
 
 impl VkRenderPass {
-        pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::RenderPassCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::RenderPassCreateInfo) -> VkResult<Self> {
                 Ok(Self {
-                        device: Arc::clone(device),
+                        device: Rc::clone(device),
                         handle: device.create_render_pass(create_info, None)?,
                 })
         }
@@ -368,15 +525,15 @@ impl Drop for VkRenderPass {
 
 
 pub struct VkCommandPool {
-        device: Arc<VkDevice>,
+        device: Rc<VkDevice>,
 
         handle: vk::CommandPool,
 }
 
 impl VkCommandPool {
-        pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::CommandPoolCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::CommandPoolCreateInfo) -> VkResult<Self> {
                 Ok(Self {
-                        device: Arc::clone(device),
+                        device: Rc::clone(device),
 
                         handle: device.create_command_pool(create_info, None)?,
                 })
@@ -409,15 +566,15 @@ impl Drop for VkCommandPool {
 
 
 pub struct VkDescriptorPool {
-        device: Arc<VkDevice>,
+        device: Rc<VkDevice>,
 
         handle: vk::DescriptorPool,
 }
 
 impl VkDescriptorPool {
-        pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::DescriptorPoolCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::DescriptorPoolCreateInfo) -> VkResult<Self> {
                 Ok(Self {
-                        device: Arc::clone(device),
+                        device: Rc::clone(device),
 
                         handle: device.create_descriptor_pool(create_info, None)?,
                 })
@@ -450,14 +607,14 @@ impl Drop for VkDescriptorPool {
 
 
 pub struct VkDescriptorSetLayout {
-        device: Arc<VkDevice>,
+        device: Rc<VkDevice>,
         handle: vk::DescriptorSetLayout,
 }
 
 impl VkDescriptorSetLayout {
-        pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::DescriptorSetLayoutCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::DescriptorSetLayoutCreateInfo) -> VkResult<Self> {
                 Ok(Self {
-                        device: Arc::clone(device),
+                        device: Rc::clone(device),
                         handle: device.create_descriptor_set_layout(create_info, None)?,
                 })
         }
@@ -489,14 +646,14 @@ impl Drop for VkDescriptorSetLayout {
 
 
 pub struct VkPipelineLayout {
-        device: Arc<VkDevice>,
+        device: Rc<VkDevice>,
         handle: vk::PipelineLayout,
 }
 
 impl VkPipelineLayout {
-        pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::PipelineLayoutCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::PipelineLayoutCreateInfo) -> VkResult<Self> {
                 Ok(Self {
-                        device: Arc::clone(device),
+                        device: Rc::clone(device),
                         handle: device.create_pipeline_layout(create_info, None)?,
                 })
         }
@@ -528,18 +685,18 @@ impl Drop for VkPipelineLayout {
 
 
 pub struct VkPipeline {
-        device: Arc<VkDevice>,
+        device: Rc<VkDevice>,
         handle: vk::Pipeline,
 }
 
 impl VkPipeline {
         pub unsafe fn new_graphics(
-                device: &Arc<VkDevice>,
+                device: &Rc<VkDevice>,
                 pipeline_cache: vk::PipelineCache,
                 create_info: &vk::GraphicsPipelineCreateInfo,
         ) -> VkResult<Self> {
                 Ok(Self {
-                        device: Arc::clone(device),
+                        device: Rc::clone(device),
                         handle: device
                                 .create_graphics_pipelines(pipeline_cache, std::slice::from_ref(create_info), None)
                                 .map_err(|(_, result)| result)?[0],
@@ -573,14 +730,14 @@ impl Drop for VkPipeline {
 
 
 pub struct VkSemaphore {
-        device: Arc<VkDevice>,
+        device: Rc<VkDevice>,
         handle: vk::Semaphore,
 }
 
 impl VkSemaphore {
-        pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::SemaphoreCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::SemaphoreCreateInfo) -> VkResult<Self> {
                 Ok(Self {
-                        device: Arc::clone(device),
+                        device: Rc::clone(device),
                         handle: device.create_semaphore(create_info, None)?,
                 })
         }
@@ -612,14 +769,14 @@ impl Drop for VkSemaphore {
 
 
 pub struct VkFence {
-        device: Arc<VkDevice>,
+        device: Rc<VkDevice>,
         handle: vk::Fence,
 }
 
 impl VkFence {
-        pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::FenceCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::FenceCreateInfo) -> VkResult<Self> {
                 Ok(Self {
-                        device: Arc::clone(device),
+                        device: Rc::clone(device),
                         handle: device.create_fence(create_info, None)?,
                 })
         }
@@ -651,14 +808,14 @@ impl Drop for VkFence {
 
 
 pub struct VkShaderModule {
-        device: Arc<VkDevice>,
+        device: Rc<VkDevice>,
         handle: vk::ShaderModule,
 }
 
 impl VkShaderModule {
-        pub unsafe fn new(device: &Arc<VkDevice>, create_info: &vk::ShaderModuleCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::ShaderModuleCreateInfo) -> VkResult<Self> {
                 Ok(Self {
-                        device: Arc::clone(device),
+                        device: Rc::clone(device),
                         handle: device.create_shader_module(create_info, None)?,
                 })
         }
