@@ -1,12 +1,14 @@
 use std::{error::Error, rc::Rc};
 
 use ash::vk;
-use log::trace;
+use hashbrown::HashMap;
+#[allow(unused_imports)]
+use log::{debug, error, info, trace};
 
 use crate::{
         asset_manager::{
-                Buffer, BufferID, BufferView, BufferViewID, ComponentType, DataType, Image, ImageFormat, ImageID,
-                MagFilter, MinFilter, Sampler, SamplerID, WrappingMode,
+                AssetManager, Buffer, BufferID, BufferView, BufferViewID, ComponentType, DataType, Image, ImageFormat,
+                ImageID, MagFilter, MinFilter, Model, ModelID, Sampler, SamplerID, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         vec_map::VecMap,
@@ -18,21 +20,22 @@ use crate::{
         },
 };
 
-struct VkModelBufferView {
-        buffer: VkBuffer,
-        format: vk::Format,
-        element_count: usize,
+pub struct VkModelBufferView {
+        pub buffer: VkBuffer,
+        pub format: vk::Format,
+        pub index_type: vk::IndexType,
+        pub element_count: usize,
 }
 
-struct VkModelImage {
-        image: VkImage,
-        image_view: VkImageView,
+pub struct VkModelImage {
+        pub image: VkImage,
+        pub image_view: VkImageView,
 }
 
 pub struct VkAssetManager {
-        buffer_views: VecMap<BufferViewID, VkModelBufferView>,
-        images: VecMap<ImageID, VkModelImage>,
-        samplers: VecMap<SamplerID, VkSampler>,
+        pub buffer_views: VecMap<BufferViewID, VkModelBufferView>,
+        pub images: VecMap<ImageID, VkModelImage>,
+        pub samplers: VecMap<SamplerID, VkSampler>,
 }
 
 impl VkAssetManager {
@@ -43,10 +46,7 @@ impl VkAssetManager {
                 allocator: &Rc<vma::Allocator>,
                 transfer_queue: vk::Queue,
                 cmd_pool: &Rc<VkCommandPool>,
-                buffers: &VecMap<BufferID, Buffer>,
-                buffer_views: &VecMap<BufferViewID, BufferView>,
-                images: &VecMap<ImageID, Image>,
-                samplers: &VecMap<SamplerID, Sampler>,
+                asset_manager: &AssetManager,
         ) -> Result<Self, Box<dyn Error>> {
                 let cmd_buffer = VkReusableCommandBuffer::new(device, cmd_pool)?;
 
@@ -56,21 +56,65 @@ impl VkAssetManager {
                         allocator,
                         transfer_queue,
                         &cmd_buffer,
-                        buffers,
-                        buffer_views,
+                        asset_manager.buffers(),
+                        asset_manager.buffer_views(),
+                        &Self::discover_buffer_view_usages(asset_manager.models()),
                 )?;
 
                 trace!("Creating VkImages...");
-                let vk_images = Self::create_vk_images_from_images(instance, pdevice, device, allocator, transfer_queue, &cmd_buffer, images)?;
+                let vk_images = Self::create_vk_images_from_images(
+                        instance,
+                        pdevice,
+                        device,
+                        allocator,
+                        transfer_queue,
+                        &cmd_buffer,
+                        asset_manager.images(),
+                )?;
 
                 trace!("Creating VkSamplers...");
-                let vk_samplers = Self::create_vk_samplers_from_samplers(pdevice, device, samplers)?;
+                let vk_samplers = Self::create_vk_samplers_from_samplers(pdevice, device, asset_manager.samplers())?;
 
                 Ok(Self {
                         buffer_views: vk_buffer_views,
                         images: vk_images,
                         samplers: vk_samplers,
                 })
+        }
+
+        fn discover_buffer_view_usages(models: &VecMap<ModelID, Model>) -> HashMap<BufferViewID, vk::BufferUsageFlags> {
+                let mut vk_buffer_usages = HashMap::<BufferViewID, vk::BufferUsageFlags>::new();
+
+                fn handle_model(
+                        models: &VecMap<ModelID, Model>,
+                        model: ModelID,
+                        out_buffer_usages: &mut HashMap<BufferViewID, vk::BufferUsageFlags>,
+                ) {
+                        let model = &models[model];
+
+                        for mesh in &model.meshes {
+                                (*out_buffer_usages.entry(mesh.positions).or_default()) |=
+                                        vk::BufferUsageFlags::VERTEX_BUFFER;
+                                (*out_buffer_usages.entry(mesh.tex_coords).or_default()) |=
+                                        vk::BufferUsageFlags::VERTEX_BUFFER;
+                                (*out_buffer_usages.entry(mesh.normals).or_default()) |=
+                                        vk::BufferUsageFlags::VERTEX_BUFFER;
+                                (*out_buffer_usages.entry(mesh.tangents).or_default()) |=
+                                        vk::BufferUsageFlags::VERTEX_BUFFER;
+                                (*out_buffer_usages.entry(mesh.indices).or_default()) |=
+                                        vk::BufferUsageFlags::INDEX_BUFFER;
+                        }
+
+                        for &child in &model.children {
+                                handle_model(models, child, out_buffer_usages);
+                        }
+                }
+
+                for (model_id, _) in models {
+                        handle_model(models, model_id, &mut vk_buffer_usages);
+                }
+
+                vk_buffer_usages
         }
 
         fn create_vk_buffers_from_buffers(
@@ -80,6 +124,7 @@ impl VkAssetManager {
                 cmd_buffer: &VkReusableCommandBuffer,
                 buffers: &VecMap<BufferID, Buffer>,
                 buffer_views: &VecMap<BufferViewID, BufferView>,
+                buffer_usages: &HashMap<BufferViewID, vk::BufferUsageFlags>,
         ) -> Result<VecMap<BufferViewID, VkModelBufferView>, Box<dyn Error>> {
                 let mut vk_buffer_views: VecMap<BufferViewID, VkModelBufferView> = VecMap::new();
 
@@ -91,9 +136,10 @@ impl VkAssetManager {
                         let vk_buffer_cinfo = VkImmutableBufferCreateInfo {
                                 device,
                                 allocator,
-                                cmd_buffer: &cmd_buffer,
+                                cmd_buffer,
                                 transfer_queue,
-                                buffer_usage: vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER,
+                                // TODO: accurate buffer usage flags
+                                buffer_usage: buffer_usages[&bview_id],
                                 data: BufferData::OffsetLength {
                                         data: buffer.bytes.as_slice(),
                                         offset: bview.byte_offset,
@@ -103,12 +149,19 @@ impl VkAssetManager {
 
                         let vk_buffer = VkBuffer::new_immutable(&vk_buffer_cinfo)?;
 
+                        let format =
+                                Self::vk_format_from_component_and_data_type(bview.component_type, bview.data_type);
+
+                        let index_type = match bview.component_type {
+                                ComponentType::U16 => vk::IndexType::UINT16,
+                                ComponentType::U32 => vk::IndexType::UINT32,
+                                _ => vk::IndexType::from_raw(i32::MAX)
+                        };
+
                         let vk_bview_id = vk_buffer_views.insert(VkModelBufferView {
                                 buffer: vk_buffer,
-                                format: Self::vk_format_from_component_and_data_type(
-                                        bview.component_type,
-                                        bview.data_type,
-                                ),
+                                format,
+                                index_type,
                                 element_count: bview.element_count,
                         });
 

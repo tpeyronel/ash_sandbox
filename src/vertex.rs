@@ -6,7 +6,7 @@ use crate::my_glm::*;
 
 pub struct Vertex {
         pub pos:       Vec3,
-        pub tex_coord: Vec2,
+        //pub tex_coord: Vec2,
 }
 
 impl Vertex {
@@ -18,7 +18,7 @@ impl Vertex {
                 }
         }
 
-        pub fn vk_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+        pub fn vk_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 1] {
                 [
                         vk::VertexInputAttributeDescription {
                                 location: 0,
@@ -26,12 +26,12 @@ impl Vertex {
                                 format:   vk::Format::R32G32B32_SFLOAT,
                                 offset:   memoffset::offset_of!(Vertex, pos) as u32,
                         },
-                        vk::VertexInputAttributeDescription {
+                        /* vk::VertexInputAttributeDescription {
                                 location: 1,
                                 binding:  0,
                                 format:   vk::Format::R32G32_SFLOAT,
                                 offset:   memoffset::offset_of!(Vertex, tex_coord) as u32,
-                        },
+                        }, */
                 ]
         }
 }

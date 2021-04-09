@@ -27,6 +27,6 @@ impl Drop for Timer {
 
 macro_rules! timer {
         ($t:expr) => {
-                let _t = Timer::new($t);
+                let _t = crate::timer::Timer::new($t);
         };
 }

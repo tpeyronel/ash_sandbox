@@ -7,7 +7,7 @@ use log::{debug, error, info, trace, warn};
 use winit::window::Window;
 
 use super::{
-        vk_asset_manager::VkAssetManager,
+        vk_asset_manager::{VkAssetManager, VkModelBufferView},
         vk_buffer::{VkBuffer, VkBufferCreateInfo, VkImmutableBufferCreateInfo},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
@@ -19,13 +19,13 @@ use super::{
         },
 };
 use crate::{
-        asset_manager::AssetManager,
+        asset_manager::{AssetManager, BufferViewID, Model, ModelID},
         camera::Camera,
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         image::Image2D,
         my_glm::*,
         renderer::Renderer,
-        timer::Timer,
+        vec_map::VecMap,
         vertex::Vertex,
         vk::{
                 vk_buffer::BufferData,
@@ -36,6 +36,8 @@ use crate::{
 
 pub struct VkRenderer {
         window: Rc<Window>,
+        asset_manager: Rc<AssetManager>,
+
         vk_context: VkContext,
         vk_asset_manager: VkAssetManager,
 
@@ -75,7 +77,7 @@ impl VkRenderer {
         pub fn new(
                 window: &Rc<Window>,
                 imguic: &mut imgui::Context,
-                asset_manager: &AssetManager,
+                asset_manager: &Rc<AssetManager>,
         ) -> Result<Self, Box<dyn Error>> {
                 let vk_context = VkContext::new(window)?;
                 let vk_asset_manager = VkAssetManager::new(
@@ -85,10 +87,7 @@ impl VkRenderer {
                         &vk_context.allocator,
                         vk_context.queues.graphics,
                         &vk_context.cmd_pool,
-                        asset_manager.buffers(),
-                        asset_manager.buffer_views(),
-                        asset_manager.images(),
-                        asset_manager.samplers(),
+                        asset_manager,
                 )?;
 
                 let mut swapchain = VkSwapchain::new(
@@ -189,6 +188,8 @@ impl VkRenderer {
 
                 Ok(Self {
                         window: Rc::clone(window),
+                        asset_manager: Rc::clone(asset_manager),
+
                         vk_context,
                         vk_asset_manager,
 
@@ -229,12 +230,15 @@ impl VkRenderer {
 
 impl Renderer for VkRenderer {
         fn draw(&mut self, cam: &Camera, imgui_draw_data: &DrawData) -> Result<(), Box<dyn Error>> {
-                let (imgi, frame_i, draw_cmd_buffer) = match unsafe { self.begin_frame()? } {
-                        Some(v) => v,
-                        None => return Ok(()),
+                let (imagei, draw_cmd_buffer) = match unsafe { self.begin_frame()? } {
+                        BeginFrameResult::Draw {
+                                imagei,
+                                draw_cmd_buffer,
+                        } => (imagei, draw_cmd_buffer),
+                        BeginFrameResult::Skip => return Ok(()),
                 };
 
-                self.update_matrices_buffer(cam, frame_i)?;
+                self.update_matrices_buffer(cam, self.framei)?;
 
                 unsafe {
                         self.vk_context.device.cmd_bind_pipeline(
@@ -242,7 +246,6 @@ impl Renderer for VkRenderer {
                                 vk::PipelineBindPoint::GRAPHICS,
                                 *self.graphics_pipeline,
                         );
-
                         self.vk_context.device.cmd_set_viewport(
                                 draw_cmd_buffer,
                                 0,
@@ -254,36 +257,29 @@ impl Renderer for VkRenderer {
                                 slice::from_ref(&self.swapchain.scissor),
                         );
 
-                        self.vk_context.device.cmd_bind_vertex_buffers(
-                                draw_cmd_buffer,
-                                0,
-                                &[*self.vertex_buffer],
-                                &[0],
-                        );
-                        self.vk_context.device.cmd_bind_index_buffer(
-                                draw_cmd_buffer,
-                                *self.index_buffer,
-                                0,
-                                vk::IndexType::UINT32,
-                        );
-
                         self.vk_context.device.cmd_bind_descriptor_sets(
                                 draw_cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
                                 *self.graphics_pipeline_layout,
                                 0,
-                                &[self.desc_sets[imgi as usize]],
+                                &[self.desc_sets[imagei as usize]],
                                 &[],
                         );
 
-                        for _ in 0..1 {
-                                self.vk_context.device.cmd_draw_indexed(draw_cmd_buffer, 36, 1, 0, 0, 0);
+                        for (model_id, _) in self.asset_manager.models() {
+                                Self::draw_model(
+                                        &self.vk_context.device,
+                                        draw_cmd_buffer,
+                                        self.asset_manager.models(),
+                                        &self.vk_asset_manager.buffer_views,
+                                        model_id,
+                                );
                         }
 
                         self.imguir
                                 .cmd_draw(&self.vk_context, draw_cmd_buffer, imgui_draw_data)?;
 
-                        self.end_frame(imgi)?;
+                        self.end_frame(imagei)?;
                 }
 
                 Ok(())
@@ -526,114 +522,114 @@ impl VkRenderer {
                         [
                                 Vertex {
                                         pos: Vec3::new(-0.5, -0.5, -0.5),
-                                        tex_coord: Vec2::new(0.0, 1.0),
+                                        // tex_coord: Vec2::new(0.0, 1.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(-0.5, 0.5, -0.5),
-                                        tex_coord: Vec2::new(0.0, 0.0),
+                                        // tex_coord: Vec2::new(0.0, 0.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(0.5, 0.5, -0.5),
-                                        tex_coord: Vec2::new(1.0, 0.0),
+                                        // tex_coord: Vec2::new(1.0, 0.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(0.5, -0.5, -0.5),
-                                        tex_coord: Vec2::new(1.0, 1.0),
+                                        // tex_coord: Vec2::new(1.0, 1.0),
                                 },
                                 //
                                 //
                                 //
                                 Vertex {
                                         pos: Vec3::new(0.5, -0.5, -0.5),
-                                        tex_coord: Vec2::new(0.0, 1.0),
+                                        // tex_coord: Vec2::new(0.0, 1.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(0.5, 0.5, -0.5),
-                                        tex_coord: Vec2::new(0.0, 0.0),
+                                        // tex_coord: Vec2::new(0.0, 0.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(0.5, 0.5, 0.5),
-                                        tex_coord: Vec2::new(1.0, 0.0),
+                                        // tex_coord: Vec2::new(1.0, 0.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(0.5, -0.5, 0.5),
-                                        tex_coord: Vec2::new(1.0, 1.0),
+                                        // tex_coord: Vec2::new(1.0, 1.0),
                                 },
                                 //
                                 //
                                 //
                                 Vertex {
                                         pos: Vec3::new(0.5, -0.5, 0.5),
-                                        tex_coord: Vec2::new(0.0, 1.0),
+                                        // tex_coord: Vec2::new(0.0, 1.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(0.5, 0.5, 0.5),
-                                        tex_coord: Vec2::new(0.0, 0.0),
+                                        // tex_coord: Vec2::new(0.0, 0.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(-0.5, 0.5, 0.5),
-                                        tex_coord: Vec2::new(1.0, 0.0),
+                                        // tex_coord: Vec2::new(1.0, 0.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(-0.5, -0.5, 0.5),
-                                        tex_coord: Vec2::new(1.0, 1.0),
+                                        // tex_coord: Vec2::new(1.0, 1.0),
                                 },
                                 //
                                 //
                                 //
                                 Vertex {
                                         pos: Vec3::new(-0.5, -0.5, 0.5),
-                                        tex_coord: Vec2::new(0.0, 1.0),
+                                        // tex_coord: Vec2::new(0.0, 1.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(-0.5, 0.5, 0.5),
-                                        tex_coord: Vec2::new(0.0, 0.0),
+                                        // tex_coord: Vec2::new(0.0, 0.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(-0.5, 0.5, -0.5),
-                                        tex_coord: Vec2::new(1.0, 0.0),
+                                        // tex_coord: Vec2::new(1.0, 0.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(-0.5, -0.5, -0.5),
-                                        tex_coord: Vec2::new(1.0, 1.0),
+                                        // tex_coord: Vec2::new(1.0, 1.0),
                                 },
                                 //
                                 //
                                 //
                                 Vertex {
                                         pos: Vec3::new(-0.5, 0.5, -0.5),
-                                        tex_coord: Vec2::new(0.0, 1.0),
+                                        // tex_coord: Vec2::new(0.0, 1.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(-0.5, 0.5, 0.5),
-                                        tex_coord: Vec2::new(0.0, 0.0),
+                                        // tex_coord: Vec2::new(0.0, 0.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(0.5, 0.5, 0.5),
-                                        tex_coord: Vec2::new(1.0, 0.0),
+                                        // tex_coord: Vec2::new(1.0, 0.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(0.5, 0.5, -0.5),
-                                        tex_coord: Vec2::new(1.0, 1.0),
+                                        // tex_coord: Vec2::new(1.0, 1.0),
                                 },
                                 //
                                 //
                                 //
                                 Vertex {
                                         pos: Vec3::new(0.5, -0.5, -0.5),
-                                        tex_coord: Vec2::new(0.0, 1.0),
+                                        // tex_coord: Vec2::new(0.0, 1.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(0.5, -0.5, 0.5),
-                                        tex_coord: Vec2::new(0.0, 0.0),
+                                        // tex_coord: Vec2::new(0.0, 0.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(-0.5, -0.5, 0.5),
-                                        tex_coord: Vec2::new(1.0, 0.0),
+                                        // tex_coord: Vec2::new(1.0, 0.0),
                                 },
                                 Vertex {
                                         pos: Vec3::new(-0.5, -0.5, -0.5),
-                                        tex_coord: Vec2::new(1.0, 1.0),
+                                        // tex_coord: Vec2::new(1.0, 1.0),
                                 },
                         ]
                 };
@@ -978,18 +974,18 @@ impl VkRenderer {
                 unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
         }
 
-        unsafe fn begin_frame(&mut self) -> Result<Option<(u32, usize, vk::CommandBuffer)>, Box<dyn Error>> {
+        unsafe fn begin_frame(&mut self) -> Result<BeginFrameResult, Box<dyn Error>> {
                 let wsize = self.window.inner_size();
                 if (wsize.width == 0) || (wsize.height == 0) {
-                        return Ok(None);
+                        return Ok(BeginFrameResult::Skip);
                 }
 
                 self.recreate_swapchain_maybe()?;
 
                 let frame_img_avail_semaphore = &self.img_avail_semaphores[self.framei];
 
-                let imgi = {
-                        let (imgi, suboptimal) = self.swapchain.acquire_next_image(
+                let imagei = {
+                        let (imagei, suboptimal) = self.swapchain.acquire_next_image(
                                 u64::MAX,
                                 **frame_img_avail_semaphore,
                                 vk::Fence::null(),
@@ -1000,11 +996,11 @@ impl VkRenderer {
                                         .insert(VkSwapchainOutdatedCauses::SUBOPTIMAL);
                         }
 
-                        imgi
+                        imagei
                 };
 
                 let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.framei];
-                let frame_framebuffer = &self.swapchain.framebuffers[imgi as usize];
+                let frame_framebuffer = &self.swapchain.framebuffers[imagei as usize];
 
                 let time = self.creation_instant.elapsed().as_secs_f32();
                 let intensity = ((time.sin() + 1.0) / 2.0) * 0.05;
@@ -1049,7 +1045,10 @@ impl VkRenderer {
                         vk::SubpassContents::INLINE,
                 );
 
-                Ok(Some((imgi, self.framei, **frame_draw_cmd_buffer)))
+                Ok(BeginFrameResult::Draw {
+                        imagei,
+                        draw_cmd_buffer: **frame_draw_cmd_buffer,
+                })
         }
 
         unsafe fn end_frame(&mut self, img_i: u32) -> Result<(), Box<dyn Error>> {
@@ -1102,7 +1101,7 @@ impl VkRenderer {
                 Ok(())
         }
 
-        fn update_matrices_buffer(&self, cam: &Camera, frame_i: usize) -> vma::Result<()> {
+        fn update_matrices_buffer(&self, cam: &Camera, framei: usize) -> vma::Result<()> {
                 let time = self.creation_instant.elapsed().as_secs_f32();
 
                 let model = glm::rotate(&Mat4::identity(), time, &Vec3::new(0.0, 1.0, 0.0));
@@ -1122,7 +1121,7 @@ impl VkRenderer {
 
                 let buffer_size = std::mem::size_of::<Matrices3D>() as vk::DeviceSize;
 
-                let buffer = &self.matrices_buffers[frame_i];
+                let buffer = &self.matrices_buffers[framei];
                 let map = buffer.map_memory(&self.vk_context.allocator)?;
                 unsafe {
                         std::ptr::copy_nonoverlapping(&data as *const _ as *const u8, map, buffer_size as usize);
@@ -1131,6 +1130,45 @@ impl VkRenderer {
 
                 Ok(())
         }
+
+        fn draw_model(
+                device: &VkDevice,
+                draw_cmd_buffer: vk::CommandBuffer,
+                models: &VecMap<ModelID, Model>,
+                vk_buffer_views: &VecMap<BufferViewID, VkModelBufferView>,
+                model_id: ModelID,
+        ) {
+                let model = &models[model_id];
+
+                for mesh in &model.meshes {
+                        let positions = &vk_buffer_views[mesh.positions];
+                        let indices = &vk_buffer_views[mesh.indices];
+
+                        unsafe {
+                                device.cmd_bind_vertex_buffers(
+                                        draw_cmd_buffer,
+                                        0,
+                                        slice::from_ref(&*positions.buffer),
+                                        &[0],
+                                );
+                                device.cmd_bind_index_buffer(draw_cmd_buffer, *indices.buffer, 0, indices.index_type);
+
+                                device.cmd_draw_indexed(draw_cmd_buffer, indices.element_count as u32, 1, 0, 0, 0);
+                        }
+                }
+
+                for &child in &model.children {
+                        Self::draw_model(device, draw_cmd_buffer, models, vk_buffer_views, child);
+                }
+        }
+}
+
+enum BeginFrameResult {
+        Draw {
+                imagei: u32,
+                draw_cmd_buffer: vk::CommandBuffer,
+        },
+        Skip,
 }
 
 #[allow(dead_code)]

@@ -3,7 +3,8 @@ use std::{
         path::{Path, PathBuf},
 };
 
-use log::{error, info};
+#[allow(unused_imports)]
+use log::{debug, error, info, trace};
 
 use crate::{
         my_glm::*,
@@ -34,6 +35,7 @@ pub type DataType = gltf::accessor::Dimensions;
 
 pub struct Model {
         pub name: Option<String>,
+        pub transform: Mat4,
         pub meshes: Vec<Mesh>,
         pub children: Vec<ModelID>,
 }
@@ -195,43 +197,74 @@ impl AssetManager {
         }
 
         pub fn import_gltf_file(&mut self, gltf_path: &Path) -> Result<Vec<ModelID>, GLTFImportError> {
-                let (doc, buffers, images) =
-                        gltf::import(gltf_path).map_err(|e| GLTFImportError::GLTFCrateError(e))?;
+                timer!("Loaded model in ");
 
-                let buffer_ids = self.load_buffers(buffers);
-                let buffer_view_ids = self.load_buffer_views(&doc, &buffer_ids)?;
-                let image_ids = self.load_images(gltf_path, &doc, images)?;
-                let sampler_ids = self.load_samplers(&doc);
-                let texture_ids = self.load_textures(&doc, &image_ids, &sampler_ids);
-                let material_ids = self.load_materials(&doc, &texture_ids);
-                let model_ids = self.load_models(&doc, &buffer_view_ids, &material_ids)?;
+                let (doc, buffers, images) = gltf::import(gltf_path).map_err(|e| GLTFImportError::GLTFCrateError(e))?;
+
+                let buffer_ids = Self::load_buffers(buffers, &mut self.buffers);
+                let buffer_view_ids = Self::load_buffer_views(&doc, &buffer_ids, &mut self.buffer_views)?;
+                let image_ids = Self::load_images(gltf_path, &doc, images, &mut self.image_path_map, &mut self.images)?;
+                let sampler_ids = Self::load_samplers(&doc, self.default_sampler, &mut self.samplers);
+                let texture_ids =
+                        Self::load_textures(&doc, &image_ids, &sampler_ids, self.default_sampler, &mut self.textures);
+                let material_ids = Self::load_materials(&doc, &texture_ids, &mut self.materials);
+                let model_ids = Self::load_models(
+                        &doc,
+                        &buffer_view_ids,
+                        &material_ids,
+                        self.default_material,
+                        &mut self.models,
+                )?;
 
                 info!("Imported #{} models", model_ids.len());
 
                 Ok(model_ids)
         }
 
+        #[allow(dead_code)]
         pub fn buffers(&self) -> &VecMap<BufferID, Buffer> {
                 &self.buffers
         }
 
+        #[allow(dead_code)]
         pub fn buffer_views(&self) -> &VecMap<BufferViewID, BufferView> {
                 &self.buffer_views
         }
 
+        #[allow(dead_code)]
         pub fn images(&self) -> &VecMap<ImageID, Image> {
                 &self.images
         }
 
+        #[allow(dead_code)]
         pub fn samplers(&self) -> &VecMap<SamplerID, Sampler> {
                 &self.samplers
         }
 
-        fn load_buffers(&mut self, buffers: Vec<gltf::buffer::Data>) -> Vec<BufferID> {
-                buffers.into_iter()
+        #[allow(dead_code)]
+        pub fn textures(&self) -> &VecMap<TextureID, Texture> {
+                &self.textures
+        }
+
+        #[allow(dead_code)]
+        pub fn materials(&self) -> &VecMap<MaterialID, Material> {
+                &self.materials
+        }
+
+        #[allow(dead_code)]
+        pub fn models(&self) -> &VecMap<ModelID, Model> {
+                &self.models
+        }
+
+        fn load_buffers(
+                buffers_data: Vec<gltf::buffer::Data>,
+                out_buffers: &mut VecMap<BufferID, Buffer>,
+        ) -> Vec<BufferID> {
+                buffers_data
+                        .into_iter()
                         .map(|buffer| {
                                 let buffer = buffer.0;
-                                let buffer_id = self.buffers.insert(Buffer {
+                                let buffer_id = out_buffers.insert(Buffer {
                                         byte_length: buffer.len(),
                                         bytes: buffer,
                                 });
@@ -242,9 +275,9 @@ impl AssetManager {
         }
 
         fn load_buffer_views(
-                &mut self,
                 doc: &gltf::Document,
                 buffer_ids: &Vec<BufferID>,
+                out_buffer_views: &mut VecMap<BufferViewID, BufferView>,
         ) -> Result<Vec<BufferViewID>, GLTFImportError> {
                 doc.accessors()
                         .map(|a| {
@@ -256,7 +289,7 @@ impl AssetManager {
                                         }
                                 };
 
-                                let buffer_view_id = self.buffer_views.insert(BufferView {
+                                let buffer_view_id = out_buffer_views.insert(BufferView {
                                         buffer_id: buffer_ids[bview.buffer().index()],
                                         byte_length: bview.length(),
                                         byte_offset: bview.offset() + a.offset(),
@@ -271,10 +304,11 @@ impl AssetManager {
         }
 
         fn load_images(
-                &mut self,
                 gltf_path: &Path,
                 doc: &gltf::Document,
                 images: Vec<gltf::image::Data>,
+                image_path_map: &mut HashMap<PathBuf, ImageID>,
+                out_images: &mut VecMap<ImageID, Image>,
         ) -> Result<Vec<ImageID>, GLTFImportError> {
                 images.into_iter()
                         .zip(doc.images())
@@ -299,16 +333,21 @@ impl AssetManager {
                                         }
                                 };
 
-                                if let Some(_) = self.image_path_map.get(&image_relative_path) {
-                                        return None;
-                                }
+                                let image_id = match image_path_map.get(&image_relative_path) {
+                                        Some(&image_id) => image_id,
+                                        None => {
+                                                let image_id = out_images.insert(Image {
+                                                        pixels: image.pixels,
+                                                        width: image.width,
+                                                        height: image.height,
+                                                        format: image.format,
+                                                });
 
-                                let image_id = self.images.insert(Image {
-                                        pixels: image.pixels,
-                                        width: image.width,
-                                        height: image.height,
-                                        format: image.format,
-                                });
+                                                image_path_map.insert(image_relative_path, image_id);
+
+                                                image_id
+                                        }
+                                };
 
                                 Some(Ok(image_id))
                         })
@@ -320,21 +359,21 @@ impl AssetManager {
 
                 match format {
                         Format::R8G8B8A8 => true,
-                        _ => false
+                        _ => false,
                 }
         }
 
-        fn load_samplers(&mut self, doc: &gltf::Document) -> Vec<SamplerID> {
+        fn load_samplers(
+                doc: &gltf::Document,
+                default_sampler: SamplerID,
+                out_samplers: &mut VecMap<SamplerID, Sampler>,
+        ) -> Vec<SamplerID> {
                 doc.samplers()
                         .map(|s| {
-                                let sampler_id = self.samplers.insert(Sampler {
+                                let sampler_id = out_samplers.insert(Sampler {
                                         name: s.name().map(String::from),
-                                        mag_filter: s
-                                                .mag_filter()
-                                                .unwrap_or(self.samplers[self.default_sampler].mag_filter),
-                                        min_filter: s
-                                                .min_filter()
-                                                .unwrap_or(self.samplers[self.default_sampler].min_filter),
+                                        mag_filter: s.mag_filter().unwrap_or(out_samplers[default_sampler].mag_filter),
+                                        min_filter: s.min_filter().unwrap_or(out_samplers[default_sampler].min_filter),
                                         wrap_s: s.wrap_s(),
                                         wrap_t: s.wrap_t(),
                                 });
@@ -345,17 +384,18 @@ impl AssetManager {
         }
 
         fn load_textures(
-                &mut self,
                 doc: &gltf::Document,
                 image_ids: &Vec<ImageID>,
                 sampler_ids: &Vec<SamplerID>,
+                default_sampler: SamplerID,
+                out_textures: &mut VecMap<TextureID, Texture>,
         ) -> Vec<TextureID> {
                 doc.textures()
                         .map(|t| {
-                                let tex_id = self.textures.insert(Texture {
+                                let tex_id = out_textures.insert(Texture {
                                         name: t.name().map(String::from),
                                         image: image_ids[t.source().index()],
-                                        sampler: t.sampler().index().map_or(self.default_sampler, |i| sampler_ids[i]),
+                                        sampler: t.sampler().index().map_or(default_sampler, |i| sampler_ids[i]),
                                 });
 
                                 tex_id
@@ -363,12 +403,16 @@ impl AssetManager {
                         .collect()
         }
 
-        fn load_materials(&mut self, doc: &gltf::Document, texture_ids: &Vec<TextureID>) -> Vec<MaterialID> {
+        fn load_materials(
+                doc: &gltf::Document,
+                texture_ids: &Vec<TextureID>,
+                out_materials: &mut VecMap<MaterialID, Material>,
+        ) -> Vec<MaterialID> {
                 doc.materials()
                         .map(|m| {
                                 // TODO: handle textures better
 
-                                let mat_id = self.materials.insert(Material {
+                                let mat_id = out_materials.insert(Material {
                                         name: m.name().map(String::from),
                                         base_color_factor: m.pbr_metallic_roughness().base_color_factor().into(),
                                         metallic_factor: m.pbr_metallic_roughness().metallic_factor(),
@@ -396,23 +440,31 @@ impl AssetManager {
         }
 
         fn load_models(
-                &mut self,
                 doc: &gltf::Document,
                 buffer_view_ids: &Vec<BufferViewID>,
                 material_ids: &Vec<MaterialID>,
+                default_material: MaterialID,
+                out_models: &mut VecMap<ModelID, Model>,
         ) -> Result<Vec<ModelID>, GLTFImportError> {
                 doc.nodes()
                         .filter_map(|n| {
-                                Self::create_model_from_node_recursively(self, &n, buffer_view_ids, material_ids)
+                                Self::create_model_from_node_recursively(
+                                        &n,
+                                        buffer_view_ids,
+                                        material_ids,
+                                        default_material,
+                                        out_models,
+                                )
                         })
                         .collect()
         }
 
         fn create_model_from_node_recursively(
-                &mut self,
                 n: &gltf::Node,
                 buffer_view_ids: &Vec<BufferViewID>,
                 material_ids: &Vec<MaterialID>,
+                default_material: MaterialID,
+                out_models: &mut VecMap<ModelID, Model>,
         ) -> Option<Result<ModelID, GLTFImportError>> {
                 let m = match n.mesh() {
                         Some(m) => m,
@@ -443,10 +495,7 @@ impl AssetManager {
                                                 Some(indices) => buffer_view_ids[indices.index()],
                                                 None => return Err(GLTFImportError::MeshMissingIndices),
                                         },
-                                        material_id: p
-                                                .material()
-                                                .index()
-                                                .map_or(self.default_material, |i| material_ids[i]),
+                                        material_id: p.material().index().map_or(default_material, |i| material_ids[i]),
                                         bounding_box: BoundingBox::from(&p.bounding_box()),
                                 })
                         })
@@ -460,7 +509,13 @@ impl AssetManager {
                 let children = n
                         .children()
                         .filter_map(|n| {
-                                Self::create_model_from_node_recursively(self, &n, buffer_view_ids, material_ids)
+                                Self::create_model_from_node_recursively(
+                                        &n,
+                                        buffer_view_ids,
+                                        material_ids,
+                                        default_material,
+                                        out_models,
+                                )
                         })
                         .collect::<Result<Vec<ModelID>, GLTFImportError>>();
 
@@ -469,8 +524,31 @@ impl AssetManager {
                         Err(e) => return Some(Err(e)),
                 };
 
-                let model_id = self.models.insert(Model {
+                let transform = match n.transform() {
+                        gltf::scene::Transform::Matrix { matrix } => unsafe {
+                                na::Matrix4::from_column_slice(std::slice::from_raw_parts(
+                                        &matrix as *const _ as *const f32,
+                                        16,
+                                ))
+                        },
+                        gltf::scene::Transform::Decomposed {
+                                ref translation,
+                                ref rotation,
+                                ref scale,
+                        } => {
+                                let t = Mat4::new_translation(&Vec3::from_column_slice(translation));
+
+                                let r = UnitQuat::new_unchecked(Quat::new(rotation[3], rotation[0], rotation[1], rotation[2]));
+
+                                let s = Mat4::new_nonuniform_scaling(&Vec3::from_column_slice(scale));
+
+                                t * r.to_homogeneous() * s
+                        }
+                };
+
+                let model_id = out_models.insert(Model {
                         name: n.name().map(String::from),
+                        transform,
                         meshes,
                         children,
                 });

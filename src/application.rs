@@ -31,7 +31,7 @@ pub struct Application {
         window_state: WindowState,
         imgui_state: ImGuiState,
         input_manager: InputManager,
-        asset_manager: AssetManager,
+        asset_manager: Rc<AssetManager>,
         renderer: VkRenderer,
         camera: Camera,
 
@@ -73,7 +73,7 @@ impl Application {
                 input_manager.on_key_release(VirtualKeyCode::Escape, InputMessage::Exit);
                 input_manager.on_key_release(VirtualKeyCode::T, InputMessage::ToggleCursor);
                 input_manager.on_key_release(VirtualKeyCode::F11, InputMessage::ToggleFullscreen);
-
+                trace!("Initialized InputManager");
 
                 let dsampler = Sampler {
                         name: Some(String::from("Default Sampler")),
@@ -97,8 +97,9 @@ impl Application {
 
                 let mut asset_manager = AssetManager::new(dsampler, dmaterial);
                 let _model_colt = asset_manager.import_gltf_file(std::path::Path::new("res/model/Colt/Colt.gltf"))?;
+                let asset_manager = Rc::new(asset_manager);
 
-
+                trace!("Initialized AssetManager");
 
                 let renderer = VkRenderer::new(&window, &mut imgui_state.context, &asset_manager)?;
                 let camera = Camera::new(
@@ -122,7 +123,6 @@ impl Application {
                         imgui::ConfigFlags::NO_MOUSE,
                         window_state.cursor_state == CursorState::Hidden,
                 );
-
 
                 Ok(Self {
                         event_loop: Some(event_loop),
@@ -155,16 +155,16 @@ impl Application {
                                 .handle_event(self.imgui_state.context.io_mut(), &self.window, &event);
 
                         match event {
-                                Event::NewEvents(start_cause) => self.on_new_events(&start_cause),
+                                Event::NewEvents(start_cause) => {
+                                        self.on_new_events(&start_cause);
+                                }
                                 Event::DeviceEvent { event, .. } => {
                                         if self.window_state.focused {
                                                 self.on_device_event(&event)
                                         }
                                 }
-                                Event::WindowEvent { window_id, event } => {
-                                        if self.window.id() == window_id {
-                                                self.on_window_event(&event, control_flow);
-                                        }
+                                Event::WindowEvent { window_id, event } if self.window.id() == window_id => {
+                                        self.on_window_event(&event, control_flow);
                                 }
                                 Event::MainEventsCleared => self.update(control_flow),
                                 _ => (),
