@@ -1,20 +1,22 @@
-use std::{
-        ops::{Index, IndexMut},
-};
+use std::ops::{Index, IndexMut};
 
 use bitflags::_core::marker::PhantomData;
 
 pub struct VecMap<K: VecMapKey, V> {
-        values:   Vec<V>,
+        values: Vec<V>,
         _phantom: PhantomData<K>,
 }
 
 impl<K: VecMapKey, V> VecMap<K, V> {
         pub fn new() -> Self {
                 Self {
-                        values:   Vec::new(),
+                        values: Vec::new(),
                         _phantom: Default::default(),
                 }
+        }
+
+        pub fn len(&self) -> usize {
+                self.values.len()
         }
 
         pub fn insert(&mut self, value: V) -> K {
@@ -28,6 +30,10 @@ impl<K: VecMapKey, V> VecMap<K, V> {
 
         pub fn at_mut(&mut self, key: K) -> &mut V {
                 &mut self.values[key.get()]
+        }
+
+        pub fn iter(&self) -> VecMapIterator<K, V> {
+                VecMapIterator { parent: self, index: 0 }
         }
 }
 
@@ -62,7 +68,7 @@ impl<K: VecMapKey, V> Default for VecMap<K, V> {
 //         }
 // }
 
-fn vec_map_iter_fn<K: VecMapKey, V>((i, v): (usize, &V)) -> (K, &V) {
+/* fn vec_map_iter_fn<K: VecMapKey, V>((i, v): (usize, &V)) -> (K, &V) {
         (K::from(i), v)
 }
 
@@ -80,6 +86,79 @@ impl<'a, K: VecMapKey, V> IntoIterator for &'a VecMap<K, V> {
         }
 }
 
+use std::iter;
+use std::slice;
+use std::vec;
+
+fn i_v_to_k_v<K, V>((i, v): (usize, &V)) -> (K, &V)
+where
+        K: VecMapKey,
+{
+        (K::from(i), v)
+}
+
+type IVToKV<K, V> = for<'a> fn((usize, &V)) -> (K, &V); */
+
+//type VecMapIterator<'a, K: VecMapKey, V> = iter::Map<iter::Enumerate<slice::Iter<'a, V>>, IVToKV<K, V>>;
+
+pub struct VecMapIterator<'a, K: VecMapKey, V> {
+        parent: &'a VecMap<K, V>,
+        index: usize,
+}
+
+impl<'a, K: VecMapKey, V> Iterator for VecMapIterator<'a, K, V> {
+        type Item = (K, &'a V);
+
+        fn next(&mut self) -> Option<Self::Item> {
+                let index = self.index;
+                self.index += 1;
+
+                if index < self.parent.values.len() {
+                        Some((K::from(index), &self.parent.values[index]))
+                } else {
+                        None
+                }
+        }
+}
+
+impl<'a, K: VecMapKey, V> IntoIterator for &'a VecMap<K, V> {
+        type Item = (K, &'a V);
+        type IntoIter = VecMapIterator<'a, K, V>;
+
+        fn into_iter(self) -> Self::IntoIter {
+                VecMapIterator { parent: self, index: 0 }
+        }
+}
+
+/* struct VecMapIntoIterator<K: VecMapKey, V> {
+        parent: VecMap<K, V>,
+        index: usize,
+}
+
+impl<K: VecMapKey, V> Iterator for VecMapIntoIterator<K, V> {
+        type Item = (K, V);
+
+        fn next(&mut self) -> Option<Self::Item> {
+                let index = self.index;
+                self.index += 1;
+
+                if index < self.parent.values.len() {
+                        Some((K::from(index), std::mem::replace(&self.parent.values[index], ))
+                } else {
+                        None
+                }
+        }
+}
+
+impl<K: VecMapKey, V> IntoIterator for VecMap<K, V> {
+        type Item = (K, V);
+        type IntoIter = VecMapIntoIterator<K, V>;
+
+        fn into_iter(self) -> Self::IntoIter {
+                VecMapIntoIterator { parent: self, index: 0 }
+        }
+} */
+
 pub trait VecMapKey: Sized {
         fn from(index: usize) -> Self;
         fn get(&self) -> usize;
@@ -87,6 +166,11 @@ pub trait VecMapKey: Sized {
 
 macro_rules! impl_vec_map_key {
         ($t:ident) => {
+                impl $t {
+                        #[allow(dead_code)]
+                        pub const MAX: Self = Self(usize::MAX);
+                }
+
                 impl VecMapKey for $t {
                         fn from(index: usize) -> Self {
                                 Self(index)
@@ -103,8 +187,7 @@ macro_rules! impl_vec_map_key {
                         }
                 }
 
-                impl Eq for $t {
-                }
+                impl Eq for $t {}
         };
 }
 
@@ -112,7 +195,8 @@ macro_rules! new_vec_map_keys {
         ($($t:ident),+) => {
                 $(
                 #[derive(Debug, Clone, Copy, std::hash::Hash)]
-                pub struct $t (usize);
+                pub struct $t (pub usize);
+
                 impl_vec_map_key!($t);
                 )*
         }

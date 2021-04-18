@@ -7,7 +7,7 @@ use log::{debug, error, info, trace, warn};
 use winit::window::Window;
 
 use super::{
-        vk_asset_manager::{VkAssetManager, VkModelBufferView},
+        vk_asset_manager::{VkAssetManager},
         vk_buffer::{VkBuffer, VkBufferCreateInfo, VkImmutableBufferCreateInfo},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
@@ -19,13 +19,12 @@ use super::{
         },
 };
 use crate::{
-        asset_manager::{AssetManager, BufferViewID, Model, ModelID},
+        asset_manager::{AssetManager, Mesh, ModelID, Primitive},
         camera::Camera,
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         image::Image2D,
         my_glm::*,
         renderer::Renderer,
-        vec_map::VecMap,
         vertex::Vertex,
         vk::{
                 vk_buffer::BufferData,
@@ -57,8 +56,9 @@ pub struct VkRenderer {
         tex_vk_img_view: VkImageView,
         tex_vk_img_sampler: VkSampler,
 
-        desc_set_layout: VkDescriptorSetLayout,
-        desc_sets: Vec<vk::DescriptorSet>,
+        matrices_dst_set_layout: VkDescriptorSetLayout,
+        material_dst_set_layout: VkDescriptorSetLayout,
+        matrices_dst_sets: Vec<vk::DescriptorSet>,
 
         graphics_pipeline_layout: VkPipelineLayout,
         graphics_pipeline: VkPipeline,
@@ -80,15 +80,6 @@ impl VkRenderer {
                 asset_manager: &Rc<AssetManager>,
         ) -> Result<Self, Box<dyn Error>> {
                 let vk_context = VkContext::new(window)?;
-                let vk_asset_manager = VkAssetManager::new(
-                        &vk_context.instance,
-                        &vk_context.pdevice,
-                        &vk_context.device,
-                        &vk_context.allocator,
-                        vk_context.queues.graphics,
-                        &vk_context.cmd_pool,
-                        asset_manager,
-                )?;
 
                 let mut swapchain = VkSwapchain::new(
                         window,
@@ -155,19 +146,33 @@ impl VkRenderer {
                         vk_context.queues.graphics,
                 )?;
 
-                let desc_set_layout = Self::create_descriptor_set_layout(&vk_context.device)?;
-                let desc_sets = Self::create_descriptor_sets(
+                let (matrices_dst_set_layout, material_dst_set_layout) =
+                        Self::create_descriptor_set_layouts(&vk_context.device)?;
+                let matrices_dst_sets = Self::create_matrices_dst_sets(
                         &vk_context.device,
-                        *vk_context.desc_pool,
-                        *desc_set_layout,
+                        *vk_context.dst_pool,
+                        *matrices_dst_set_layout,
                         &matrices_buffers,
-                        *tex_vk_img_view,
-                        *tex_vk_img_sampler,
                 )?;
                 trace!("Created VkDescriptorSets");
 
-                let graphics_pipeline_layout =
-                        Self::create_graphics_pipeline_layout(&vk_context.device, *desc_set_layout)?;
+                let vk_asset_manager = VkAssetManager::new(
+                        &vk_context.instance,
+                        &vk_context.pdevice,
+                        &vk_context.device,
+                        &vk_context.allocator,
+                        vk_context.queues.graphics,
+                        &vk_context.cmd_pool,
+                        *vk_context.dst_pool,
+                        *material_dst_set_layout,
+                        asset_manager,
+                )?;
+                trace!("Created VkAssetManager");
+
+                let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
+                        &vk_context.device,
+                        &[*matrices_dst_set_layout, *material_dst_set_layout],
+                )?;
                 trace!("Created VkGraphicsPipelineLayout");
 
                 let graphics_pipeline = Self::create_graphics_pipeline(
@@ -209,8 +214,9 @@ impl VkRenderer {
                         tex_vk_img_view,
                         tex_vk_img_sampler,
 
-                        desc_set_layout,
-                        desc_sets,
+                        matrices_dst_set_layout,
+                        material_dst_set_layout,
+                        matrices_dst_sets,
 
                         graphics_pipeline_layout,
                         graphics_pipeline,
@@ -238,7 +244,12 @@ impl Renderer for VkRenderer {
                         BeginFrameResult::Skip => return Ok(()),
                 };
 
-                self.update_matrices_buffer(cam, self.framei)?;
+                let mats_v_p = MatricesVP {
+                        view: *cam.get_view(),
+                        proj: *cam.get_proj(),
+                };
+
+                self.update_matrices_buffer(&mats_v_p, self.framei)?;
 
                 unsafe {
                         self.vk_context.device.cmd_bind_pipeline(
@@ -257,21 +268,27 @@ impl Renderer for VkRenderer {
                                 slice::from_ref(&self.swapchain.scissor),
                         );
 
-                        self.vk_context.device.cmd_bind_descriptor_sets(
+                        /* self.vk_context.device.cmd_bind_descriptor_sets(
                                 draw_cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
                                 *self.graphics_pipeline_layout,
                                 0,
-                                &[self.desc_sets[imagei as usize]],
+                                slice::from_ref(&self.matrices_dst_sets[imagei as usize]),
                                 &[],
-                        );
+                        ); */
 
-                        for (model_id, _) in self.asset_manager.models() {
+                        let matrices_dst_set = self.matrices_dst_sets[imagei as usize];
+
+                        for &model_id in self.asset_manager.root_models() {
                                 Self::draw_model(
+                                        self.creation_instant,
                                         &self.vk_context.device,
                                         draw_cmd_buffer,
-                                        self.asset_manager.models(),
-                                        &self.vk_asset_manager.buffer_views,
+                                        matrices_dst_set,
+                                        *self.graphics_pipeline_layout,
+                                        &self.asset_manager,
+                                        &self.vk_asset_manager,
+                                        &mats_v_p,
                                         model_id,
                                 );
                         }
@@ -356,16 +373,14 @@ impl VkRenderer {
                         unsafe {
                                 self.vk_context
                                         .device
-                                        .free_descriptor_sets(*self.vk_context.desc_pool, &self.desc_sets)
+                                        .free_descriptor_sets(*self.vk_context.dst_pool, &self.matrices_dst_sets)
                         };
 
-                        self.desc_sets = Self::create_descriptor_sets(
+                        self.matrices_dst_sets = Self::create_matrices_dst_sets(
                                 &self.vk_context.device,
-                                *self.vk_context.desc_pool,
-                                *self.desc_set_layout,
+                                *self.vk_context.dst_pool,
+                                *self.matrices_dst_set_layout,
                                 &self.matrices_buffers,
-                                *self.tex_vk_img_view,
-                                *self.tex_vk_img_sampler,
                         )?;
 
                         self.draw_cmd_buffers = VkReusableCommandBuffer::new_vec(
@@ -678,7 +693,7 @@ impl VkRenderer {
                 allocator: &Rc<vma::Allocator>,
                 swch_img_count: u32,
         ) -> Result<Vec<VkBuffer>, Box<dyn Error>> {
-                let buffer_size = std::mem::size_of::<Matrices3D>() as vk::DeviceSize;
+                let buffer_size = std::mem::size_of::<MatricesVP>() as vk::DeviceSize;
 
                 let cinfo = VkBufferCreateInfo {
                         device,
@@ -777,92 +792,101 @@ impl VkRenderer {
                 Ok((vk_img, vk_img_view, vk_img_sampler))
         }
 
-        fn create_descriptor_set_layout(device: &Rc<VkDevice>) -> VkResult<VkDescriptorSetLayout> {
-                let mat_binding = vk::DescriptorSetLayoutBinding {
-                        binding: 0,
-                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::VERTEX,
-                        p_immutable_samplers: std::ptr::null(),
+        fn create_descriptor_set_layouts(
+                device: &Rc<VkDevice>,
+        ) -> VkResult<(VkDescriptorSetLayout, VkDescriptorSetLayout)> {
+                let matrices_dst_set_layout = {
+                        let mat_binding = vk::DescriptorSetLayoutBinding {
+                                binding: 0,
+                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                                descriptor_count: 1,
+                                stage_flags: vk::ShaderStageFlags::VERTEX,
+                                p_immutable_samplers: std::ptr::null(),
+                        };
+
+                        let matrices_dst_set_layout_cinfo =
+                                vk::DescriptorSetLayoutCreateInfo::builder().bindings(slice::from_ref(&mat_binding));
+                        unsafe { VkDescriptorSetLayout::new(device, &matrices_dst_set_layout_cinfo)? }
                 };
 
-                let tex_binding = vk::DescriptorSetLayoutBinding {
-                        binding: 1,
-                        descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                        p_immutable_samplers: std::ptr::null(),
+                let material_dst_set_layout = {
+                        let tex_binding = vk::DescriptorSetLayoutBinding {
+                                binding: 0,
+                                descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
+                                descriptor_count: 1,
+                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                                p_immutable_samplers: std::ptr::null(),
+                        };
+
+                        let sampler_binding = vk::DescriptorSetLayoutBinding {
+                                binding: 1,
+                                descriptor_type: vk::DescriptorType::SAMPLER,
+                                descriptor_count: 1,
+                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                                p_immutable_samplers: std::ptr::null(),
+                        };
+
+                        let mat_bindings = [tex_binding, sampler_binding];
+                        let mat_set_layout_cinfo = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&mat_bindings);
+
+                        unsafe { VkDescriptorSetLayout::new(device, &mat_set_layout_cinfo)? }
                 };
 
-                let bindings = [mat_binding, tex_binding];
-
-                let desc_set_layout_cinfo = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings);
-
-                unsafe { VkDescriptorSetLayout::new(device, &desc_set_layout_cinfo) }
+                Ok((matrices_dst_set_layout, material_dst_set_layout))
         }
 
-        fn create_descriptor_sets(
+        fn create_matrices_dst_sets(
                 device: &ash::Device,
-                desc_pool: vk::DescriptorPool,
-                desc_layout: vk::DescriptorSetLayout,
+                dst_pool: vk::DescriptorPool,
+                matrices_dst_set_layout: vk::DescriptorSetLayout,
                 matrices_buffers: &[VkBuffer],
-                img_view: vk::ImageView,
-                sampler: vk::Sampler,
         ) -> VkResult<Vec<vk::DescriptorSet>> {
-                let desc_set_layouts = vec![desc_layout; matrices_buffers.len()];
+                let dst_set_layouts = vec![matrices_dst_set_layout; matrices_buffers.len()];
 
-                let desc_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
-                        .descriptor_pool(desc_pool)
-                        .set_layouts(&desc_set_layouts);
+                let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
+                        .descriptor_pool(dst_pool)
+                        .set_layouts(&dst_set_layouts);
 
-                let desc_sets = unsafe { device.allocate_descriptor_sets(&desc_set_ainfo)? };
+                let dst_sets = unsafe { device.allocate_descriptor_sets(&dst_set_ainfo)? };
 
-                assert_eq!(matrices_buffers.len(), desc_sets.len());
+                assert_eq!(matrices_buffers.len(), dst_sets.len());
 
-                for (matrices_buffer, &desc_set) in matrices_buffers.iter().zip(desc_sets.iter()) {
+                for (matrices_buffer, &dst_set) in matrices_buffers.iter().zip(dst_sets.iter()) {
                         let buffer_info = vk::DescriptorBufferInfo {
                                 buffer: **matrices_buffer,
                                 offset: 0,
-                                range: size_of::<Matrices3D>() as vk::DeviceSize,
+                                range: size_of::<MatricesVP>() as vk::DeviceSize,
                         };
 
-                        let mat_desc_write = vk::WriteDescriptorSet::builder()
+                        let matrices_dst_write = vk::WriteDescriptorSet::builder()
                                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                .dst_set(desc_set)
+                                .dst_set(dst_set)
                                 .dst_binding(0)
                                 .dst_array_element(0)
                                 .buffer_info(std::slice::from_ref(&buffer_info))
                                 .build();
 
-                        let sampler_info = vk::DescriptorImageInfo {
-                                sampler,
-                                image_view: img_view,
-                                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                        };
-
-                        let sampler_desc_write = vk::WriteDescriptorSet::builder()
-                                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                                .dst_set(desc_set)
-                                .dst_binding(1)
-                                .dst_array_element(0)
-                                .image_info(std::slice::from_ref(&sampler_info))
-                                .build();
-
-                        let writes = [mat_desc_write, sampler_desc_write];
+                        let writes = [matrices_dst_write];
 
                         unsafe { device.update_descriptor_sets(&writes, &[]) };
                 }
 
-                Ok(desc_sets)
+                Ok(dst_sets)
         }
 
         fn create_graphics_pipeline_layout(
                 device: &Rc<VkDevice>,
-                desc_set_layout: vk::DescriptorSetLayout,
+                dst_set_layouts: &[vk::DescriptorSetLayout],
         ) -> VkResult<VkPipelineLayout> {
+                let push_constant_range = vk::PushConstantRange {
+                        stage_flags: vk::ShaderStageFlags::VERTEX,
+                        offset: 0,
+                        size: std::mem::size_of::<MatricesMMvp>() as u32,
+                };
+
                 let layout_cinfo = vk::PipelineLayoutCreateInfo::builder()
-                        /*.push_constant_ranges(&[])*/
-                        .set_layouts(std::slice::from_ref(&desc_set_layout));
+                        .push_constant_ranges(std::slice::from_ref(&push_constant_range))
+                        .set_layouts(dst_set_layouts);
 
                 unsafe { VkPipelineLayout::new(device, &layout_cinfo) }
         }
@@ -891,7 +915,7 @@ impl VkRenderer {
                                 .build(),
                 ];
 
-                let vert_binding_desc = [Vertex::vk_binding_description()];
+                let vert_binding_desc = Vertex::vk_binding_description();
                 let vert_attrib_descs = Vertex::vk_attribute_descriptions();
                 let vert_input_cinfo = vk::PipelineVertexInputStateCreateInfo::builder()
                         .vertex_binding_descriptions(&vert_binding_desc)
@@ -1101,30 +1125,17 @@ impl VkRenderer {
                 Ok(())
         }
 
-        fn update_matrices_buffer(&self, cam: &Camera, framei: usize) -> vma::Result<()> {
+        fn update_matrices_buffer(&self, mats_v_p: &MatricesVP, framei: usize) -> vma::Result<()> {
                 let time = self.creation_instant.elapsed().as_secs_f32();
 
                 let model = glm::rotate(&Mat4::identity(), time, &Vec3::new(0.0, 1.0, 0.0));
 
-                let data = Matrices3D {
-                        model,
-                        view: *cam.get_view(),
-                        proj: *cam.get_proj(),
-                        /* proj: glm::perspective_fov_zo(
-                                150.0f32.to_radians(),
-                                self.window.inner_size().width as f32,
-                                self.window.inner_size().height as f32,
-                                0.1,
-                                100.0,
-                        ), */
-                };
-
-                let buffer_size = std::mem::size_of::<Matrices3D>() as vk::DeviceSize;
+                let buffer_size = std::mem::size_of::<MatricesVP>() as vk::DeviceSize;
 
                 let buffer = &self.matrices_buffers[framei];
                 let map = buffer.map_memory(&self.vk_context.allocator)?;
                 unsafe {
-                        std::ptr::copy_nonoverlapping(&data as *const _ as *const u8, map, buffer_size as usize);
+                        std::ptr::copy_nonoverlapping(&mats_v_p as *const _ as *const u8, map, buffer_size as usize);
                 }
                 buffer.unmap_memory(&self.vk_context.allocator)?;
 
@@ -1132,33 +1143,120 @@ impl VkRenderer {
         }
 
         fn draw_model(
+                creation_instant: Instant,
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
-                models: &VecMap<ModelID, Model>,
-                vk_buffer_views: &VecMap<BufferViewID, VkModelBufferView>,
+                matrices_dst_set: vk::DescriptorSet,
+                pipeline_layout: vk::PipelineLayout,
+                asset_manager: &AssetManager,
+                vk_asset_manager: &VkAssetManager,
+                mats_v_p: &MatricesVP,
                 model_id: ModelID,
         ) {
-                let model = &models[model_id];
+                let time = creation_instant.elapsed().as_secs_f32();
+                let model = &asset_manager.models()[model_id];
 
-                for mesh in &model.meshes {
-                        let positions = &vk_buffer_views[mesh.positions];
-                        let indices = &vk_buffer_views[mesh.indices];
+                let mat_model = glm::rotate(&Mat4::identity(), time, &Vec3::new(0.0, 1.0, 0.0)) * model.transform;
+                let mats_m_mvp = MatricesMMvp {
+                        model: mat_model,
+                        mvp: mats_v_p.proj * mats_v_p.view * mat_model,
+                };
 
-                        unsafe {
-                                device.cmd_bind_vertex_buffers(
-                                        draw_cmd_buffer,
-                                        0,
-                                        slice::from_ref(&*positions.buffer),
-                                        &[0],
-                                );
-                                device.cmd_bind_index_buffer(draw_cmd_buffer, *indices.buffer, 0, indices.index_type);
+                unsafe {
+                        device.cmd_push_constants(
+                                draw_cmd_buffer,
+                                pipeline_layout,
+                                vk::ShaderStageFlags::VERTEX,
+                                0,
+                                slice::from_raw_parts(
+                                        &mats_m_mvp as *const _ as *const u8,
+                                        std::mem::size_of::<MatricesMMvp>(),
+                                ),
+                        );
+                }
 
-                                device.cmd_draw_indexed(draw_cmd_buffer, indices.element_count as u32, 1, 0, 0, 0);
-                        }
+                //let mut last_material = MaterialID::MAX;
+                if let Some(mesh) = model.mesh {
+                        Self::draw_mesh(
+                                device,
+                                draw_cmd_buffer,
+                                matrices_dst_set,
+                                pipeline_layout,
+                                vk_asset_manager,
+                                &asset_manager.meshes()[mesh],
+                        );
                 }
 
                 for &child in &model.children {
-                        Self::draw_model(device, draw_cmd_buffer, models, vk_buffer_views, child);
+                        Self::draw_model(
+                                creation_instant,
+                                device,
+                                draw_cmd_buffer,
+                                matrices_dst_set,
+                                pipeline_layout,
+                                asset_manager,
+                                vk_asset_manager,
+                                mats_v_p,
+                                child,
+                        );
+                }
+        }
+
+        fn draw_mesh(
+                device: &VkDevice,
+                draw_cmd_buffer: vk::CommandBuffer,
+                matrices_dst_set: vk::DescriptorSet,
+                pipeline_layout: vk::PipelineLayout,
+                vk_asset_manager: &VkAssetManager,
+                mesh: &Mesh,
+        ) {
+                for primitive in &mesh.primitives {
+                        Self::draw_primitive(
+                                device,
+                                draw_cmd_buffer,
+                                matrices_dst_set,
+                                pipeline_layout,
+                                vk_asset_manager,
+                                primitive,
+                        );
+                }
+        }
+
+        fn draw_primitive(
+                device: &VkDevice,
+                draw_cmd_buffer: vk::CommandBuffer,
+                matrices_dst_set: vk::DescriptorSet,
+                pipeline_layout: vk::PipelineLayout,
+                vk_asset_manager: &VkAssetManager,
+                primitive: &Primitive,
+        ) {
+                /* if primitive.material != last_material {
+                        last_material = mesh.material;
+                } */
+
+                let material_dst_set = vk_asset_manager.material_dst_sets[primitive.material];
+                let positions = &vk_asset_manager.buffer_views[primitive.positions];
+                let tex_coords = &vk_asset_manager.buffer_views[primitive.tex_coords];
+                let indices = &vk_asset_manager.buffer_views[primitive.indices];
+
+                unsafe {
+                        device.cmd_bind_descriptor_sets(
+                                draw_cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                pipeline_layout,
+                                0,
+                                &[matrices_dst_set, material_dst_set],
+                                &[],
+                        );
+                        device.cmd_bind_vertex_buffers(
+                                draw_cmd_buffer,
+                                0,
+                                &[*positions.buffer, *tex_coords.buffer],
+                                &[0, 0],
+                        );
+                        device.cmd_bind_index_buffer(draw_cmd_buffer, *indices.buffer, 0, indices.index_type);
+
+                        device.cmd_draw_indexed(draw_cmd_buffer, indices.element_count as u32, 1, 0, 0, 0);
                 }
         }
 }
@@ -1172,10 +1270,15 @@ enum BeginFrameResult {
 }
 
 #[allow(dead_code)]
-struct Matrices3D {
-        model: Mat4,
+struct MatricesVP {
         view: Mat4,
         proj: Mat4,
+}
+
+#[allow(dead_code)]
+struct MatricesMMvp {
+        model: Mat4,
+        mvp: Mat4,
 }
 
 fn create_shader_module(device: &Rc<VkDevice>, path: &'static str) -> VkResult<VkShaderModule> {

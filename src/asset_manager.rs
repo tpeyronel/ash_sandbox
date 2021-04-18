@@ -4,7 +4,7 @@ use std::{
 };
 
 #[allow(unused_imports)]
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 
 use crate::{
         my_glm::*,
@@ -33,23 +33,32 @@ enum DataType {
 pub type ComponentType = gltf::accessor::DataType;
 pub type DataType = gltf::accessor::Dimensions;
 
+#[derive(Debug)]
 pub struct Model {
         pub name: Option<String>,
         pub transform: Mat4,
-        pub meshes: Vec<Mesh>,
+        pub mesh: Option<MeshID>,
         pub children: Vec<ModelID>,
 }
 
+#[derive(Debug)]
 pub struct Mesh {
+        pub name: Option<String>,
+        pub primitives: Vec<Primitive>,
+}
+
+#[derive(Debug)]
+pub struct Primitive {
         pub positions: BufferViewID,
         pub tex_coords: BufferViewID,
         pub normals: BufferViewID,
         pub tangents: BufferViewID,
         pub indices: BufferViewID,
-        pub material_id: MaterialID,
+        pub material: MaterialID,
         pub bounding_box: BoundingBox,
 }
 
+#[derive(Debug)]
 pub struct BufferView {
         pub buffer_id: BufferID,
         pub byte_length: usize,
@@ -59,11 +68,13 @@ pub struct BufferView {
         pub element_count: usize,
 }
 
+#[derive(Debug)]
 pub struct Buffer {
         pub bytes: Vec<u8>,
         pub byte_length: usize,
 }
 
+#[derive(Debug)]
 pub struct Material {
         pub name: Option<String>,
 
@@ -78,6 +89,7 @@ pub struct Material {
         pub emissive_texture: Option<TextureID>,
 }
 
+#[derive(Debug)]
 pub struct Texture {
         pub name: Option<String>,
         pub image: ImageID,
@@ -85,6 +97,7 @@ pub struct Texture {
 }
 
 pub type ImageFormat = gltf::image::Format;
+#[derive(Debug)]
 pub struct Image {
         //name: Option<String>,
         pub pixels: Vec<u8>,
@@ -97,6 +110,7 @@ pub type MagFilter = gltf::texture::MagFilter;
 pub type MinFilter = gltf::texture::MinFilter;
 pub type WrappingMode = gltf::texture::WrappingMode;
 
+#[derive(Debug)]
 pub struct Sampler {
         pub name: Option<String>,
         pub mag_filter: MagFilter,
@@ -106,7 +120,8 @@ pub struct Sampler {
 }
 
 new_vec_map_keys!(
-        ModelID, /*, MeshID*/
+        ModelID,
+        MeshID,
         BufferID,
         BufferViewID,
         MaterialID,
@@ -115,6 +130,7 @@ new_vec_map_keys!(
         SamplerID
 );
 
+#[derive(Debug)]
 pub struct BoundingBox {
         pub min: Vec3,
         pub max: Vec3,
@@ -130,11 +146,13 @@ impl From<&gltf::mesh::BoundingBox> for BoundingBox {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum GLTFImportError {
         ImageSourceNotUri,
         ImageSourceUriNotRelative,
         ImageFormatNotSupported,
         AccessorMissingBufferView,
+        MeshMissingPrimitives,
         MeshMissingPositions,
         MeshMissingTexCoords,
         MeshMissingNormals,
@@ -166,8 +184,9 @@ pub struct AssetManager {
         samplers: VecMap<SamplerID, Sampler>,
         textures: VecMap<TextureID, Texture>,
         materials: VecMap<MaterialID, Material>,
-        //meshes: VecMap<MeshID, Mesh>,
+        meshes: VecMap<MeshID, Mesh>,
         models: VecMap<ModelID, Model>,
+        root_models: Vec<ModelID>,
 
         default_sampler: SamplerID,
         default_material: MaterialID,
@@ -189,8 +208,9 @@ impl AssetManager {
                         samplers,
                         textures: VecMap::new(),
                         materials: VecMap::new(),
-                        //meshes: VecMap::new(),
+                        meshes: VecMap::new(),
                         models: VecMap::new(),
+                        root_models: Vec::new(),
                         default_sampler,
                         default_material,
                 }
@@ -208,17 +228,19 @@ impl AssetManager {
                 let texture_ids =
                         Self::load_textures(&doc, &image_ids, &sampler_ids, self.default_sampler, &mut self.textures);
                 let material_ids = Self::load_materials(&doc, &texture_ids, &mut self.materials);
-                let model_ids = Self::load_models(
+                let meshes_ids = Self::load_meshes(
                         &doc,
                         &buffer_view_ids,
                         &material_ids,
                         self.default_material,
-                        &mut self.models,
+                        &mut self.meshes,
                 )?;
+                let model_ids = Self::load_models(&doc, &meshes_ids, &mut self.models);
+                let root_model_ids = Self::load_root_models(&doc, &model_ids, &mut self.models, &mut self.root_models);
 
-                info!("Imported #{} models", model_ids.len());
+                info!("Imported #{} models", root_model_ids.len());
 
-                Ok(model_ids)
+                Ok(root_model_ids)
         }
 
         #[allow(dead_code)]
@@ -252,9 +274,20 @@ impl AssetManager {
         }
 
         #[allow(dead_code)]
+        pub fn meshes(&self) -> &VecMap<MeshID, Mesh> {
+                &self.meshes
+        }
+
+        #[allow(dead_code)]
         pub fn models(&self) -> &VecMap<ModelID, Model> {
                 &self.models
         }
+
+        #[allow(dead_code)]
+        pub fn root_models(&self) -> &Vec<ModelID> {
+                &self.root_models
+        }
+
 
         fn load_buffers(
                 buffers_data: Vec<gltf::buffer::Data>,
@@ -439,27 +472,149 @@ impl AssetManager {
                         .collect()
         }
 
-        fn load_models(
+        fn load_meshes(
                 doc: &gltf::Document,
                 buffer_view_ids: &Vec<BufferViewID>,
                 material_ids: &Vec<MaterialID>,
                 default_material: MaterialID,
-                out_models: &mut VecMap<ModelID, Model>,
-        ) -> Result<Vec<ModelID>, GLTFImportError> {
-                doc.nodes()
-                        .filter_map(|n| {
-                                Self::create_model_from_node_recursively(
-                                        &n,
-                                        buffer_view_ids,
-                                        material_ids,
-                                        default_material,
-                                        out_models,
-                                )
+                out_meshes: &mut VecMap<MeshID, Mesh>,
+        ) -> Result<Vec<MeshID>, GLTFImportError> {
+                doc.meshes()
+                        .map(|m| {
+                                let primitives = m
+                                        .primitives()
+                                        .map(|p| {
+                                                let positions = match p.get(&gltf::Semantic::Positions) {
+                                                        Some(positions) => buffer_view_ids[positions.index()],
+                                                        None => return Err(GLTFImportError::MeshMissingPositions),
+                                                };
+
+                                                let tex_coords = match p.get(&gltf::Semantic::TexCoords(0)) {
+                                                        Some(tex_coords) => buffer_view_ids[tex_coords.index()],
+                                                        None => return Err(GLTFImportError::MeshMissingTexCoords),
+                                                };
+
+                                                let normals = match p.get(&gltf::Semantic::Normals) {
+                                                        Some(normals) => buffer_view_ids[normals.index()],
+                                                        None => return Err(GLTFImportError::MeshMissingNormals),
+                                                };
+
+                                                let tangents = match p.get(&gltf::Semantic::Tangents) {
+                                                        Some(tangents) => buffer_view_ids[tangents.index()],
+                                                        None => return Err(GLTFImportError::MeshMissingTangents),
+                                                };
+
+                                                let indices = match p.indices() {
+                                                        Some(indices) => buffer_view_ids[indices.index()],
+                                                        None => return Err(GLTFImportError::MeshMissingIndices),
+                                                };
+
+                                                let material = p
+                                                        .material()
+                                                        .index()
+                                                        .map_or(default_material, |i| material_ids[i]);
+
+                                                Ok(Primitive {
+                                                        positions,
+                                                        tex_coords,
+                                                        normals,
+                                                        tangents,
+                                                        indices,
+                                                        material,
+                                                        bounding_box: BoundingBox::from(&p.bounding_box()),
+                                                })
+                                        })
+                                        .collect::<Result<Vec<Primitive>, GLTFImportError>>()?;
+
+                                let mesh = Mesh {
+                                        name: m.name().map(String::from),
+                                        primitives,
+                                };
+
+                                let mesh_id = out_meshes.insert(mesh);
+
+                                Ok(mesh_id)
                         })
                         .collect()
         }
 
-        fn create_model_from_node_recursively(
+        fn load_models(
+                doc: &gltf::Document,
+                meshes_ids: &Vec<MeshID>,
+                out_models: &mut VecMap<ModelID, Model>,
+        ) -> Vec<ModelID> {
+                let mut model_ids = Vec::new();
+
+                for n in doc.nodes() {
+                        let mesh = n.mesh().map(|m| meshes_ids[m.index()]);
+
+                        let children = n.children().map(|n| model_ids[n.index()]).collect();
+
+                        let transform = match n.transform() {
+                                gltf::scene::Transform::Matrix { matrix } => unsafe {
+                                        na::Matrix4::from_column_slice(std::slice::from_raw_parts(
+                                                &matrix as *const _ as *const f32,
+                                                16,
+                                        ))
+                                },
+                                gltf::scene::Transform::Decomposed {
+                                        ref translation,
+                                        ref rotation,
+                                        ref scale,
+                                } => {
+                                        let t = Mat4::new_translation(&Vec3::from_column_slice(translation));
+
+                                        let r = UnitQuat::new_unchecked(Quat::new(
+                                                rotation[3],
+                                                rotation[0],
+                                                rotation[1],
+                                                rotation[2],
+                                        ));
+
+                                        let s = Mat4::new_nonuniform_scaling(&Vec3::from_column_slice(scale));
+
+                                        t * r.to_homogeneous() * s
+                                }
+                        };
+
+                        let model_id = out_models.insert(Model {
+                                name: n.name().map(String::from),
+                                transform,
+                                mesh,
+                                children,
+                        });
+
+                        model_ids.push(model_id);
+                }
+
+                model_ids
+        }
+
+        fn load_root_models(
+                doc: &gltf::Document,
+                model_ids: &Vec<ModelID>,
+                out_models: &mut VecMap<ModelID, Model>,
+                out_root_models: &mut Vec<ModelID>,
+        ) -> Vec<ModelID> {
+                doc.scenes()
+                        .map(|s| {
+                                let children = s.nodes().map(|n| model_ids[n.index()]).collect();
+
+                                let model = Model {
+                                        name: s.name().map(String::from),
+                                        transform: Mat4::identity(),
+                                        mesh: None,
+                                        children,
+                                };
+                                let model_id = out_models.insert(model);
+
+                                out_root_models.push(model_id);
+                                model_id
+                        })
+                        .collect()
+        }
+
+        /* fn create_model_from_node_recursively(
                 n: &gltf::Node,
                 buffer_view_ids: &Vec<BufferViewID>,
                 material_ids: &Vec<MaterialID>,
@@ -471,35 +626,7 @@ impl AssetManager {
                         None => return None,
                 };
 
-                let meshes = m
-                        .primitives()
-                        .map(|p| {
-                                Ok(Mesh {
-                                        positions: match p.get(&gltf::Semantic::Positions) {
-                                                Some(positions) => buffer_view_ids[positions.index()],
-                                                None => return Err(GLTFImportError::MeshMissingPositions),
-                                        },
-                                        tex_coords: match p.get(&gltf::Semantic::TexCoords(0)) {
-                                                Some(tex_coords) => buffer_view_ids[tex_coords.index()],
-                                                None => return Err(GLTFImportError::MeshMissingTexCoords),
-                                        },
-                                        normals: match p.get(&gltf::Semantic::Normals) {
-                                                Some(normals) => buffer_view_ids[normals.index()],
-                                                None => return Err(GLTFImportError::MeshMissingNormals),
-                                        },
-                                        tangents: match p.get(&gltf::Semantic::Tangents) {
-                                                Some(tangents) => buffer_view_ids[tangents.index()],
-                                                None => return Err(GLTFImportError::MeshMissingTangents),
-                                        },
-                                        indices: match p.indices() {
-                                                Some(indices) => buffer_view_ids[indices.index()],
-                                                None => return Err(GLTFImportError::MeshMissingIndices),
-                                        },
-                                        material_id: p.material().index().map_or(default_material, |i| material_ids[i]),
-                                        bounding_box: BoundingBox::from(&p.bounding_box()),
-                                })
-                        })
-                        .collect::<Result<Vec<Mesh>, GLTFImportError>>();
+
 
                 let meshes = match meshes {
                         Ok(meshes) => meshes,
@@ -538,7 +665,12 @@ impl AssetManager {
                         } => {
                                 let t = Mat4::new_translation(&Vec3::from_column_slice(translation));
 
-                                let r = UnitQuat::new_unchecked(Quat::new(rotation[3], rotation[0], rotation[1], rotation[2]));
+                                let r = UnitQuat::new_unchecked(Quat::new(
+                                        rotation[3],
+                                        rotation[0],
+                                        rotation[1],
+                                        rotation[2],
+                                ));
 
                                 let s = Mat4::new_nonuniform_scaling(&Vec3::from_column_slice(scale));
 
@@ -554,5 +686,5 @@ impl AssetManager {
                 });
 
                 Some(Ok(model_id))
-        }
+        } */
 }

@@ -1,14 +1,14 @@
-use std::{error::Error, rc::Rc};
+use std::{collections::HashMap, error::Error, rc::Rc};
 
-use ash::vk;
-use hashbrown::HashMap;
+use ash::{version::DeviceV1_0, vk};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 
 use crate::{
         asset_manager::{
                 AssetManager, Buffer, BufferID, BufferView, BufferViewID, ComponentType, DataType, Image, ImageFormat,
-                ImageID, MagFilter, MinFilter, Model, ModelID, Sampler, SamplerID, WrappingMode,
+                ImageID, MagFilter, Material, MaterialID, Mesh, MeshID, MinFilter, Sampler, SamplerID,
+                Texture, TextureID, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         vec_map::VecMap,
@@ -36,6 +36,7 @@ pub struct VkAssetManager {
         pub buffer_views: VecMap<BufferViewID, VkModelBufferView>,
         pub images: VecMap<ImageID, VkModelImage>,
         pub samplers: VecMap<SamplerID, VkSampler>,
+        pub material_dst_sets: VecMap<MaterialID, vk::DescriptorSet>,
 }
 
 impl VkAssetManager {
@@ -46,6 +47,8 @@ impl VkAssetManager {
                 allocator: &Rc<vma::Allocator>,
                 transfer_queue: vk::Queue,
                 cmd_pool: &Rc<VkCommandPool>,
+                dst_pool: vk::DescriptorPool,
+                material_dst_set_layout: vk::DescriptorSetLayout,
                 asset_manager: &AssetManager,
         ) -> Result<Self, Box<dyn Error>> {
                 let cmd_buffer = VkReusableCommandBuffer::new(device, cmd_pool)?;
@@ -58,7 +61,7 @@ impl VkAssetManager {
                         &cmd_buffer,
                         asset_manager.buffers(),
                         asset_manager.buffer_views(),
-                        &Self::discover_buffer_view_usages(asset_manager.models()),
+                        &Self::discover_buffer_view_usages(asset_manager.meshes()),
                 )?;
 
                 trace!("Creating VkImages...");
@@ -75,43 +78,40 @@ impl VkAssetManager {
                 trace!("Creating VkSamplers...");
                 let vk_samplers = Self::create_vk_samplers_from_samplers(pdevice, device, asset_manager.samplers())?;
 
+                trace!("Creating material VkDescriptorSets...");
+                let vk_material_dst_sets = Self::create_vk_material_dst_sets_from_materials(
+                        device,
+                        dst_pool,
+                        material_dst_set_layout,
+                        asset_manager.textures(),
+                        asset_manager.materials(),
+                        &vk_images,
+                        &vk_samplers
+                )?;
+
                 Ok(Self {
                         buffer_views: vk_buffer_views,
                         images: vk_images,
                         samplers: vk_samplers,
+                        material_dst_sets: vk_material_dst_sets
                 })
         }
 
-        fn discover_buffer_view_usages(models: &VecMap<ModelID, Model>) -> HashMap<BufferViewID, vk::BufferUsageFlags> {
+        fn discover_buffer_view_usages(meshes: &VecMap<MeshID, Mesh>) -> HashMap<BufferViewID, vk::BufferUsageFlags> {
                 let mut vk_buffer_usages = HashMap::<BufferViewID, vk::BufferUsageFlags>::new();
 
-                fn handle_model(
-                        models: &VecMap<ModelID, Model>,
-                        model: ModelID,
-                        out_buffer_usages: &mut HashMap<BufferViewID, vk::BufferUsageFlags>,
-                ) {
-                        let model = &models[model];
-
-                        for mesh in &model.meshes {
-                                (*out_buffer_usages.entry(mesh.positions).or_default()) |=
+                for (_, mesh) in meshes {
+                        for p in &mesh.primitives {
+                                (*vk_buffer_usages.entry(p.positions).or_default()) |=
                                         vk::BufferUsageFlags::VERTEX_BUFFER;
-                                (*out_buffer_usages.entry(mesh.tex_coords).or_default()) |=
+                                (*vk_buffer_usages.entry(p.tex_coords).or_default()) |=
                                         vk::BufferUsageFlags::VERTEX_BUFFER;
-                                (*out_buffer_usages.entry(mesh.normals).or_default()) |=
+                                (*vk_buffer_usages.entry(p.normals).or_default()) |=
                                         vk::BufferUsageFlags::VERTEX_BUFFER;
-                                (*out_buffer_usages.entry(mesh.tangents).or_default()) |=
+                                (*vk_buffer_usages.entry(p.tangents).or_default()) |=
                                         vk::BufferUsageFlags::VERTEX_BUFFER;
-                                (*out_buffer_usages.entry(mesh.indices).or_default()) |=
-                                        vk::BufferUsageFlags::INDEX_BUFFER;
+                                (*vk_buffer_usages.entry(p.indices).or_default()) |= vk::BufferUsageFlags::INDEX_BUFFER;
                         }
-
-                        for &child in &model.children {
-                                handle_model(models, child, out_buffer_usages);
-                        }
-                }
-
-                for (model_id, _) in models {
-                        handle_model(models, model_id, &mut vk_buffer_usages);
                 }
 
                 vk_buffer_usages
@@ -155,7 +155,7 @@ impl VkAssetManager {
                         let index_type = match bview.component_type {
                                 ComponentType::U16 => vk::IndexType::UINT16,
                                 ComponentType::U32 => vk::IndexType::UINT32,
-                                _ => vk::IndexType::from_raw(i32::MAX)
+                                _ => vk::IndexType::from_raw(i32::MAX),
                         };
 
                         let vk_bview_id = vk_buffer_views.insert(VkModelBufferView {
@@ -259,6 +259,62 @@ impl VkAssetManager {
                 }
 
                 Ok(vk_samplers)
+        }
+
+        fn create_vk_material_dst_sets_from_materials(
+                device: &VkDevice,
+                dst_pool: vk::DescriptorPool,
+                material_dst_set_layout: vk::DescriptorSetLayout,
+                textures: &VecMap<TextureID, Texture>,
+                materials: &VecMap<MaterialID, Material>,
+                vk_images: &VecMap<ImageID, VkModelImage>,
+                vk_samplers: &VecMap<SamplerID, VkSampler>,
+        ) -> Result<VecMap<MaterialID, vk::DescriptorSet>, Box<dyn Error>> {
+                let material_dst_set_layouts = vec![material_dst_set_layout; materials.len()];
+                let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
+                        .descriptor_pool(dst_pool)
+                        .set_layouts(&material_dst_set_layouts);
+                let material_dst_sets = unsafe { device.allocate_descriptor_sets(&dst_set_ainfo)? };
+
+                let mut material_dst_sets_map = VecMap::<MaterialID, vk::DescriptorSet>::new();
+
+                for ((mat_id, mat), &material_dst_set) in materials.iter().zip(&material_dst_sets) {
+                        let color_texture = &textures[mat.base_color_texture.unwrap()];
+                        let color_vk_image_view = &vk_images[color_texture.image].image_view;
+                        let color_vk_sampler = &vk_samplers[color_texture.sampler];
+
+                        let image_info = vk::DescriptorImageInfo {
+                                image_view: **color_vk_image_view,
+                                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                ..Default::default()
+                        };
+                        let image_dst_set_write = vk::WriteDescriptorSet::builder()
+                                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                                .dst_set(material_dst_set)
+                                .dst_binding(0)
+                                .dst_array_element(0)
+                                .image_info(std::slice::from_ref(&image_info))
+                                .build();
+
+                        let sampler_info = vk::DescriptorImageInfo {
+                                sampler: **color_vk_sampler,
+                                ..Default::default()
+                        };
+                        let sampler_dst_set_write = vk::WriteDescriptorSet::builder()
+                                .descriptor_type(vk::DescriptorType::SAMPLER)
+                                .dst_set(material_dst_set)
+                                .dst_binding(1)
+                                .dst_array_element(0)
+                                .image_info(std::slice::from_ref(&sampler_info))
+                                .build();
+
+                        unsafe { device.update_descriptor_sets(&[image_dst_set_write, sampler_dst_set_write], &[]) };
+
+                        let dst_set_id = material_dst_sets_map.insert(material_dst_set);
+                        assert_eq!(mat_id, dst_set_id);
+                }
+
+                Ok(material_dst_sets_map)
         }
 
         fn vk_format_from_component_and_data_type(comp_type: ComponentType, data_type: DataType) -> vk::Format {

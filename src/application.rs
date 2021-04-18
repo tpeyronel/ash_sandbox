@@ -301,7 +301,13 @@ impl Application {
                         desired_dir.y -= 1.0;
                 }
 
-                let move_speed = 0.0075f32;
+                const DEFAULT_MOVE_SPEED: f32 = 0.005;
+
+                let move_speed = if input.key_pressed(VirtualKeyCode::LControl) {
+                        DEFAULT_MOVE_SPEED * 0.25
+                } else {
+                        DEFAULT_MOVE_SPEED
+                };
 
                 if desired_dir.norm() > f32::EPSILON {
                         let move_dir = *self.camera.get_hor_orientation() * desired_dir.normalize() * move_speed;
