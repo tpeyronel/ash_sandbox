@@ -16,14 +16,3 @@ void main() {
         //o_out_color = vec4(i_tex_coord, 0.0, 1.0);
         //o_out_color = vec4(1.0, 1.0, 1.0, 1.0);
 }
-
-/*#version 450
-#extension GL_ARB_separate_shader_objects : enable
-
-layout(location = 0) in vec3 i_frag_color;
-
-layout(location = 0) out vec4 o_out_color;
-
-void main() {
-    o_out_color = vec4(i_frag_color, 1.0);
-}*/

@@ -42,7 +42,7 @@ pub struct VkContext {
 
         pub device: Rc<VkDevice>,
 
-        qfamilyi: VkQueueFamilyIndices,
+        _qfamilyi: VkQueueFamilyIndices,
         pub queues: VkQueues,
 
         pub allocator: Rc<vma::Allocator>,
@@ -111,7 +111,7 @@ impl VkContext {
 
                         device,
 
-                        qfamilyi,
+                        _qfamilyi: qfamilyi,
                         queues,
 
                         allocator,

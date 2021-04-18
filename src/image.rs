@@ -8,6 +8,7 @@ pub struct Image2D {
 }
 
 impl Image2D {
+        #[allow(dead_code)]
         pub fn new(path: &CStr, desired_channels: u32) -> Result<Image2D, std::io::Error> {
                 let mut width: i32 = 0;
                 let mut height: i32 = 0;

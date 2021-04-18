@@ -8,29 +8,21 @@ use winit::window::Window;
 
 use super::{
         vk_asset_manager::{VkAssetManager},
-        vk_buffer::{VkBuffer, VkBufferCreateInfo, VkImmutableBufferCreateInfo},
+        vk_buffer::{VkBuffer, VkBufferCreateInfo},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
-        vk_image::{VkImage, VkImageCreateFromDataInfo},
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauses},
         vk_wrapper::{
-                VkDescriptorSetLayout, VkDevice, VkImageView, VkPipeline, VkPipelineLayout, VkRenderPass, VkSampler,
+                VkDescriptorSetLayout, VkDevice, VkPipeline, VkPipelineLayout, VkRenderPass,
                 VkSemaphore, VkShaderModule,
         },
 };
 use crate::{
         asset_manager::{AssetManager, Mesh, ModelID, Primitive},
         camera::Camera,
-        constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
-        image::Image2D,
         my_glm::*,
         renderer::Renderer,
         vertex::Vertex,
-        vk::{
-                vk_buffer::BufferData,
-                vk_image::MipLevels,
-                vk_wrapper::{VkPhysicalDevice, VkQueues},
-        },
 };
 
 pub struct VkRenderer {
@@ -45,16 +37,10 @@ pub struct VkRenderer {
 
         render_pass: VkRenderPass,
 
-        setup_cmd_buffer: VkReusableCommandBuffer,
+        _setup_cmd_buffer: VkReusableCommandBuffer,
         draw_cmd_buffers: Vec<VkReusableCommandBuffer>,
 
-        vertex_buffer: VkBuffer,
-        index_buffer: VkBuffer,
         matrices_buffers: Vec<VkBuffer>,
-
-        tex_vk_img: VkImage,
-        tex_vk_img_view: VkImageView,
-        tex_vk_img_sampler: VkSampler,
 
         matrices_dst_set_layout: VkDescriptorSetLayout,
         material_dst_set_layout: VkDescriptorSetLayout,
@@ -114,37 +100,9 @@ impl VkRenderer {
                         Self::create_sync_objects(&vk_context.device, swapchain.img_count)?;
                 trace!("Created VkSemaphores");
 
-                let vertex_buffer = Self::create_vertex_buffer(
-                        &vk_context.instance,
-                        &vk_context.pdevice,
-                        &vk_context.device,
-                        &vk_context.allocator,
-                        &vk_context.queues,
-                        &setup_cmd_buffer,
-                )?;
-                trace!("Created vertex buffer");
-
-                let index_buffer = Self::create_index_buffer(
-                        &vk_context.device,
-                        &vk_context.allocator,
-                        &vk_context.queues,
-                        &setup_cmd_buffer,
-                )?;
-                trace!("Created index buffer");
-
                 let matrices_buffers =
                         Self::create_matrices_buffers(&vk_context.device, &vk_context.allocator, swapchain.img_count)?;
                 trace!("Created matrices uniform buffer");
-
-                let (tex_vk_img, tex_vk_img_view, tex_vk_img_sampler) = Self::create_texture_image(
-                        &vk_context.instance,
-                        &vk_context.pdevice,
-                        &vk_context.pdevice.props.limits,
-                        &vk_context.device,
-                        &vk_context.allocator,
-                        &setup_cmd_buffer,
-                        vk_context.queues.graphics,
-                )?;
 
                 let (matrices_dst_set_layout, material_dst_set_layout) =
                         Self::create_descriptor_set_layouts(&vk_context.device)?;
@@ -203,16 +161,10 @@ impl VkRenderer {
 
                         render_pass,
 
-                        setup_cmd_buffer,
+                        _setup_cmd_buffer: setup_cmd_buffer,
                         draw_cmd_buffers,
 
-                        vertex_buffer,
-                        index_buffer,
                         matrices_buffers,
-
-                        tex_vk_img,
-                        tex_vk_img_view,
-                        tex_vk_img_sampler,
 
                         matrices_dst_set_layout,
                         material_dst_set_layout,
@@ -525,169 +477,6 @@ impl VkRenderer {
                 ))
         }
 
-        fn create_vertex_buffer(
-                _instance: &ash::Instance,
-                _pdevice: &VkPhysicalDevice,
-                device: &ash::Device,
-                allocator: &Rc<vma::Allocator>,
-                queues: &VkQueues,
-                setup_cmd_buffer: &VkReusableCommandBuffer,
-        ) -> Result<VkBuffer, Box<dyn Error>> {
-                let data = {
-                        [
-                                Vertex {
-                                        pos: Vec3::new(-0.5, -0.5, -0.5),
-                                        // tex_coord: Vec2::new(0.0, 1.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(-0.5, 0.5, -0.5),
-                                        // tex_coord: Vec2::new(0.0, 0.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(0.5, 0.5, -0.5),
-                                        // tex_coord: Vec2::new(1.0, 0.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(0.5, -0.5, -0.5),
-                                        // tex_coord: Vec2::new(1.0, 1.0),
-                                },
-                                //
-                                //
-                                //
-                                Vertex {
-                                        pos: Vec3::new(0.5, -0.5, -0.5),
-                                        // tex_coord: Vec2::new(0.0, 1.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(0.5, 0.5, -0.5),
-                                        // tex_coord: Vec2::new(0.0, 0.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(0.5, 0.5, 0.5),
-                                        // tex_coord: Vec2::new(1.0, 0.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(0.5, -0.5, 0.5),
-                                        // tex_coord: Vec2::new(1.0, 1.0),
-                                },
-                                //
-                                //
-                                //
-                                Vertex {
-                                        pos: Vec3::new(0.5, -0.5, 0.5),
-                                        // tex_coord: Vec2::new(0.0, 1.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(0.5, 0.5, 0.5),
-                                        // tex_coord: Vec2::new(0.0, 0.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(-0.5, 0.5, 0.5),
-                                        // tex_coord: Vec2::new(1.0, 0.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(-0.5, -0.5, 0.5),
-                                        // tex_coord: Vec2::new(1.0, 1.0),
-                                },
-                                //
-                                //
-                                //
-                                Vertex {
-                                        pos: Vec3::new(-0.5, -0.5, 0.5),
-                                        // tex_coord: Vec2::new(0.0, 1.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(-0.5, 0.5, 0.5),
-                                        // tex_coord: Vec2::new(0.0, 0.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(-0.5, 0.5, -0.5),
-                                        // tex_coord: Vec2::new(1.0, 0.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(-0.5, -0.5, -0.5),
-                                        // tex_coord: Vec2::new(1.0, 1.0),
-                                },
-                                //
-                                //
-                                //
-                                Vertex {
-                                        pos: Vec3::new(-0.5, 0.5, -0.5),
-                                        // tex_coord: Vec2::new(0.0, 1.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(-0.5, 0.5, 0.5),
-                                        // tex_coord: Vec2::new(0.0, 0.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(0.5, 0.5, 0.5),
-                                        // tex_coord: Vec2::new(1.0, 0.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(0.5, 0.5, -0.5),
-                                        // tex_coord: Vec2::new(1.0, 1.0),
-                                },
-                                //
-                                //
-                                //
-                                Vertex {
-                                        pos: Vec3::new(0.5, -0.5, -0.5),
-                                        // tex_coord: Vec2::new(0.0, 1.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(0.5, -0.5, 0.5),
-                                        // tex_coord: Vec2::new(0.0, 0.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(-0.5, -0.5, 0.5),
-                                        // tex_coord: Vec2::new(1.0, 0.0),
-                                },
-                                Vertex {
-                                        pos: Vec3::new(-0.5, -0.5, -0.5),
-                                        // tex_coord: Vec2::new(1.0, 1.0),
-                                },
-                        ]
-                };
-
-                let cinfo = VkImmutableBufferCreateInfo {
-                        device,
-                        allocator,
-                        cmd_buffer: setup_cmd_buffer,
-                        transfer_queue: queues.graphics,
-                        buffer_usage: vk::BufferUsageFlags::VERTEX_BUFFER,
-                        data: BufferData::FullSlice(&data),
-                };
-
-                VkBuffer::new_immutable(&cinfo)
-        }
-
-        fn create_index_buffer(
-                device: &ash::Device,
-                allocator: &Rc<vma::Allocator>,
-                queues: &VkQueues,
-                setup_cmd_buffer: &VkReusableCommandBuffer,
-        ) -> Result<VkBuffer, Box<dyn Error>> {
-                let data: [u32; 36] = [
-                        0, 1, 2, 2, 3, 0, //
-                        4, 5, 6, 6, 7, 4, //
-                        8, 9, 10, 10, 11, 8, //
-                        12, 13, 14, 14, 15, 12, //
-                        16, 17, 18, 18, 19, 16, //
-                        20, 21, 22, 22, 23, 20, //
-                ];
-
-                let cinfo = VkImmutableBufferCreateInfo {
-                        device,
-                        allocator,
-                        cmd_buffer: setup_cmd_buffer,
-                        transfer_queue: queues.graphics,
-                        buffer_usage: vk::BufferUsageFlags::INDEX_BUFFER,
-                        data: BufferData::FullSlice(&data),
-                };
-
-                VkBuffer::new_immutable(&cinfo)
-        }
-
         fn create_matrices_buffers(
                 device: &ash::Device,
                 allocator: &Rc<vma::Allocator>,
@@ -715,81 +504,6 @@ impl VkRenderer {
                 }
 
                 Ok(buffers)
-        }
-
-        fn create_texture_image(
-                instance: &ash::Instance,
-                pdevice: &vk::PhysicalDevice,
-                pd_limits: &vk::PhysicalDeviceLimits,
-                device: &Rc<VkDevice>,
-                allocator: &Rc<vma::Allocator>,
-                setup_cmd_buffer: &VkReusableCommandBuffer,
-                transfer_queue: vk::Queue,
-        ) -> Result<(VkImage, VkImageView, VkSampler), Box<dyn Error>> {
-                unsafe { stb_image::stb_image::bindgen::stbi_set_flip_vertically_on_load(1) };
-
-                let image = Image2D::new(const_cstr!("res/tex/wall.jpg").as_cstr(), 4)?;
-
-                let vk_img_cinfo = VkImageCreateFromDataInfo {
-                        data: image.data(),
-                        width: image.width(),
-                        height: image.height(),
-                        format: vk::Format::R8G8B8A8_SRGB,
-                        mip_levels: MipLevels::Log2,
-                        samples: vk::SampleCountFlags::TYPE_1,
-                        setup_cmd_buffer,
-                        transfer_queue,
-                };
-
-                let vk_img = unsafe { VkImage::from_data(instance, pdevice, device, allocator, &vk_img_cinfo)? };
-
-                unsafe {
-                        setup_cmd_buffer.wait(&device, u64::MAX)?;
-                }
-
-                let vk_img_view = unsafe {
-                        let vk_img_view_cinfo = vk::ImageViewCreateInfo {
-                                image: *vk_img,
-                                view_type: vk::ImageViewType::TYPE_2D,
-                                format: vk::Format::R8G8B8A8_SRGB,
-                                components: vk::ComponentMapping::default(),
-                                subresource_range: vk::ImageSubresourceRange {
-                                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                                        base_mip_level: 0,
-                                        level_count: vk_img.mip_levels,
-                                        base_array_layer: 0,
-                                        layer_count: 1,
-                                },
-                                ..vk::ImageViewCreateInfo::default()
-                        };
-
-                        VkImageView::new(device, &vk_img_view_cinfo)?
-                };
-
-                let vk_img_sampler = unsafe {
-                        let sampler_cinfo = vk::SamplerCreateInfo {
-                                mag_filter: vk::Filter::LINEAR,
-                                min_filter: vk::Filter::LINEAR,
-                                address_mode_u: vk::SamplerAddressMode::REPEAT,
-                                address_mode_v: vk::SamplerAddressMode::REPEAT,
-                                address_mode_w: vk::SamplerAddressMode::REPEAT,
-                                anisotropy_enable: ENABLE_ANISOTROPY as vk::Bool32,
-                                max_anisotropy: pd_limits.max_sampler_anisotropy,
-                                compare_enable: 0,
-                                compare_op: vk::CompareOp::ALWAYS,
-                                mipmap_mode: vk::SamplerMipmapMode::LINEAR,
-                                mip_lod_bias: 0.0,
-                                min_lod: 0.0,
-                                max_lod: LOD_CLAMP_NONE,
-                                border_color: vk::BorderColor::INT_OPAQUE_BLACK,
-                                unnormalized_coordinates: vk::FALSE,
-                                ..vk::SamplerCreateInfo::default()
-                        };
-
-                        VkSampler::new(device, &sampler_cinfo)?
-                };
-
-                Ok((vk_img, vk_img_view, vk_img_sampler))
         }
 
         fn create_descriptor_set_layouts(
@@ -1128,7 +842,7 @@ impl VkRenderer {
         fn update_matrices_buffer(&self, mats_v_p: &MatricesVP, framei: usize) -> vma::Result<()> {
                 let time = self.creation_instant.elapsed().as_secs_f32();
 
-                let model = glm::rotate(&Mat4::identity(), time, &Vec3::new(0.0, 1.0, 0.0));
+                let _model = glm::rotate(&Mat4::identity(), time, &Vec3::new(0.0, 1.0, 0.0));
 
                 let buffer_size = std::mem::size_of::<MatricesVP>() as vk::DeviceSize;
 

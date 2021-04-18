@@ -19,6 +19,7 @@ pub struct VkBufferCreateInfo<'a> {
         pub q_family_indices: Option<&'a [u32]>,
 }
 
+#[allow(dead_code)]
 pub enum BufferData<'a, T> {
         FullSlice(&'a [T]),
         OffsetLength {

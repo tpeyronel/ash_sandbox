@@ -13,6 +13,7 @@ mod vertex;
 mod vk;
 mod application;
 
+#[allow(unused_imports)]
 #[macro_use]
 extern crate const_cstr;
 #[macro_use]
