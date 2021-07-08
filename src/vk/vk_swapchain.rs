@@ -362,11 +362,11 @@ impl VkSwapchain {
                                 .get_physical_device_surface_present_modes(physical_device, **surface)?
                 };
 
-                let find_present_mode = |mode: vk::PresentModeKHR| modes.iter().any(|&m| m == mode);
+                let is_present_mode_avail = |mode: vk::PresentModeKHR| modes.iter().any(|&m| m == mode);
 
-                if find_present_mode(vk::PresentModeKHR::MAILBOX) {
+                if is_present_mode_avail(vk::PresentModeKHR::MAILBOX) {
                         Ok(vk::PresentModeKHR::MAILBOX)
-                } else if find_present_mode(vk::PresentModeKHR::IMMEDIATE) {
+                } else if is_present_mode_avail(vk::PresentModeKHR::IMMEDIATE) {
                         Ok(vk::PresentModeKHR::IMMEDIATE)
                 } else {
                         Ok(vk::PresentModeKHR::FIFO)

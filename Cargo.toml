@@ -20,15 +20,17 @@ env_logger = "0.8.2"
 memoffset = "0.6.1"
 chrono = "0.4"
 fps_counter = "1.0.0"
+tps_counter = { path = "../tps_counter" }
 stb_image = "0.2.2"
 const-cstr = "0.3.0"
-imgui = "0.6.1"
-imgui-winit-support = "0.6.1"
-imgui-rs-vulkan-renderer = "0.6.1"
+imgui = "0.7.0"
+imgui-winit-support = "0.7.1"
+imgui-rs-vulkan-renderer = { path = "../imgui-rs-vulkan-renderer" }
 bitflags = "1.2.1"
 gltf = "0.15.2"
 slotmap = "1.0.2"
-hashbrown = "0.11.0"
+enum-map = "1.1.1"
+bus = "2.2.3"
 
 [profile.dev.package."*"]
 opt-level = 3

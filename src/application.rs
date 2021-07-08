@@ -1,23 +1,12 @@
-use std::{
-        error::Error,
-        rc::Rc,
-        time::{Duration, Instant},
-};
+use std::{collections::HashMap, error::Error, rc::Rc, time::{Duration, Instant}};
 
-use fps_counter::FPSCounter;
+use tps_counter::TPSCounter;
 
-use crate::{
-        asset_manager::*,
-        camera::Camera,
-        input_manager::{InputManager, InputMessage},
-        my_glm::*,
-        renderer::Renderer,
-        vk::vk_renderer::VkRenderer,
-};
+use crate::{action_ids::{ACTION_EXIT, ACTION_TOGGLE_CURSOR, ACTION_TOGGLE_FULLSCREEN}, asset_manager::*, camera::Camera, input_manager::{ActionBinding, ActionIdRx, ActionType, InputManager, KeyCode, KeyState, UserAction}, my_glm::*, renderer::Renderer, vk::vk_renderer::VkRenderer};
 use log::{info, trace};
 use winit::{
         dpi::PhysicalSize,
-        event::{DeviceEvent, Event, ModifiersState, StartCause, VirtualKeyCode, WindowEvent},
+        event::{DeviceEvent, Event, MouseScrollDelta, StartCause, WindowEvent},
         event_loop::{ControlFlow, EventLoop},
         window::{Fullscreen, Window, WindowBuilder},
 };
@@ -31,11 +20,12 @@ pub struct Application {
         window_state: WindowState,
         imgui_state: ImGuiState,
         input_manager: InputManager,
+        action_id_rx: ActionIdRx,
         asset_manager: Rc<AssetManager>,
         renderer: VkRenderer,
         camera: Camera,
 
-        fps_counter: FPSCounter,
+        tps_counter: TPSCounter,
         prev_frame_begin: Instant,
         frame_begin: Instant,
         dtime: Duration,
@@ -70,9 +60,13 @@ impl Application {
                 trace!("Initialized ImGui");
 
                 let mut input_manager = InputManager::new();
-                input_manager.on_key_release(VirtualKeyCode::Escape, InputMessage::Exit);
-                input_manager.on_key_release(VirtualKeyCode::T, InputMessage::ToggleCursor);
-                input_manager.on_key_release(VirtualKeyCode::F11, InputMessage::ToggleFullscreen);
+                let mut input_map = HashMap::new();
+                input_map.insert(KeyCode::Escape, ActionBinding{ action_id: ACTION_EXIT.to_string(), action_type: ActionType::Instantaneous });
+                input_map.insert(KeyCode::T, ActionBinding{ action_id: ACTION_TOGGLE_CURSOR.to_string(), action_type: ActionType::Instantaneous });
+                input_map.insert(KeyCode::F11, ActionBinding{ action_id: ACTION_TOGGLE_FULLSCREEN.to_string(), action_type: ActionType::Instantaneous });
+                input_manager.push_key_release_input_map(input_map);
+
+                let action_id_rx = input_manager.create_rx();
                 trace!("Initialized InputManager");
 
                 let dsampler = Sampler {
@@ -97,6 +91,8 @@ impl Application {
 
                 let mut asset_manager = AssetManager::new(dsampler, dmaterial);
                 let _model_colt = asset_manager.import_gltf_file(std::path::Path::new("res/model/Colt/Colt.gltf"))?;
+                let _model_grass_plane =
+                        asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
                 let asset_manager = Rc::new(asset_manager);
 
                 trace!("Initialized AssetManager");
@@ -108,7 +104,7 @@ impl Application {
                         0.0,
                         0.0,
                         90.0f32.to_radians(),
-                        5.0,
+                        1.0,
                         window.inner_size().width,
                         window.inner_size().height,
                         0.1,
@@ -130,16 +126,12 @@ impl Application {
                         window_state,
                         imgui_state,
                         input_manager,
+                        action_id_rx,
                         asset_manager,
                         renderer,
                         camera,
 
-                        fps_counter: FPSCounter::new(
-                                Duration::from_millis(250),
-                                Box::new(|fps| {
-                                        info!("FPS: {}", fps);
-                                }),
-                        ),
+                        tps_counter: TPSCounter::new(5),
                         prev_frame_begin: Instant::now(),
                         frame_begin: Instant::now(),
                         dtime: Duration::from_nanos(0),
@@ -160,7 +152,8 @@ impl Application {
                                 }
                                 Event::DeviceEvent { event, .. } => {
                                         if self.window_state.focused {
-                                                self.on_device_event(&event)
+                                                self.on_device_event(&event);
+                                                self.input_manager.on_device_event(&event);
                                         }
                                 }
                                 Event::WindowEvent { window_id, event } if self.window.id() == window_id => {
@@ -207,30 +200,44 @@ impl Application {
                 self.dtime = self.frame_begin - self.prev_frame_begin;
 
                 self.imgui_state.context.io_mut().update_delta_time(self.dtime);
-
-                self.input_manager.update();
         }
 
         fn on_device_event(&mut self, devent: &DeviceEvent) {
                 match *devent {
                         DeviceEvent::MouseMotion { delta: (dx, dy) } => {
                                 if self.window_state.cursor_state == CursorState::Hidden {
-                                        if self.input_manager.all_modifiers(ModifiersState::ALT) {
-                                                self.camera.rotate_euler_angles(-dy as f32, 0.0, dx as f32);
+                                        const MOUSE_SENS: f32 = 0.0025;
+
+                                        self.camera.pitch_by(-dy as f32 * MOUSE_SENS);
+
+                                        self.camera.yaw_by(dx as f32 * MOUSE_SENS);
+                                        // TODO: uncomment
+                                        /* if self.input_manager.all_modifiers(ModifiersState::ALT) {
+                                                self.camera.roll_by(dx as f32 * MOUSE_SENS);
                                         } else {
-                                                self.camera.rotate_euler_angles(-dy as f32, dx as f32, 0.0);
-                                        }
+                                                self.camera.yaw_by(dx as f32 * MOUSE_SENS);
+                                        } */
                                 }
                         }
+                        DeviceEvent::MouseWheel { delta } => match delta {
+                                MouseScrollDelta::LineDelta(_, dy) => {
+                                        if self.window_state.cursor_state == CursorState::Hidden {
+                                                const ZOOM_SENS: f32 = 0.1;
+
+                                                self.camera.zoom_by(dy * ZOOM_SENS);
+                                        }
+                                }
+                                MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition { x: _, y: _ }) => {}
+                        },
                         _ => (),
                 };
         }
 
         fn on_window_event(&mut self, wevent: &WindowEvent, control_flow: &mut ControlFlow) {
                 match *wevent {
-                        WindowEvent::ModifiersChanged(modifiers_state) => {
+                        /* WindowEvent::ModifiersChanged(modifiers_state) => {
                                 self.input_manager.on_modifiers_changed(modifiers_state)
-                        }
+                        } */
                         WindowEvent::Focused(focused) => self.window_state.focused = focused,
                         WindowEvent::Resized(PhysicalSize { width, height }) => {
                                 self.camera.on_window_resize(width, height);
@@ -239,80 +246,78 @@ impl Application {
                         WindowEvent::CloseRequested => {
                                 *control_flow = ControlFlow::Exit;
                         }
-                        WindowEvent::KeyboardInput { input, .. } => {
+                        /* WindowEvent::KeyboardInput { input, .. } => {
                                 self.input_manager.on_keyboard_input(&input);
-                        }
+                        } */
                         _ => {}
                 };
         }
 
         fn update(&mut self, control_flow: &mut ControlFlow) {
-                self.fps_counter.tick();
+                //self.tps_counter.tick_and_map(|tps| info!("FPS: {:.2}", tps));
 
-                for input_message in self.input_manager.next_message() {
-                        match input_message {
-                                InputMessage::Exit => *control_flow = ControlFlow::Exit,
-                                InputMessage::ToggleCursor => {
-                                        let new_cursor_state = match self.window_state.cursor_state {
-                                                CursorState::Normal => CursorState::Hidden,
-                                                CursorState::Hidden => CursorState::Normal,
-                                        };
+                self.process_user_input(control_flow);
 
-                                        Self::set_cursor_state(
-                                                &mut self.window_state,
-                                                &mut self.window,
-                                                self.imgui_state.context.io_mut(),
-                                                new_cursor_state,
-                                        );
-                                }
-                                InputMessage::ToggleFullscreen => {
-                                        match self.window.fullscreen() {
-                                                Some(_) => self.window.set_fullscreen(None),
-                                                None => self.window.set_fullscreen(Some(self
-                                                        .window_state
-                                                        .fullscreen_mode
-                                                        .clone())),
-                                        };
-                                }
-                                _ => (),
-                        }
-                }
-
-                let input = &self.input_manager;
+                let key_states = self.input_manager.get_key_states();
 
                 let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
 
-                if input.key_pressed(VirtualKeyCode::W) {
+                if key_states[KeyCode::W as usize] == KeyState::Pressed {
                         desired_dir.z += 1.0;
                 }
-                if input.key_pressed(VirtualKeyCode::S) {
+                if key_states[KeyCode::S as usize] == KeyState::Pressed {
                         desired_dir.z -= 1.0;
                 }
-                if input.key_pressed(VirtualKeyCode::D) {
+                if key_states[KeyCode::D as usize] == KeyState::Pressed {
                         desired_dir.x += 1.0;
                 }
-                if input.key_pressed(VirtualKeyCode::A) {
+                if key_states[KeyCode::A as usize] == KeyState::Pressed {
                         desired_dir.x -= 1.0;
                 }
-                if input.key_pressed(VirtualKeyCode::Space) {
+                if key_states[KeyCode::Space as usize] == KeyState::Pressed {
                         desired_dir.y += 1.0;
                 }
-                if input.key_pressed(VirtualKeyCode::LShift) {
+                if key_states[KeyCode::LShift as usize] == KeyState::Pressed {
                         desired_dir.y -= 1.0;
                 }
 
                 const DEFAULT_MOVE_SPEED: f32 = 0.005;
 
-                let move_speed = if input.key_pressed(VirtualKeyCode::LControl) {
+                let move_speed = if key_states[KeyCode::LControl as usize] == KeyState::Pressed {
                         DEFAULT_MOVE_SPEED * 0.25
                 } else {
                         DEFAULT_MOVE_SPEED
                 };
 
                 if desired_dir.norm() > f32::EPSILON {
-                        let move_dir = *self.camera.get_hor_orientation() * desired_dir.normalize() * move_speed;
+                        let move_dir = self.camera.hor_orien() * desired_dir.normalize() * move_speed;
+
                         self.camera.translate(&move_dir);
                 }
+
+                const ROTATE_SPEED: f32 = 0.005;
+
+                if key_states[KeyCode::Up as usize] == KeyState::Pressed {
+                        self.camera.pitch_by(ROTATE_SPEED);
+                }
+                if key_states[KeyCode::Down as usize] == KeyState::Pressed {
+                        self.camera.pitch_by(-ROTATE_SPEED);
+                }
+                //if input.all_modifiers(ModifiersState::ALT) {
+                        if key_states[KeyCode::Right as usize] == KeyState::Pressed {
+                                self.camera.roll_by(ROTATE_SPEED);
+                        }
+                        if key_states[KeyCode::Left as usize] == KeyState::Pressed {
+                                self.camera.roll_by(-ROTATE_SPEED);
+                        }
+                /* } else {
+                        if key_states[KeyCode::Right as usize] == KeyState::Pressed {
+                                self.camera.yaw_by(ROTATE_SPEED);
+                        }
+                        if key_states[KeyCode::Left as usize] == KeyState::Pressed {
+                                self.camera.yaw_by(-ROTATE_SPEED);
+                        }
+                } */
 
                 self.imgui_state
                         .platform
@@ -331,10 +336,11 @@ impl Application {
                                 let mouse_pos = ui.io().mouse_pos;
                                 ui.text(format!("Mouse Position: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
                                 ui.text(format!(
-                                        "Pitch: {:.1} Yaw: {:.1}, Roll: {:.1}",
-                                        cam.get_pitch().to_degrees(),
-                                        cam.get_yaw().to_degrees(),
-                                        cam.get_roll().to_degrees()
+                                        "Pitch: {:.1} Yaw: {:.1}, Roll: {:.1}, Zoom: {:.1}",
+                                        cam.pitch().to_degrees(),
+                                        cam.yaw().to_degrees(),
+                                        cam.roll().to_degrees(),
+                                        cam.zoom()
                                 ));
                         });
 
@@ -344,21 +350,52 @@ impl Application {
                 let imgui_draw_data = ui.render();
 
                 self.renderer
-                        .draw(&self.camera, imgui_draw_data)
+                        .draw(&mut self.camera, imgui_draw_data)
                         .expect("Error occurred while drawing");
+        }
+
+        fn process_user_input(&mut self, control_flow: &mut ControlFlow) {
+                for UserAction{ action_id, action_type, input_type } in &self.action_id_rx.try_recv() {
+                        match action_id.as_str() {
+                                ACTION_EXIT => *control_flow = ControlFlow::Exit,
+                                ACTION_TOGGLE_CURSOR => {
+                                        let new_cursor_state = match self.window_state.cursor_state {
+                                                CursorState::Normal => CursorState::Hidden,
+                                                CursorState::Hidden => CursorState::Normal,
+                                        };
+
+                                        Self::set_cursor_state(
+                                                &mut self.window_state,
+                                                &mut self.window,
+                                                self.imgui_state.context.io_mut(),
+                                                new_cursor_state,
+                                        );
+                                }
+                                ACTION_TOGGLE_FULLSCREEN => {
+                                        match self.window.fullscreen() {
+                                                Some(_) => self.window.set_fullscreen(None),
+                                                None => self.window.set_fullscreen(Some(self
+                                                        .window_state
+                                                        .fullscreen_mode
+                                                        .clone())),
+                                        };
+                                }
+                                _ => (),
+                        }
+                }
         }
 
         fn set_cursor_state(
                 window_state: &mut WindowState,
                 window: &mut Rc<Window>,
                 imgui_io: &mut imgui::Io,
-                new_state: CursorState,
+                new_cursor_state: CursorState,
         ) {
-                window_state.cursor_state = new_state;
-                window.set_cursor_visible(new_state != CursorState::Hidden);
-                window.set_cursor_grab(new_state == CursorState::Hidden).unwrap();
+                window_state.cursor_state = new_cursor_state;
+                window.set_cursor_visible(new_cursor_state != CursorState::Hidden);
+                window.set_cursor_grab(new_cursor_state == CursorState::Hidden).unwrap();
                 imgui_io.config_flags
-                        .set(imgui::ConfigFlags::NO_MOUSE, new_state == CursorState::Hidden);
+                        .set(imgui::ConfigFlags::NO_MOUSE, new_cursor_state == CursorState::Hidden);
         }
 }
 

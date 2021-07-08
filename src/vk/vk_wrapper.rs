@@ -93,7 +93,7 @@ impl VkPhysicalDevice {
                                                 .unwrap()
                                 };
 
-                                name == "GeForce GTX 970"
+                                name == "NVIDIA GeForce GTX 970"
                         })
                         .unwrap())
         }

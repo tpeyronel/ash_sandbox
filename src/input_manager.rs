@@ -1,143 +1,136 @@
-use hashbrown::HashMap;
+use std::collections::HashMap;
+
 #[allow(unused_imports)]
 use log::info;
-use std::collections::VecDeque;
-use winit::event::{ElementState, KeyboardInput, ModifiersState, VirtualKeyCode};
+use winit::event::{DeviceEvent, KeyboardInput, ModifiersState};
 
-const KEY_COUNT: usize = VirtualKeyCode::Cut as usize;
+pub type KeyCode = winit::event::VirtualKeyCode;
+pub type KeyState = winit::event::ElementState;
 
-#[allow(dead_code)]
-#[derive(Clone, Copy)]
-pub enum InputMessage {
-        Exit,
-        ToggleCursor,
-        ToggleFullscreen,
-        PlayerMoveForward,
-        PlayerMoveBackward,
-        PlayerMoveRight,
-        PlayerMoveLeft,
-        PlayerMoveUp,
-        PlayerMoveDown,
+const MAX_KEY_CODE: usize = KeyCode::Cut as usize;
+
+
+#[derive(Debug, Clone)]
+pub struct UserAction {
+	pub action_id: ActionId,
+	pub action_type: ActionType,
+	pub input_type: InputValueType,
 }
 
+#[derive(Debug, Clone)]
+pub struct ActionBinding {
+	pub action_id: ActionId,
+	pub action_type: ActionType,
+}
+
+/* #[derive(Debug, Clone)]
+pub struct ActionId(pub String); */
+
+pub type ActionId = String;
+
+#[derive(Debug, Clone)]
+pub enum ActionType {
+	Instantaneous,
+	Prolonged{ stage: ProlongedActionTypeStage },
+}
+
+#[derive(Debug, Clone)]
+pub enum ProlongedActionTypeStage {
+	Begin,
+	End,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum InputValueType {
+	Discrete,
+	Continuous(f32),
+}
+
+pub type ActionIdRx = bus::BusReader<UserAction>;
+type ActionIdTx = bus::Bus<UserAction>;
+
 pub struct InputManager {
-        old_key_states: [ElementState; KEY_COUNT],
-        key_states: [ElementState; KEY_COUNT],
-        old_modifiers_state: ModifiersState,
-        modifiers_state: ModifiersState,
-        // old_key_states: HashMap<ScanCode, ElementState>,
-        // key_states: HashMap<ScanCode, ElementState>,
-        //kpress_listeners: HashMap<VirtualKeyCode, Vec<Box<dyn FnMut()>>>,
-        //krelease_listeners: HashMap<VirtualKeyCode, Vec<Box<dyn FnMut()>>>,
-        key_press_messages: HashMap<VirtualKeyCode, Vec<InputMessage>>,
-        key_release_messages: HashMap<VirtualKeyCode, Vec<InputMessage>>,
-        message_queue: VecDeque<InputMessage>,
+	key_states: [KeyState; MAX_KEY_CODE],
+	modifiers_state: ModifiersState,
+
+	key_press_bindings: Vec<HashMap<KeyCode, ActionBinding>>,
+	key_release_bindings: Vec<HashMap<KeyCode, ActionBinding>>,
+
+	action_id_tx: ActionIdTx,
 }
 
 impl InputManager {
-        pub fn new() -> Self {
-                Self {
-                        old_key_states: [ElementState::Released; KEY_COUNT],
-                        key_states: [ElementState::Released; KEY_COUNT],
-                        old_modifiers_state: ModifiersState::empty(),
-                        modifiers_state: ModifiersState::empty(),
-                        //kpress_listeners: HashMap::new(),
-                        //krelease_listeners: HashMap::new(),
-                        key_press_messages: HashMap::new(),
-                        key_release_messages: HashMap::new(),
-                        message_queue: VecDeque::new(),
-                }
-        }
+	pub fn new() -> Self {
+		let action_id_tx = bus::Bus::new(50);
 
-        pub fn update(&mut self) {
-                self.old_key_states = self.key_states.clone();
-                self.old_modifiers_state = self.modifiers_state;
-        }
+		Self {
+			key_states: [KeyState::Released; MAX_KEY_CODE],
+			modifiers_state: ModifiersState::empty(),
+			key_press_bindings: Vec::new(),
+			key_release_bindings: Vec::new(),
+			action_id_tx,
+		}
+	}
 
-        pub fn next_message(&mut self) -> Option<InputMessage> {
-                self.message_queue.pop_front()
-        }
+	pub fn create_rx(&mut self) -> ActionIdRx {
+		self.action_id_tx.add_rx()
+	}
 
-        pub fn on_keyboard_input(&mut self, kinput: &KeyboardInput) {
-                let virtual_kcode = match kinput.virtual_keycode {
-                        Some(v) => v,
-                        None => return,
-                };
+	pub fn get_key_states(&self) -> &[KeyState; MAX_KEY_CODE] {
+		&self.key_states
+	}
 
-                self.key_states[virtual_kcode as usize] = kinput.state;
+	pub fn push_key_press_input_map(&mut self, map: HashMap<KeyCode, ActionBinding>) {
+		self.key_press_bindings.push(map);
+	}
 
-                let prev_state = self.old_key_states[virtual_kcode as usize];
-                let curr_state = self.key_states[virtual_kcode as usize];
+	pub fn push_key_release_input_map(&mut self, map: HashMap<KeyCode, ActionBinding>) {
+		self.key_release_bindings.push(map);
+	}
 
-                match (prev_state, curr_state) {
-                        (ElementState::Pressed, ElementState::Pressed) => {}
-                        (ElementState::Pressed, ElementState::Released) => {
-                                if let Some(messages) = self.key_release_messages.get(&virtual_kcode) {
-                                        for &message in messages {
-                                                self.message_queue.push_back(message);
-                                        }
-                                }
-                                /* if let Some(listeners) = self.krelease_listeners.get_mut(&virtual_kcode) {
-                                        for listener in listeners {
-                                                (*listener)();
-                                        }
-                                } */
-                        }
-                        (ElementState::Released, ElementState::Pressed) => {}
-                        (ElementState::Released, ElementState::Released) => {
-                                if let Some(messages) = self.key_press_messages.get(&virtual_kcode) {
-                                        for &message in messages {
-                                                self.message_queue.push_back(message);
-                                        }
-                                }
-                                /* if let Some(listeners) = self.kpress_listeners.get_mut(&virtual_kcode) {
-                                        for listener in listeners {
-                                                (*listener)();
-                                        }
-                                } */
-                        }
-                }
-        }
+	pub fn on_device_event(&mut self, device_event: &DeviceEvent) {
+		match device_event {
+			DeviceEvent::MouseMotion { delta } => (),
+			DeviceEvent::MouseWheel { delta } => (),
+			DeviceEvent::Motion { axis, value } => (),
+			DeviceEvent::Button { button, state } => (),
+			DeviceEvent::Key(kinput) => self.on_keyboard_input(kinput),
+			_ => (),
+		}
+	}
 
-        pub fn on_modifiers_changed(&mut self, modifiers_state: ModifiersState) {
-                self.modifiers_state = modifiers_state;
-        }
+	fn on_keyboard_input(&mut self, kinput: &KeyboardInput) {
+		let key_code = match kinput.virtual_keycode {
+			Some(key_code) => key_code,
+			None => return,
+		};
+		let key_state = kinput.state;
 
-        #[allow(dead_code)]
-        pub fn key_pressed(&self, virtual_kcode: VirtualKeyCode) -> bool {
-                self.key_states[virtual_kcode as usize] == ElementState::Pressed
-                //self.key_states.get(&scan_code).map_or(false, |s| *s == ElementState::Pressed)
-        }
+		self.key_states[key_code as usize] = key_state;
 
-        #[allow(dead_code)]
-        pub fn key_released(&self, virtual_kcode: VirtualKeyCode) -> bool {
-                self.key_states[virtual_kcode as usize] == ElementState::Released
-                //self.key_states.get(&scan_code).map_or(true, |s| *s == ElementState::Released)
-        }
+		let action_binding = match key_state {
+			KeyState::Pressed => self.key_press_bindings.iter().rev().find_map(|b| b.get(&key_code)),
+			KeyState::Released => self.key_release_bindings.iter().rev().find_map(|b| b.get(&key_code)),
+		}.cloned();
+		let action_binding = match action_binding {
+			Some(action_binding) => action_binding,
+			None => return,
+		};
 
-        #[allow(dead_code)]
-        pub fn on_key_press(&mut self, virtual_kcode: VirtualKeyCode, message: InputMessage) {
-                self.key_press_messages
-                        .entry(virtual_kcode)
-                        .or_insert(Vec::new())
-                        .push(message);
-        }
+		self.broadcast_action(
+			action_binding.action_id,
+			action_binding.action_type,
+			InputValueType::Discrete,
+		);
+	}
 
-        #[allow(dead_code)]
-        pub fn on_key_release(&mut self, virtual_kcode: VirtualKeyCode, message: InputMessage) {
-                self.key_release_messages
-                        .entry(virtual_kcode)
-                        .or_insert(Vec::new())
-                        .push(message);
-        }
+	fn broadcast_action(&mut self, action_id: ActionId, action_type: ActionType, input_type: InputValueType) {
+		let action = UserAction {
+			action_id,
+			action_type,
+			input_type,
+		};
 
-        #[allow(dead_code)]
-        pub fn all_modifiers(&self, modifiers_state: ModifiersState) -> bool {
-                self.modifiers_state.contains(modifiers_state)
-        }
-
-        #[allow(dead_code)]
-        pub fn any_modifiers(&self, modifiers_state: ModifiersState) -> bool {
-                (self.modifiers_state & modifiers_state) != ModifiersState::empty()
-        }
+		self.action_id_tx.broadcast(action);
+	}
 }
