@@ -1,4 +1,15 @@
-use std::{error::Error, ffi::CString, mem::size_of, process::Command, rc::Rc, slice, time::Instant};
+use std::io::prelude::*;
+use std::{
+	error::Error,
+	ffi::CString,
+	fs::OpenOptions,
+	mem::size_of,
+	process::Command,
+	rc::Rc,
+	slice,
+	sync::{Arc, Mutex},
+	time::{Duration, Instant},
+};
 
 use ash::{prelude::VkResult, version::DeviceV1_0, vk};
 use imgui::DrawData;
@@ -17,17 +28,20 @@ use super::{
 		VkShaderModule,
 	},
 };
+use crate::scoped_timer::{ScopedTimer, TimePrefix};
 use crate::{
-	asset_manager::{AssetManager, Mesh, ModelID, Primitive},
-	camera::Camera,
+	asset_manager::{AssetManager, Mesh, ModelId, Primitive},
 	my_glm::*,
-	renderer::Renderer,
+	render_state_switcher::RenderStateSwitcher,
+	renderer::{RenderState, Renderer},
 	vertex::Vertex,
 };
 
 pub struct VkRenderer {
+	target_tps: f32,
+	target_ticktime: f32,
 	window: Rc<Window>,
-	asset_manager: Rc<AssetManager>,
+	asset_manager: Arc<AssetManager>,
 
 	vk_context: VkContext,
 	vk_asset_manager: VkAssetManager,
@@ -54,6 +68,11 @@ pub struct VkRenderer {
 	img_avail_semaphores: Vec<VkSemaphore>,
 	present_complete_semaphores: Vec<VkSemaphore>,
 
+	render_state_switcher: Arc<Mutex<RenderStateSwitcher>>,
+	last_render_state_switch_timestamp: Instant,
+	old_render_state: Option<Box<RenderState>>,
+	new_render_state: Option<Box<RenderState>>,
+
 	creation_instant: Instant,
 	framei: usize,
 	frame_counter: u32,
@@ -61,19 +80,21 @@ pub struct VkRenderer {
 
 impl VkRenderer {
 	pub fn new(
-		window: &Rc<Window>,
+		target_tps: u32,
+		window: Rc<Window>,
 		imguic: &mut imgui::Context,
-		asset_manager: &Rc<AssetManager>,
+		asset_manager: Arc<AssetManager>,
+		render_state_switcher: Arc<Mutex<RenderStateSwitcher>>,
 	) -> Result<Self, Box<dyn Error>> {
-		let vk_context = VkContext::new(window)?;
+		let vk_context = VkContext::new(Rc::clone(&window))?;
 
 		let mut swapchain = VkSwapchain::new(
-			window,
-			&vk_context.instance,
-			&vk_context.surface,
+			Rc::clone(&window),
+			Rc::clone(&vk_context.instance),
+			Rc::clone(&vk_context.surface),
 			*vk_context.pdevice,
-			&vk_context.device,
-			&vk_context.allocator,
+			Rc::clone(&vk_context.device),
+			Rc::clone(&vk_context.allocator),
 		)?;
 		trace!("Created VkSwapchain");
 
@@ -88,10 +109,11 @@ impl VkRenderer {
 		swapchain.create_framebuffers(*render_pass)?;
 		trace!("Created VkFramebuffers");
 
-		let setup_cmd_buffer = VkReusableCommandBuffer::new(&vk_context.device, &vk_context.cmd_pool)?;
+		let setup_cmd_buffer =
+			VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
 		let draw_cmd_buffers = VkReusableCommandBuffer::new_vec(
-			&vk_context.device,
-			&vk_context.cmd_pool,
+			Rc::clone(&vk_context.device),
+			Rc::clone(&vk_context.cmd_pool),
 			swapchain.img_count,
 		)?;
 		trace!("Allocated VkCommandBuffers");
@@ -100,8 +122,11 @@ impl VkRenderer {
 			Self::create_sync_objects(&vk_context.device, swapchain.img_count)?;
 		trace!("Created VkSemaphores");
 
-		let matrices_buffers =
-			Self::create_matrices_buffers(&vk_context.device, &vk_context.allocator, swapchain.img_count)?;
+		let matrices_buffers = Self::create_matrices_buffers(
+			&vk_context.device,
+			Rc::clone(&vk_context.allocator),
+			swapchain.img_count,
+		)?;
 		trace!("Created matrices uniform buffer");
 
 		let (matrices_dst_set_layout, material_dst_set_layout) =
@@ -117,13 +142,13 @@ impl VkRenderer {
 		let vk_asset_manager = VkAssetManager::new(
 			&vk_context.instance,
 			&vk_context.pdevice,
-			&vk_context.device,
-			&vk_context.allocator,
+			Rc::clone(&vk_context.device),
+			Rc::clone(&vk_context.allocator),
 			vk_context.queues.graphics,
-			&vk_context.cmd_pool,
+			Rc::clone(&vk_context.cmd_pool),
 			*vk_context.dst_pool,
 			*material_dst_set_layout,
-			asset_manager,
+			&asset_manager,
 		)?;
 		trace!("Created VkAssetManager");
 
@@ -150,8 +175,10 @@ impl VkRenderer {
 		)?;
 
 		Ok(Self {
-			window: Rc::clone(window),
-			asset_manager: Rc::clone(asset_manager),
+			target_tps: target_tps as f32,
+			target_ticktime: 1.0 / target_tps as f32,
+			window,
+			asset_manager,
 
 			vk_context,
 			vk_asset_manager,
@@ -178,6 +205,11 @@ impl VkRenderer {
 			img_avail_semaphores,
 			present_complete_semaphores,
 
+			render_state_switcher,
+			last_render_state_switch_timestamp: Instant::now(),
+			old_render_state: None,
+			new_render_state: None,
+
 			creation_instant: Instant::now(),
 
 			framei: 0,
@@ -187,7 +219,31 @@ impl VkRenderer {
 }
 
 impl Renderer for VkRenderer {
-	fn draw(&mut self, cam: &mut Camera, imgui_draw_data: &DrawData) -> Result<(), Box<dyn Error>> {
+	fn draw(&'_ mut self) -> Result<(), Box<dyn Error>> {
+		{
+			let mut render_state_switcher = match self.render_state_switcher.lock() {
+				Ok(v) => v,
+				Err(_e) => panic!(),
+			};
+
+			if render_state_switcher.is_new_state_available() {
+				let new_render_state =
+					render_state_switcher.read_new_render_state(self.old_render_state.take());
+				self.old_render_state = self.new_render_state.replace(new_render_state);
+				self.last_render_state_switch_timestamp = Instant::now();
+			}
+		}
+
+		if self.old_render_state.is_none() || self.new_render_state.is_none() {
+			return Ok(());
+		}
+
+		let tick_scalar = f32::clamp(
+			self.last_render_state_switch_timestamp.elapsed().as_secs_f32() / self.target_ticktime,
+			0.0,
+			1.0,
+		);
+
 		let (imagei, draw_cmd_buffer) = match unsafe { self.begin_frame()? } {
 			BeginFrameResult::Draw {
 				imagei,
@@ -196,9 +252,17 @@ impl Renderer for VkRenderer {
 			BeginFrameResult::Skip => return Ok(()),
 		};
 
+		let winit::dpi::PhysicalSize { width, height } = self.window.inner_size();
+		let aspect_ratio = width as f32 / height as f32;
+
 		let mats_v_p = MatricesVP {
-			view: *cam.view(),
-			proj: *cam.proj(),
+			view: self.new_render_state.as_ref().unwrap().view_mat,
+			proj: self
+				.new_render_state
+				.as_ref()
+				.unwrap()
+				.proj_camera
+				.calc_proj_matrix(aspect_ratio),
 		};
 
 		self.update_matrices_buffer(&mats_v_p, self.framei)?;
@@ -220,20 +284,23 @@ impl Renderer for VkRenderer {
 				slice::from_ref(&self.swapchain.scissor),
 			);
 
-			/* self.vk_context.device.cmd_bind_descriptor_sets(
-				draw_cmd_buffer,
-				vk::PipelineBindPoint::GRAPHICS,
-				*self.graphics_pipeline_layout,
-				0,
-				slice::from_ref(&self.matrices_dst_sets[imagei as usize]),
-				&[],
-			); */
-
 			let matrices_dst_set = self.matrices_dst_sets[imagei as usize];
 
-			for &model_id in self.asset_manager.root_models() {
+			for (model, new_instance) in &self.new_render_state.as_ref().unwrap().model_instances {
+				let old_instance = self.old_render_state.as_ref().unwrap().model_instances.get(model);
+
+				let old_pos = &old_instance.unwrap_or(new_instance).pos;
+				let new_pos = &new_instance.pos;
+				let interpolated_pos = Vec3::lerp(old_pos, new_pos, tick_scalar);
+
+				let old_orien = &old_instance.unwrap_or(new_instance).orien;
+				let new_orien = &new_instance.orien;
+				let interpolated_orien = UnitQuat::slerp(old_orien, new_orien, tick_scalar);
+
+				let transform =
+					Mat4::new_translation(&interpolated_pos) * interpolated_orien.to_homogeneous();
+
 				Self::draw_model(
-					self.creation_instant,
 					&self.vk_context.device,
 					draw_cmd_buffer,
 					matrices_dst_set,
@@ -241,12 +308,13 @@ impl Renderer for VkRenderer {
 					&self.asset_manager,
 					&self.vk_asset_manager,
 					&mats_v_p,
-					model_id,
+					*model,
+					&transform,
 				);
 			}
 
-			self.imgui_renderer
-				.cmd_draw(&self.vk_context, draw_cmd_buffer, imgui_draw_data)?;
+			/* self.imgui_renderer
+			.cmd_draw(&self.vk_context, draw_cmd_buffer, imgui_draw_data)?; */
 
 			self.end_frame(imagei)?;
 		}
@@ -279,7 +347,7 @@ impl VkRenderer {
 		};
 
 		trace!("Recreating VkSwapchain...");
-		timer!("Recreated VkSwapchain in: ");
+		scoped_timer!("Recreated VkSwapchain in: ", TimePrefix::Base);
 
 		let mut recreate_render_pass: bool = false;
 		let mut recreate_pipeline: bool = self
@@ -321,7 +389,7 @@ impl VkRenderer {
 
 			self.matrices_buffers = Self::create_matrices_buffers(
 				&self.vk_context.device,
-				&self.vk_context.allocator,
+				Rc::clone(&self.vk_context.allocator),
 				self.swapchain.img_count,
 			)?;
 
@@ -339,8 +407,8 @@ impl VkRenderer {
 			)?;
 
 			self.draw_cmd_buffers = VkReusableCommandBuffer::new_vec(
-				&self.vk_context.device,
-				&self.vk_context.cmd_pool,
+				Rc::clone(&self.vk_context.device),
+				Rc::clone(&self.vk_context.cmd_pool),
 				self.swapchain.img_count,
 			)?;
 
@@ -482,7 +550,7 @@ impl VkRenderer {
 
 	fn create_matrices_buffers(
 		device: &ash::Device,
-		allocator: &Rc<vma::Allocator>,
+		allocator: Rc<vma::Allocator>,
 		swch_img_count: u32,
 	) -> Result<Vec<VkBuffer>, Box<dyn Error>> {
 		let buffer_size = std::mem::size_of::<MatricesVP>() as vk::DeviceSize;
@@ -503,7 +571,7 @@ impl VkRenderer {
 		let mut buffers = Vec::with_capacity(swch_img_count as usize);
 
 		for _ in 0..swch_img_count {
-			buffers.push(VkBuffer::new(&cinfo)?);
+			buffers.push(VkBuffer::new(cinfo.clone())?);
 		}
 
 		Ok(buffers)
@@ -792,7 +860,7 @@ impl VkRenderer {
 		})
 	}
 
-	unsafe fn end_frame(&mut self, img_i: u32) -> Result<(), Box<dyn Error>> {
+	unsafe fn end_frame(&mut self, imagei: u32) -> Result<(), Box<dyn Error>> {
 		let frame_img_avail_semaphore = &self.img_avail_semaphores[self.framei];
 		let frame_present_complete_semaphore = &self.present_complete_semaphores[self.framei];
 		let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.framei];
@@ -822,7 +890,7 @@ impl VkRenderer {
 			&vk::PresentInfoKHR::builder()
 				.wait_semaphores(&[**frame_present_complete_semaphore])
 				.swapchains(&[*self.swapchain])
-				.image_indices(&[img_i]),
+				.image_indices(&[imagei]),
 		) {
 			Ok(suboptimal) if suboptimal => {
 				self.swapchain_outdated_causes
@@ -845,22 +913,18 @@ impl VkRenderer {
 	fn update_matrices_buffer(&self, mats_v_p: &MatricesVP, framei: usize) -> vma::Result<()> {
 		let time = self.creation_instant.elapsed().as_secs_f32();
 
-		let _model = glm::rotate(&Mat4::identity(), time, &Vec3::new(0.0, 1.0, 0.0));
-
 		let buffer_size = std::mem::size_of::<MatricesVP>() as vk::DeviceSize;
-
 		let buffer = &self.matrices_buffers[framei];
-		let map = buffer.map_memory(&self.vk_context.allocator)?;
+		let map = buffer.map_memory()?;
 		unsafe {
 			std::ptr::copy_nonoverlapping(&mats_v_p as *const _ as *const u8, map, buffer_size as usize);
 		}
-		buffer.unmap_memory(&self.vk_context.allocator)?;
+		buffer.unmap_memory()?;
 
 		Ok(())
 	}
 
 	fn draw_model(
-		creation_instant: Instant,
 		device: &VkDevice,
 		draw_cmd_buffer: vk::CommandBuffer,
 		matrices_dst_set: vk::DescriptorSet,
@@ -868,24 +932,16 @@ impl VkRenderer {
 		asset_manager: &AssetManager,
 		vk_asset_manager: &VkAssetManager,
 		mats_v_p: &MatricesVP,
-		model_id: ModelID,
+		model_id: ModelId,
+		model_instance_transform: &Mat4,
 	) {
-		let time = creation_instant.elapsed().as_secs_f32();
 		let model = &asset_manager.models()[model_id];
 
-		let mat_model = if let Some(ref name) = model.name {
-			if name == "Plane" {
-				Mat4::identity()
-			} else {
-				glm::rotate(&Mat4::identity(), time, &Vec3::new(0.0, 1.0, 0.0)) * model.transform
-			}
-		} else {
-			glm::rotate(&Mat4::identity(), time, &Vec3::new(0.0, 1.0, 0.0)) * model.transform
-		};
-		//let mat_model = glm::rotate(&Mat4::identity(), time, &Vec3::new(0.0, 1.0, 0.0)) * model.transform;
+		let transform_final = model_instance_transform * model.base_transform;
+
 		let mats_m_mvp = MatricesMMvp {
-			model: mat_model,
-			mvp: mats_v_p.proj * mats_v_p.view * mat_model,
+			model: transform_final,
+			mvp: mats_v_p.proj * mats_v_p.view * transform_final,
 		};
 
 		unsafe {
@@ -915,7 +971,6 @@ impl VkRenderer {
 
 		for &child in &model.children {
 			Self::draw_model(
-				creation_instant,
 				device,
 				draw_cmd_buffer,
 				matrices_dst_set,
@@ -924,6 +979,7 @@ impl VkRenderer {
 				vk_asset_manager,
 				mats_v_p,
 				child,
+				model_instance_transform,
 			);
 		}
 	}
@@ -989,7 +1045,7 @@ impl VkRenderer {
 
 impl Drop for VkRenderer {
 	fn drop(&mut self) {
-                let _ = unsafe { self.vk_context.device.device_wait_idle() };
+		let _ = unsafe { self.vk_context.device.device_wait_idle() };
 		let _ = self.imgui_renderer.destroy(&self.vk_context);
 	}
 }

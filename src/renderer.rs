@@ -1,27 +1,39 @@
-use std::{cell::RefCell, error::Error, rc::Rc};
+use std::{collections::HashMap, error::Error};
 
-use crate::{asset_manager::ModelID, camera::Camera, my_glm::*};
+use crate::{asset_manager::ModelId, input_manager::ActionEvent, logic_thread::ProjectionCameraComponent, my_glm::*};
 
-struct ModelInstance {
-        model: ModelID,
-        transform: Mat4,
+pub struct ModelInstance {
+	pub pos: Vec3,
+	pub orien: UnitQuat,
 }
 
 struct ModelInstanceID(usize);
 
 pub trait Renderer {
-       /*  fn begin_frame(&mut self);
-        fn draw_model_instance(&mut self, model_instance: ModelInstanceID);
-        fn end_frame_and_draw(&mut self, cam: &mut Camera, imgui_draw_data: &imgui::DrawData); */
-        fn draw(&mut self, cam: &mut Camera, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>>;
-        fn on_window_resize(&mut self, width: u32, height: u32);
-        //fn set_camera_pos(&mut self, pos: &Vec3);
+	// fn draw(&mut self, cam: &mut Camera, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>>;
+	fn draw(&mut self) -> Result<(), Box<dyn Error>>;
+	fn on_window_resize(&mut self, width: u32, height: u32);
+        //fn on_action_event(&mut self, action_event: ActionEvent);
+
+	/*
+	fn begin_frame(&mut self);
+	fn draw_model_instance(&mut self, model_instance: ModelInstanceID);
+	fn end_frame_and_draw(&mut self, cam: &mut Camera, imgui_draw_data: &imgui::DrawData);
+	*/
 }
 
-/* pub trait Renderer {
-        fn new(cam: Arc<Mutex<Camera>>);
-} */
-
 pub struct RenderState {
-        model_instances: Vec<ModelInstance>,
+	pub view_mat: Mat4,
+	pub proj_camera: ProjectionCameraComponent,
+	pub model_instances: HashMap<ModelId, ModelInstance>,
+}
+
+impl RenderState {
+	pub fn new() -> Self {
+		Self {
+			view_mat: Default::default(),
+			proj_camera: Default::default(),
+			model_instances: HashMap::new(),
+		}
+	}
 }

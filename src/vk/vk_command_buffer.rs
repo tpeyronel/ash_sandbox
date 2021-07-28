@@ -13,29 +13,29 @@ pub struct VkReusableCommandBuffer {
 }
 
 impl VkReusableCommandBuffer {
-        pub fn new(device: &Rc<VkDevice>, cmd_pool: &Rc<VkCommandPool>) -> VkResult<Self> {
+        pub fn new(device: Rc<VkDevice>, cmd_pool: Rc<VkCommandPool>) -> VkResult<Self> {
                 let cmd_buffer_ainfo = vk::CommandBufferAllocateInfo::builder()
-                        .command_pool(***cmd_pool)
+                        .command_pool(**cmd_pool)
                         .command_buffer_count(1)
                         .level(vk::CommandBufferLevel::PRIMARY);
 
                 let handle = unsafe { device.allocate_command_buffers(&cmd_buffer_ainfo)?[0] };
 
                 let fence_cinfo = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
-                let fence = unsafe { VkFence::new(device, &fence_cinfo)? };
+                let fence = unsafe { VkFence::new(Rc::clone(&device), &fence_cinfo)? };
 
                 Ok(Self {
-                        device: Rc::clone(device),
-                        cmd_pool: Rc::clone(cmd_pool),
+                        device,
+                        cmd_pool,
 
                         handle,
                         fence,
                 })
         }
 
-        pub fn new_vec(device: &Rc<VkDevice>, cmd_pool: &Rc<VkCommandPool>, count: u32) -> VkResult<Vec<Self>> {
+        pub fn new_vec(device: Rc<VkDevice>, cmd_pool: Rc<VkCommandPool>, count: u32) -> VkResult<Vec<Self>> {
                 let cmd_buffer_ainfo = vk::CommandBufferAllocateInfo::builder()
-                        .command_pool(***cmd_pool)
+                        .command_pool(**cmd_pool)
                         .command_buffer_count(count)
                         .level(vk::CommandBufferLevel::PRIMARY);
 
@@ -45,11 +45,11 @@ impl VkReusableCommandBuffer {
 
                 handles.iter()
                         .map(|&handle| {
-                                let fence = unsafe { VkFence::new(device, &fence_cinfo)? };
+                                let fence = unsafe { VkFence::new(Rc::clone(&device), &fence_cinfo)? };
 
                                 Ok(Self {
-                                        device: Rc::clone(device),
-                                        cmd_pool: Rc::clone(cmd_pool),
+                                        device: Rc::clone(&device),
+                                        cmd_pool: Rc::clone(&cmd_pool),
 
                                         handle,
                                         fence,

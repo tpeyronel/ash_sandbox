@@ -1,417 +1,481 @@
-use std::{collections::HashMap, error::Error, rc::Rc, time::{Duration, Instant}};
+use std::{
+	error::Error,
+	path::Path,
+	rc::Rc,
+	sync::{Arc, Mutex},
+	time::{Duration, Instant},
+};
 
 use tps_counter::TPSCounter;
 
-use crate::{action_ids::{ACTION_EXIT, ACTION_TOGGLE_CURSOR, ACTION_TOGGLE_FULLSCREEN}, asset_manager::*, camera::Camera, input_manager::{ActionBinding, ActionIdRx, ActionType, InputManager, KeyCode, KeyState, UserAction}, my_glm::*, renderer::Renderer, vk::vk_renderer::VkRenderer};
-use log::{info, trace};
-use winit::{
-        dpi::PhysicalSize,
-        event::{DeviceEvent, Event, MouseScrollDelta, StartCause, WindowEvent},
-        event_loop::{ControlFlow, EventLoop},
-        window::{Fullscreen, Window, WindowBuilder},
+use crate::{
+	actions::*,
+	application_config::ApplicationConfig,
+	asset_manager::*,
+	constants::FONT_SIZE,
+	input_manager::{InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType},
+	logic_thread::{LogicThread, LogicThreadCommand, LogicThreadMessage, LogicThreadSpawnParams},
+	my_glm::*,
+	render_state_switcher::RenderStateSwitcher,
+	renderer::Renderer,
+	vk::vk_renderer::VkRenderer,
 };
-
-const FONT_SIZE: f32 = 13.0;
+use log::{error, info, trace};
+use serde::{Deserialize, Serialize};
+use winit::{
+	dpi::PhysicalSize,
+	event::{DeviceEvent, Event, MouseScrollDelta, StartCause, WindowEvent},
+	event_loop::{ControlFlow, EventLoop},
+	monitor::VideoMode,
+	window::{Fullscreen, Window, WindowBuilder},
+};
 
 #[allow(dead_code)]
 pub struct Application {
-        event_loop: Option<EventLoop<()>>,
-        window: Rc<Window>,
-        window_state: WindowState,
-        imgui_state: ImGuiState,
-        input_manager: InputManager,
-        action_id_rx: ActionIdRx,
-        asset_manager: Rc<AssetManager>,
-        renderer: VkRenderer,
-        camera: Camera,
+	event_loop: Option<EventLoop<()>>,
+	window: Rc<Window>,
+	window_state: WindowState,
+	window_thread_rx: std::sync::mpsc::Receiver<WindowThreadMessage>,
+	logic_thread_tx: std::sync::mpsc::Sender<LogicThreadMessage>,
+	imgui_state: ImGuiState,
+	input_manager: InputManager,
+	asset_manager: Arc<AssetManager>,
 
-        tps_counter: TPSCounter,
-        prev_frame_begin: Instant,
-        frame_begin: Instant,
-        dtime: Duration,
+	renderer: VkRenderer,
+
+	tps_counter: TPSCounter,
+	frame_begin: Instant,
 }
 
 impl Application {
-        pub fn new(_fullscreen: bool) -> Result<Self, Box<dyn Error>> {
-                let event_loop = EventLoop::new();
-                let window = Rc::new(WindowBuilder::new()
-                        //.with_fullscreen(Some(fullscreen_mode.clone()))
-                        //.with_fullscreen(Some(Fullscreen::Borderless(None)))
-                        .with_fullscreen(None)
-                        .with_visible(false)
-                        .with_always_on_top(false)
-                        .with_min_inner_size(winit::dpi::PhysicalSize {
-                                width: 240,
-                                height: 240,
-                        })
-                        .build(&event_loop)?);
-                trace!("Created window");
+	pub fn new() -> Result<Self, Box<dyn Error>> {
+		let config = ApplicationConfig::from_file(Path::new("config.json"))?;
 
-                let fullscreen_mode =
-                        Fullscreen::Exclusive(event_loop.primary_monitor().unwrap().video_modes().next().unwrap());
+		let event_loop = EventLoop::new();
+		let fullscreen_video_mode = event_loop.primary_monitor().unwrap().video_modes().next().unwrap();
+		let window = Rc::new(WindowBuilder::new()
+			.with_fullscreen(match config.window_mode {
+				WindowMode::Windowed => None,
+				WindowMode::Borderless => Some(Fullscreen::Borderless(None)),
+				WindowMode::Fullscreen => Some(Fullscreen::Exclusive(fullscreen_video_mode.clone())),
+			})
+			.with_visible(false)
+			.with_always_on_top(false)
+			.with_min_inner_size(winit::dpi::PhysicalSize {
+				width: 144,
+				height: 144,
+			})
+			.build(&event_loop)?);
+		trace!("Created window");
 
-                let window_state = WindowState {
-                        fullscreen_mode,
-                        cursor_state: CursorState::Normal,
-                        focused: true,
-                };
+		let mut imgui_state = Self::init_imgui(&window);
 
-                let mut imgui_state = Self::init_imgui(&window);
-                trace!("Initialized ImGui");
+		let window_state = WindowState::new(
+			&window,
+			imgui_state.context.io_mut(),
+			WindowMode::Windowed,
+			fullscreen_video_mode,
+			CursorState::Normal,
+		);
 
-                let mut input_manager = InputManager::new();
-                let mut input_map = HashMap::new();
-                input_map.insert(KeyCode::Escape, ActionBinding{ action_id: ACTION_EXIT.to_string(), action_type: ActionType::Instantaneous });
-                input_map.insert(KeyCode::T, ActionBinding{ action_id: ACTION_TOGGLE_CURSOR.to_string(), action_type: ActionType::Instantaneous });
-                input_map.insert(KeyCode::F11, ActionBinding{ action_id: ACTION_TOGGLE_FULLSCREEN.to_string(), action_type: ActionType::Instantaneous });
-                input_manager.push_key_release_input_map(input_map);
+		trace!("Initialized ImGui");
 
-                let action_id_rx = input_manager.create_rx();
-                trace!("Initialized InputManager");
+		let mut input_manager = InputManager::new();
+		let mut input_map = InputBindingMap::new();
+		input_map.bind_key(EXIT, KeyCode::Escape, KeyBindingType::Simple(KeyState::Released));
+		input_map.bind_key(TOGGLE_CURSOR, KeyCode::T, KeyBindingType::Simple(KeyState::Released));
+		input_map.bind_key(
+			CYCLE_WINDOW_MODE,
+			KeyCode::F11,
+			KeyBindingType::Simple(KeyState::Released),
+		);
+		input_map.bind_key(MOVE_FORWARD, KeyCode::W, KeyBindingType::Extended);
+		input_map.bind_key(MOVE_BACKWARD, KeyCode::S, KeyBindingType::Extended);
+		input_map.bind_key(MOVE_RIGHTWARD, KeyCode::D, KeyBindingType::Extended);
+		input_map.bind_key(MOVE_RIGHTWARD, KeyCode::F, KeyBindingType::Extended);
+		input_map.bind_key(MOVE_LEFTWARD, KeyCode::A, KeyBindingType::Extended);
+		input_map.bind_mouse_motion(YAW_POSITIVE, MouseMotionType::PositiveX, None);
+		input_map.bind_mouse_motion(YAW_NEGATIVE, MouseMotionType::NegativeX, None);
+		input_map.bind_mouse_motion(PITCH_POSITIVE, MouseMotionType::PositiveY, None);
+		input_map.bind_mouse_motion(PITCH_NEGATIVE, MouseMotionType::NegativeY, None);
+		input_manager.push_input_binding_map(input_map);
+		trace!("Initialized InputManager");
 
-                let dsampler = Sampler {
-                        name: Some(String::from("Default Sampler")),
-                        mag_filter: MagFilter::Linear,
-                        min_filter: MinFilter::LinearMipmapLinear,
-                        wrap_s: WrappingMode::Repeat,
-                        wrap_t: WrappingMode::Repeat,
-                };
+		let dsampler = Sampler {
+			name: Some(String::from("Default Sampler")),
+			mag_filter: MagFilter::Linear,
+			min_filter: MinFilter::LinearMipmapLinear,
+			wrap_s: WrappingMode::Repeat,
+			wrap_t: WrappingMode::Repeat,
+		};
 
-                let dmaterial = Material {
-                        name: Some(String::from("Default Material")),
-                        base_color_factor: Vec4::new(0.8, 0.8, 0.8, 1.0),
-                        metallic_factor: 0.0,
-                        roughness_factor: 1.0,
-                        base_color_texture: None,
-                        metallic_roughness_texture: None,
-                        normal_texture: None,
-                        occlusion_texture: None,
-                        emissive_texture: None,
-                };
+		let dmaterial = Material {
+			name: Some(String::from("Default Material")),
+			base_color_factor: Vec4::new(0.8, 0.8, 0.8, 1.0),
+			metallic_factor: 0.0,
+			roughness_factor: 1.0,
+			base_color_texture: None,
+			metallic_roughness_texture: None,
+			normal_texture: None,
+			occlusion_texture: None,
+			emissive_texture: None,
+		};
 
-                let mut asset_manager = AssetManager::new(dsampler, dmaterial);
-                let _model_colt = asset_manager.import_gltf_file(std::path::Path::new("res/model/Colt/Colt.gltf"))?;
-                let _model_grass_plane =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
-                let asset_manager = Rc::new(asset_manager);
+		let mut asset_manager = AssetManager::new(dsampler, dmaterial);
+		let _model_colt =
+			asset_manager.import_gltf_file(std::path::Path::new("res/model/new-colt/colt.gltf"))?;
+		let _model_grass_plane =
+			asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
+		let asset_manager = Arc::new(asset_manager);
+		trace!("Initialized AssetManager");
 
-                trace!("Initialized AssetManager");
+		let render_state_switcher = Arc::new(Mutex::new(RenderStateSwitcher::new()));
+		let renderer = VkRenderer::new(
+			config.tps,
+			Rc::clone(&window),
+			&mut imgui_state.context,
+			Arc::clone(&asset_manager),
+			Arc::clone(&render_state_switcher),
+		)?;
 
-                let renderer = VkRenderer::new(&window, &mut imgui_state.context, &asset_manager)?;
-                let camera = Camera::new(
-                        &Vec3::new(0.0, 0.0, -2.0),
-                        0.0,
-                        0.0,
-                        0.0,
-                        90.0f32.to_radians(),
-                        1.0,
-                        window.inner_size().width,
-                        window.inner_size().height,
-                        0.1,
-                        100.0,
-                );
+		let (logic_thread_tx, logic_thread_rx) = std::sync::mpsc::channel();
+		let (window_thread_tx, window_thread_rx) = std::sync::mpsc::channel();
+		let input_state = input_manager.get_input_state();
 
-                window.set_visible(true);
-                window.set_cursor_visible(window_state.cursor_state != CursorState::Hidden);
-                window.set_cursor_grab(window_state.cursor_state == CursorState::Hidden)
-                        .expect("Error ocurred trying to grab cursor!");
-                imgui_state.context.io_mut().config_flags.set(
-                        imgui::ConfigFlags::NO_MOUSE,
-                        window_state.cursor_state == CursorState::Hidden,
-                );
+		let logic_thread_params = LogicThreadSpawnParams {
+			target_tps: config.tps,
+			logic_thread_rx,
+			window_thread_tx,
+			input_state,
+			asset_manager: Arc::clone(&asset_manager),
+			render_state_switcher,
+		};
 
-                Ok(Self {
-                        event_loop: Some(event_loop),
-                        window,
-                        window_state,
-                        imgui_state,
-                        input_manager,
-                        action_id_rx,
-                        asset_manager,
-                        renderer,
-                        camera,
+		let logic_thread = LogicThread::spawn(logic_thread_params);
 
-                        tps_counter: TPSCounter::new(5),
-                        prev_frame_begin: Instant::now(),
-                        frame_begin: Instant::now(),
-                        dtime: Duration::from_nanos(0),
-                })
-        }
+		window.set_visible(true);
 
-        pub fn run(mut self) -> ! {
-                self.event_loop.take().unwrap().run(move |event, _, control_flow| {
-                        *control_flow = ControlFlow::Poll;
+		Ok(Self {
+			event_loop: Some(event_loop),
+			window,
+			window_state,
+			window_thread_rx,
+			logic_thread_tx,
+			imgui_state,
+			input_manager,
+			asset_manager,
+			renderer,
 
-                        self.imgui_state
-                                .platform
-                                .handle_event(self.imgui_state.context.io_mut(), &self.window, &event);
+			tps_counter: TPSCounter::new(5),
+			frame_begin: Instant::now(),
+		})
+	}
 
-                        match event {
-                                Event::NewEvents(start_cause) => {
-                                        self.on_new_events(&start_cause);
-                                }
-                                Event::DeviceEvent { event, .. } => {
-                                        if self.window_state.focused {
-                                                self.on_device_event(&event);
-                                                self.input_manager.on_device_event(&event);
-                                        }
-                                }
-                                Event::WindowEvent { window_id, event } if self.window.id() == window_id => {
-                                        self.on_window_event(&event, control_flow);
-                                }
-                                Event::MainEventsCleared => self.update(control_flow),
-                                _ => (),
-                        }
-                });
-        }
+	pub fn run(mut self) -> ! {
+		self.event_loop.take().unwrap().run(move |event, _, control_flow| {
+			*control_flow = ControlFlow::Poll;
 
-        fn init_imgui(window: &Window) -> ImGuiState {
-                let mut context = imgui::Context::create();
-                let mut platform = imgui_winit_support::WinitPlatform::init(&mut context);
+			self.handle_winit_event(event, control_flow);
+		});
+	}
 
-                let hidpi_factor = platform.hidpi_factor() as f32;
-                let font_size = FONT_SIZE * hidpi_factor;
-                context.fonts().add_font(&[
-                        imgui::FontSource::DefaultFontData {
-                                config: Some(imgui::FontConfig {
-                                        size_pixels: font_size,
-                                        ..imgui::FontConfig::default()
-                                }),
-                        },
-                        imgui::FontSource::TtfData {
-                                data: include_bytes!("../res/font/FiraCode-Regular.ttf"),
-                                size_pixels: font_size,
-                                config: Some(imgui::FontConfig {
-                                        rasterizer_multiply: 1.75,
-                                        glyph_ranges: imgui::FontGlyphRanges::japanese(),
-                                        ..imgui::FontConfig::default()
-                                }),
-                        },
-                ]);
-                context.io_mut().font_global_scale = 1.0 / hidpi_factor;
-                platform.attach_window(context.io_mut(), &window, imgui_winit_support::HiDpiMode::Rounded);
+	fn init_imgui(window: &Window) -> ImGuiState {
+		let mut context = imgui::Context::create();
+		let mut platform = imgui_winit_support::WinitPlatform::init(&mut context);
 
-                ImGuiState { context, platform }
-        }
+		let hidpi_factor = platform.hidpi_factor() as f32;
+		let font_size = FONT_SIZE * hidpi_factor;
+		context.fonts().add_font(&[
+			imgui::FontSource::DefaultFontData {
+				config: Some(imgui::FontConfig {
+					size_pixels: font_size,
+					..imgui::FontConfig::default()
+				}),
+			},
+			imgui::FontSource::TtfData {
+				data: include_bytes!("../res/font/FiraCode-Regular.ttf"),
+				size_pixels: font_size,
+				config: Some(imgui::FontConfig {
+					rasterizer_multiply: 1.75,
+					glyph_ranges: imgui::FontGlyphRanges::japanese(),
+					..imgui::FontConfig::default()
+				}),
+			},
+		]);
+		context.io_mut().font_global_scale = 1.0 / hidpi_factor;
+		platform.attach_window(context.io_mut(), &window, imgui_winit_support::HiDpiMode::Rounded);
 
-        fn on_new_events(&mut self, _start_cause: &StartCause) {
-                self.prev_frame_begin = self.frame_begin;
-                self.frame_begin = Instant::now();
-                self.dtime = self.frame_begin - self.prev_frame_begin;
+		ImGuiState { context, platform }
+	}
 
-                self.imgui_state.context.io_mut().update_delta_time(self.dtime);
-        }
+	fn handle_winit_event(&mut self, event: winit::event::Event<'_, ()>, control_flow: &mut ControlFlow) {
+		self.imgui_state
+			.platform
+			.handle_event(self.imgui_state.context.io_mut(), &self.window, &event);
 
-        fn on_device_event(&mut self, devent: &DeviceEvent) {
-                match *devent {
-                        DeviceEvent::MouseMotion { delta: (dx, dy) } => {
-                                if self.window_state.cursor_state == CursorState::Hidden {
-                                        const MOUSE_SENS: f32 = 0.0025;
+		match event {
+			Event::NewEvents(start_cause) => {
+				self.on_new_events(start_cause);
+			}
+			Event::DeviceEvent { event, .. } => {
+				let logic_thread_tx = &mut self.logic_thread_tx;
 
-                                        self.camera.pitch_by(-dy as f32 * MOUSE_SENS);
+				self.input_manager.on_device_event(&event, |action_event| {
+					logic_thread_tx
+						.send(LogicThreadMessage::ActionEvent(action_event))
+						.expect("Error sending action event!");
+				});
+			}
+			Event::WindowEvent { window_id, event } if self.window.id() == window_id => {
+				self.on_window_event(event, control_flow);
+			}
+			Event::MainEventsCleared => self.update(control_flow),
+			Event::LoopDestroyed => self.on_quit(),
+			_ => (),
+		}
+	}
 
-                                        self.camera.yaw_by(dx as f32 * MOUSE_SENS);
-                                        // TODO: uncomment
-                                        /* if self.input_manager.all_modifiers(ModifiersState::ALT) {
-                                                self.camera.roll_by(dx as f32 * MOUSE_SENS);
-                                        } else {
-                                                self.camera.yaw_by(dx as f32 * MOUSE_SENS);
-                                        } */
-                                }
-                        }
-                        DeviceEvent::MouseWheel { delta } => match delta {
-                                MouseScrollDelta::LineDelta(_, dy) => {
-                                        if self.window_state.cursor_state == CursorState::Hidden {
-                                                const ZOOM_SENS: f32 = 0.1;
+	fn on_new_events(&mut self, _start_cause: StartCause) {
+		let previous_frame_begin = std::mem::replace(&mut self.frame_begin, Instant::now());
+		let delta_time = self.frame_begin - previous_frame_begin;
 
-                                                self.camera.zoom_by(dy * ZOOM_SENS);
-                                        }
-                                }
-                                MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition { x: _, y: _ }) => {}
-                        },
-                        _ => (),
-                };
-        }
+		self.imgui_state.context.io_mut().update_delta_time(delta_time);
+	}
 
-        fn on_window_event(&mut self, wevent: &WindowEvent, control_flow: &mut ControlFlow) {
-                match *wevent {
-                        /* WindowEvent::ModifiersChanged(modifiers_state) => {
-                                self.input_manager.on_modifiers_changed(modifiers_state)
-                        } */
-                        WindowEvent::Focused(focused) => self.window_state.focused = focused,
-                        WindowEvent::Resized(PhysicalSize { width, height }) => {
-                                self.camera.on_window_resize(width, height);
-                                self.renderer.on_window_resize(width, height);
-                        }
-                        WindowEvent::CloseRequested => {
-                                *control_flow = ControlFlow::Exit;
-                        }
-                        /* WindowEvent::KeyboardInput { input, .. } => {
-                                self.input_manager.on_keyboard_input(&input);
-                        } */
-                        _ => {}
-                };
-        }
+	fn on_window_event(&mut self, window_event: WindowEvent, control_flow: &mut ControlFlow) {
+		match window_event {
+			/* WindowEvent::ModifiersChanged(modifiers_state) => {
+				self.input_manager.on_modifiers_changed(modifiers_state)
+			} */
+			WindowEvent::Focused(focused) => {
+				self.window_state.focused = focused;
+				self.input_manager.on_window_focused(focused);
+			}
+			WindowEvent::Resized(new_size) => {
+				self.renderer.on_window_resize(new_size.width, new_size.height);
+			}
+			WindowEvent::CloseRequested => {
+				*control_flow = ControlFlow::Exit;
+			}
+			/* WindowEvent::KeyboardInput { input, .. } => {
+				self.input_manager.on_keyboard_input(&input);
+			} */
+			_ => {}
+		};
+	}
 
-        fn update(&mut self, control_flow: &mut ControlFlow) {
-                //self.tps_counter.tick_and_map(|tps| info!("FPS: {:.2}", tps));
+	fn update(&mut self, control_flow: &mut ControlFlow) {
+		self.process_logic_thread_messages(control_flow);
+		//self.tps_counter.tick_and_map(|tps| info!("FPS: {:.2}", tps));
 
-                self.process_user_input(control_flow);
+		//let key_states = self.input_manager.get_key_states();
 
-                let key_states = self.input_manager.get_key_states();
+		/* let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
 
-                let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
+		if key_states[KeyCode::W as usize] == KeyState::Pressed {
+			desired_dir.z += 1.0;
+		}
+		if key_states[KeyCode::S as usize] == KeyState::Pressed {
+			desired_dir.z -= 1.0;
+		}
+		if key_states[KeyCode::D as usize] == KeyState::Pressed {
+			desired_dir.x += 1.0;
+		}
+		if key_states[KeyCode::A as usize] == KeyState::Pressed {
+			desired_dir.x -= 1.0;
+		}
+		if key_states[KeyCode::Space as usize] == KeyState::Pressed {
+			desired_dir.y += 1.0;
+		}
+		if key_states[KeyCode::LShift as usize] == KeyState::Pressed {
+			desired_dir.y -= 1.0;
+		}
 
-                if key_states[KeyCode::W as usize] == KeyState::Pressed {
-                        desired_dir.z += 1.0;
-                }
-                if key_states[KeyCode::S as usize] == KeyState::Pressed {
-                        desired_dir.z -= 1.0;
-                }
-                if key_states[KeyCode::D as usize] == KeyState::Pressed {
-                        desired_dir.x += 1.0;
-                }
-                if key_states[KeyCode::A as usize] == KeyState::Pressed {
-                        desired_dir.x -= 1.0;
-                }
-                if key_states[KeyCode::Space as usize] == KeyState::Pressed {
-                        desired_dir.y += 1.0;
-                }
-                if key_states[KeyCode::LShift as usize] == KeyState::Pressed {
-                        desired_dir.y -= 1.0;
-                }
+		const DEFAULT_MOVE_SPEED: f32 = 0.005;
 
-                const DEFAULT_MOVE_SPEED: f32 = 0.005;
+		let move_speed = if key_states[KeyCode::LControl as usize] == KeyState::Pressed {
+			DEFAULT_MOVE_SPEED * 0.25
+		} else {
+			DEFAULT_MOVE_SPEED
+		};
 
-                let move_speed = if key_states[KeyCode::LControl as usize] == KeyState::Pressed {
-                        DEFAULT_MOVE_SPEED * 0.25
-                } else {
-                        DEFAULT_MOVE_SPEED
-                };
+		if desired_dir.norm() > f32::EPSILON {
+			let move_dir = self.camera.hor_orien() * desired_dir.normalize() * move_speed;
 
-                if desired_dir.norm() > f32::EPSILON {
-                        let move_dir = self.camera.hor_orien() * desired_dir.normalize() * move_speed;
+			self.camera.translate(&move_dir);
+		}
 
-                        self.camera.translate(&move_dir);
-                }
+		const ROTATE_SPEED: f32 = 0.005;
 
-                const ROTATE_SPEED: f32 = 0.005;
+		if key_states[KeyCode::Up as usize] == KeyState::Pressed {
+			self.camera.pitch_by(ROTATE_SPEED);
+		}
+		if key_states[KeyCode::Down as usize] == KeyState::Pressed {
+			self.camera.pitch_by(-ROTATE_SPEED);
+		}
+		if input.all_modifiers(ModifiersState::ALT) {
+			if key_states[KeyCode::Right as usize] == KeyState::Pressed {
+				self.camera.roll_by(ROTATE_SPEED);
+			}
+			if key_states[KeyCode::Left as usize] == KeyState::Pressed {
+				self.camera.roll_by(-ROTATE_SPEED);
+			}
+		} else {
+			if key_states[KeyCode::Right as usize] == KeyState::Pressed {
+				self.camera.yaw_by(ROTATE_SPEED);
+			}
+			if key_states[KeyCode::Left as usize] == KeyState::Pressed {
+				self.camera.yaw_by(-ROTATE_SPEED);
+			}
+		} */
 
-                if key_states[KeyCode::Up as usize] == KeyState::Pressed {
-                        self.camera.pitch_by(ROTATE_SPEED);
-                }
-                if key_states[KeyCode::Down as usize] == KeyState::Pressed {
-                        self.camera.pitch_by(-ROTATE_SPEED);
-                }
-                //if input.all_modifiers(ModifiersState::ALT) {
-                        if key_states[KeyCode::Right as usize] == KeyState::Pressed {
-                                self.camera.roll_by(ROTATE_SPEED);
-                        }
-                        if key_states[KeyCode::Left as usize] == KeyState::Pressed {
-                                self.camera.roll_by(-ROTATE_SPEED);
-                        }
-                /* } else {
-                        if key_states[KeyCode::Right as usize] == KeyState::Pressed {
-                                self.camera.yaw_by(ROTATE_SPEED);
-                        }
-                        if key_states[KeyCode::Left as usize] == KeyState::Pressed {
-                                self.camera.yaw_by(-ROTATE_SPEED);
-                        }
-                } */
+		self.imgui_state
+			.platform
+			.prepare_frame(self.imgui_state.context.io_mut(), &self.window)
+			.expect("Failed to prepare frame");
+		let ui = self.imgui_state.context.frame();
 
-                self.imgui_state
-                        .platform
-                        .prepare_frame(self.imgui_state.context.io_mut(), &self.window)
-                        .expect("Failed to prepare frame");
-                let ui = self.imgui_state.context.frame();
-                let cam = &self.camera;
+		imgui::Window::new(im_str!("Hello world"))
+			.size([300.0, 100.0], imgui::Condition::FirstUseEver)
+			.build(&ui, || {
+				ui.text(im_str!("Hello world!"));
+				ui.text(im_str!("こんにちは世界！"));
+				ui.text(im_str!("This...is...imgui-rs!"));
 
-                imgui::Window::new(im_str!("Hello world"))
-                        .size([300.0, 100.0], imgui::Condition::FirstUseEver)
-                        .build(&ui, || {
-                                ui.text(im_str!("Hello world!"));
-                                ui.text(im_str!("こんにちは世界！"));
-                                ui.text(im_str!("This...is...imgui-rs!"));
-                                ui.separator();
-                                let mouse_pos = ui.io().mouse_pos;
-                                ui.text(format!("Mouse Position: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
-                                ui.text(format!(
-                                        "Pitch: {:.1} Yaw: {:.1}, Roll: {:.1}, Zoom: {:.1}",
-                                        cam.pitch().to_degrees(),
-                                        cam.yaw().to_degrees(),
-                                        cam.roll().to_degrees(),
-                                        cam.zoom()
-                                ));
-                        });
+				ui.separator();
 
-                let mut _opened: bool = false;
-                ui.show_demo_window(&mut _opened);
+				let mouse_pos = ui.io().mouse_pos;
+				ui.text(format!("Mouse Position: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
+				/* ui.text(format!(
+					"Pitch: {:.1} Yaw: {:.1}, Roll: {:.1}, Zoom: {:.1}",
+					cam.pitch().to_degrees(),
+					cam.yaw().to_degrees(),
+					cam.roll().to_degrees(),
+					cam.zoom()
+				)); */
+			});
 
-                let imgui_draw_data = ui.render();
+		ui.show_demo_window(&mut false);
 
-                self.renderer
-                        .draw(&mut self.camera, imgui_draw_data)
-                        .expect("Error occurred while drawing");
-        }
+		let imgui_draw_data = ui.render();
 
-        fn process_user_input(&mut self, control_flow: &mut ControlFlow) {
-                for UserAction{ action_id, action_type, input_type } in &self.action_id_rx.try_recv() {
-                        match action_id.as_str() {
-                                ACTION_EXIT => *control_flow = ControlFlow::Exit,
-                                ACTION_TOGGLE_CURSOR => {
-                                        let new_cursor_state = match self.window_state.cursor_state {
-                                                CursorState::Normal => CursorState::Hidden,
-                                                CursorState::Hidden => CursorState::Normal,
-                                        };
+		self.renderer.draw().expect("Error while drawing");
 
-                                        Self::set_cursor_state(
-                                                &mut self.window_state,
-                                                &mut self.window,
-                                                self.imgui_state.context.io_mut(),
-                                                new_cursor_state,
-                                        );
-                                }
-                                ACTION_TOGGLE_FULLSCREEN => {
-                                        match self.window.fullscreen() {
-                                                Some(_) => self.window.set_fullscreen(None),
-                                                None => self.window.set_fullscreen(Some(self
-                                                        .window_state
-                                                        .fullscreen_mode
-                                                        .clone())),
-                                        };
-                                }
-                                _ => (),
-                        }
-                }
-        }
+		/* self.renderer
+		.draw(&mut self.camera, imgui_draw_data)
+		.expect("Error occurred while drawing"); */
+	}
 
-        fn set_cursor_state(
-                window_state: &mut WindowState,
-                window: &mut Rc<Window>,
-                imgui_io: &mut imgui::Io,
-                new_cursor_state: CursorState,
-        ) {
-                window_state.cursor_state = new_cursor_state;
-                window.set_cursor_visible(new_cursor_state != CursorState::Hidden);
-                window.set_cursor_grab(new_cursor_state == CursorState::Hidden).unwrap();
-                imgui_io.config_flags
-                        .set(imgui::ConfigFlags::NO_MOUSE, new_cursor_state == CursorState::Hidden);
-        }
+	fn process_logic_thread_messages(&mut self, control_flow: &mut ControlFlow) {
+		for message in self.window_thread_rx.try_iter() {
+			match message {
+				WindowThreadMessage::Command(command) => Self::process_command(
+					command,
+					control_flow,
+					&self.window,
+					&mut self.imgui_state.context.io_mut(),
+					&mut self.window_state,
+				),
+			}
+		}
+	}
+
+	fn process_command(
+		command: WindowThreadCommand,
+		control_flow: &mut ControlFlow,
+		window: &winit::window::Window,
+		imgui_io: &mut imgui::Io,
+		window_state: &mut WindowState,
+	) {
+		match command {
+			WindowThreadCommand::Exit => *control_flow = ControlFlow::Exit,
+			WindowThreadCommand::SetCursorState(cursor_state) => {
+				window_state.set_cursor_state(window, imgui_io, cursor_state);
+			}
+			WindowThreadCommand::SetWindowMode(window_mode) => {
+				window_state.set_window_mode(window, window_mode);
+			}
+		}
+	}
+
+	fn on_quit(&mut self) {
+		let _ = self
+			.logic_thread_tx
+			.send(LogicThreadMessage::Command(LogicThreadCommand::Exit));
+	}
 }
 
-struct WindowState {
-        fullscreen_mode: Fullscreen,
-        cursor_state: CursorState,
-        focused: bool,
+pub struct WindowState {
+	window_mode: WindowMode,
+	fullscreen_video_mode: VideoMode,
+	cursor_state: CursorState,
+	focused: bool,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum CursorState {
-        Normal,
-        Hidden,
+impl WindowState {
+	fn new(
+		window: &Window,
+		imgui_io: &mut imgui::Io,
+		window_mode: WindowMode,
+		fullscreen_video_mode: VideoMode,
+		cursor_state: CursorState,
+	) -> Self {
+		Self::set_cursor_state_inner(window, imgui_io, cursor_state);
+
+		Self {
+			window_mode,
+			fullscreen_video_mode,
+			cursor_state,
+			focused: true,
+		}
+	}
+
+	pub fn set_cursor_state(&mut self, window: &Window, imgui_io: &mut imgui::Io, cursor_state: CursorState) {
+		self.cursor_state = cursor_state;
+		Self::set_cursor_state_inner(window, imgui_io, cursor_state);
+	}
+
+	pub fn set_window_mode(&mut self, window: &Window, window_mode: WindowMode) {
+		self.window_mode = window_mode;
+		window.set_fullscreen(match window_mode {
+			WindowMode::Windowed => None,
+			WindowMode::Borderless => Some(Fullscreen::Borderless(None)),
+			WindowMode::Fullscreen => Some(Fullscreen::Exclusive(self.fullscreen_video_mode.clone())),
+		});
+	}
+
+	fn set_cursor_state_inner(window: &Window, imgui_io: &mut imgui::Io, cursor_state: CursorState) {
+		window.set_cursor_visible(cursor_state != CursorState::Hidden);
+		window.set_cursor_grab(cursor_state == CursorState::Hidden).unwrap();
+		imgui_io.config_flags
+			.set(imgui::ConfigFlags::NO_MOUSE, cursor_state == CursorState::Hidden);
+	}
 }
 
 struct ImGuiState {
-        context: imgui::Context,
-        platform: imgui_winit_support::WinitPlatform,
+	context: imgui::Context,
+	platform: imgui_winit_support::WinitPlatform,
+}
+
+pub enum WindowThreadMessage {
+	Command(WindowThreadCommand),
+}
+
+pub enum WindowThreadCommand {
+	Exit,
+	SetCursorState(CursorState),
+	SetWindowMode(WindowMode),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorState {
+	Normal,
+	Hidden,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum WindowMode {
+	Windowed,
+	Borderless,
+	Fullscreen,
 }

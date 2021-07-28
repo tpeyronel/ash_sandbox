@@ -1,7 +1,3 @@
-            if input.key_pressed(VirtualKeyCode::W) {
-                        desired_dir.z += 1.0;
-                }
-                if input.key_pressed(VirtualKeyCode::S) {
-                        desired_dir.z -= 1.0;
-                }
-                if input.key_pressed(VirtualKeyCode::D) {
+self.input_manager.on_device_event(&event, |action_event| {
+					self.logic_thread_tx.send(LogicThreadMessage::ActionEvent(action_event));
+				});

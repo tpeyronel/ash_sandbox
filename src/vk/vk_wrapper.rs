@@ -319,17 +319,17 @@ pub struct VkSurface {
 
 impl VkSurface {
         pub unsafe fn new(
-                window: &Rc<winit::window::Window>,
-                entry: &Rc<ash::Entry>,
-                instance: &Rc<VkInstance>,
+                window: Rc<winit::window::Window>,
+                entry: Rc<ash::Entry>,
+                instance: Rc<VkInstance>,
         ) -> VkResult<Self> {
-                let loader = ash::extensions::khr::Surface::new(entry.deref(), &***instance);
-                let handle = ash_window::create_surface(entry.deref(), &***instance, &**window, None)?;
+                let loader = ash::extensions::khr::Surface::new(entry.deref(), &**instance);
+                let handle = ash_window::create_surface(entry.deref(), &**instance, &*window, None)?;
 
                 Ok(Self {
-                        _window: Rc::clone(window),
-                        _entry: Rc::clone(entry),
-                        _instance: Rc::clone(instance),
+                        _window: window,
+                        _entry: entry,
+                        _instance: instance,
 
                         loader,
                         handle,
@@ -373,11 +373,12 @@ pub struct VkImageView {
 }
 
 impl VkImageView {
-        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
-                Ok(Self {
-                        device: Rc::clone(device),
+        pub unsafe fn new(device: Rc<VkDevice>, create_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
+                let handle = device.create_image_view(create_info, None)?;
 
-                        handle: device.create_image_view(create_info, None)?,
+                Ok(Self {
+                        device,
+                        handle,
                 })
         }
 }
@@ -413,10 +414,12 @@ pub struct VkSampler {
 }
 
 impl VkSampler {
-        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::SamplerCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: Rc<VkDevice>, create_info: &vk::SamplerCreateInfo) -> VkResult<Self> {
+                let handle = device.create_sampler(create_info, None)?;
+
                 Ok(Self {
-                        device: Rc::clone(device),
-                        handle: device.create_sampler(create_info, None)?,
+                        device,
+                        handle,
                 })
         }
 }
@@ -774,10 +777,12 @@ pub struct VkFence {
 }
 
 impl VkFence {
-        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::FenceCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(device: Rc<VkDevice>, create_info: &vk::FenceCreateInfo) -> VkResult<Self> {
+                let handle = device.create_fence(create_info, None)?;
+
                 Ok(Self {
-                        device: Rc::clone(device),
-                        handle: device.create_fence(create_info, None)?,
+                        device,
+                        handle,
                 })
         }
 }

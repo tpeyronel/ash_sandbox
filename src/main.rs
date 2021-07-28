@@ -1,7 +1,7 @@
 #[macro_use]
 mod vec_map;
 #[macro_use]
-mod timer;
+mod scoped_timer;
 mod asset_manager;
 pub mod camera;
 mod constants;
@@ -12,7 +12,10 @@ mod renderer;
 mod vertex;
 mod vk;
 mod application;
-mod action_ids;
+mod application_config;
+mod actions;
+mod logic_thread;
+mod render_state_switcher;
 
 #[allow(unused_imports)]
 #[macro_use]
@@ -24,6 +27,8 @@ extern crate nalgebra_glm as glm;
 extern crate vk_mem as vma;
 #[macro_use]
 extern crate enum_map;
+#[macro_use]
+extern crate approx;
 
 use std::{error::Error, io::Write};
 
@@ -46,7 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 })
                 .init();
 
-        let app = Application::new(false)?;
+        let app = Application::new()?;
 
         app.run();
 }

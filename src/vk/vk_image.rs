@@ -61,7 +61,7 @@ pub struct VkImage {
 }
 
 impl VkImage {
-        pub unsafe fn new(allocator: &Rc<vma::Allocator>, create_info: &VkImageCreateInfo) -> VkmaResult<Self> {
+        pub unsafe fn new(allocator: Rc<vma::Allocator>, create_info: &VkImageCreateInfo) -> VkmaResult<Self> {
                 let (handle, alloc, ainfo) = {
                         let mut vk_img_cinfo = vk::ImageCreateInfo {
                                 image_type: create_info.image_type,
@@ -105,7 +105,7 @@ impl VkImage {
                 };
 
                 Ok(Self {
-                        allocator: Rc::clone(allocator),
+                        allocator,
                         handle,
                         alloc,
                         ainfo,
@@ -117,7 +117,7 @@ impl VkImage {
                 instance: &ash::Instance,
                 pdevice: &vk::PhysicalDevice,
                 device: &ash::Device,
-                allocator: &Rc<vma::Allocator>,
+                allocator: Rc<vma::Allocator>,
                 cinfo: &VkImageCreateFromDataInfo,
         ) -> Result<Self, Box<dyn Error>> {
                 let mip_levels = match cinfo.mip_levels {
@@ -126,7 +126,7 @@ impl VkImage {
                         MipLevels::Number(n) => n,
                 };
 
-                let staging_buffer = Self::create_staging_buffer(device, allocator, &cinfo.data, cinfo.data.len())?;
+                let staging_buffer = Self::create_staging_buffer(device, Rc::clone(&allocator), &cinfo.data, cinfo.data.len())?;
 
                 let vk_img_cinfo = VkImageCreateInfo {
                         image_type: vk::ImageType::TYPE_2D,
@@ -211,7 +211,7 @@ impl VkImage {
 
         fn create_staging_buffer(
                 device: &ash::Device,
-                allocator: &Rc<vma::Allocator>,
+                allocator: Rc<vma::Allocator>,
                 data: &[u8],
                 data_bsize: usize,
         ) -> VkmaResult<VkBuffer> {
@@ -231,14 +231,14 @@ impl VkImage {
                                 q_family_indices: None,
                         };
 
-                        VkBuffer::new(&buffer_cinfo)?
+                        VkBuffer::new(buffer_cinfo)?
                 };
 
-                let buffer_data = staging_buffer.map_memory(&allocator)?;
+                let buffer_data = staging_buffer.map_memory()?;
                 unsafe {
                         std::ptr::copy_nonoverlapping(data.as_ptr(), buffer_data, data_bsize);
                 }
-                staging_buffer.unmap_memory(&allocator)?;
+                staging_buffer.unmap_memory()?;
 
                 Ok(staging_buffer)
         }

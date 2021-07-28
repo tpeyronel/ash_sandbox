@@ -6,9 +6,9 @@ use log::{debug, error, info, trace};
 
 use crate::{
         asset_manager::{
-                AssetManager, Buffer, BufferID, BufferView, BufferViewID, ComponentType, DataType, Image, ImageFormat,
-                ImageID, MagFilter, Material, MaterialID, Mesh, MeshID, MinFilter, Sampler, SamplerID,
-                Texture, TextureID, WrappingMode,
+                AssetManager, Buffer, BufferId, BufferView, BufferViewId, ComponentType, DataType, Image, ImageFormat,
+                ImageId, MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, Sampler, SamplerId,
+                Texture, TextureId, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         vec_map::VecMap,
@@ -33,30 +33,30 @@ pub struct VkModelImage {
 }
 
 pub struct VkAssetManager {
-        pub buffer_views: VecMap<BufferViewID, VkModelBufferView>,
-        pub images: VecMap<ImageID, VkModelImage>,
-        pub samplers: VecMap<SamplerID, VkSampler>,
-        pub material_dst_sets: VecMap<MaterialID, vk::DescriptorSet>,
+        pub buffer_views: VecMap<BufferViewId, VkModelBufferView>,
+        pub images: VecMap<ImageId, VkModelImage>,
+        pub samplers: VecMap<SamplerId, VkSampler>,
+        pub material_dst_sets: VecMap<MaterialId, vk::DescriptorSet>,
 }
 
 impl VkAssetManager {
         pub fn new(
                 instance: &ash::Instance,
                 pdevice: &VkPhysicalDevice,
-                device: &Rc<VkDevice>,
-                allocator: &Rc<vma::Allocator>,
+                device: Rc<VkDevice>,
+                allocator: Rc<vma::Allocator>,
                 transfer_queue: vk::Queue,
-                cmd_pool: &Rc<VkCommandPool>,
+                cmd_pool: Rc<VkCommandPool>,
                 dst_pool: vk::DescriptorPool,
                 material_dst_set_layout: vk::DescriptorSetLayout,
                 asset_manager: &AssetManager,
         ) -> Result<Self, Box<dyn Error>> {
-                let cmd_buffer = VkReusableCommandBuffer::new(device, cmd_pool)?;
+                let cmd_buffer = VkReusableCommandBuffer::new(Rc::clone(&device), cmd_pool)?;
 
                 trace!("Creating VkBuffers...");
                 let vk_buffer_views = Self::create_vk_buffers_from_buffers(
-                        device,
-                        allocator,
+                        &device,
+                        Rc::clone(&allocator),
                         transfer_queue,
                         &cmd_buffer,
                         asset_manager.buffers(),
@@ -68,7 +68,7 @@ impl VkAssetManager {
                 let vk_images = Self::create_vk_images_from_images(
                         instance,
                         pdevice,
-                        device,
+                        Rc::clone(&device),
                         allocator,
                         transfer_queue,
                         &cmd_buffer,
@@ -76,11 +76,11 @@ impl VkAssetManager {
                 )?;
 
                 trace!("Creating VkSamplers...");
-                let vk_samplers = Self::create_vk_samplers_from_samplers(pdevice, device, asset_manager.samplers())?;
+                let vk_samplers = Self::create_vk_samplers_from_samplers(pdevice, Rc::clone(&device), asset_manager.samplers())?;
 
                 trace!("Creating material VkDescriptorSets...");
                 let vk_material_dst_sets = Self::create_vk_material_dst_sets_from_materials(
-                        device,
+                        &device,
                         dst_pool,
                         material_dst_set_layout,
                         asset_manager.textures(),
@@ -97,8 +97,8 @@ impl VkAssetManager {
                 })
         }
 
-        fn discover_buffer_view_usages(meshes: &VecMap<MeshID, Mesh>) -> HashMap<BufferViewID, vk::BufferUsageFlags> {
-                let mut vk_buffer_usages = HashMap::<BufferViewID, vk::BufferUsageFlags>::new();
+        fn discover_buffer_view_usages(meshes: &VecMap<MeshId, Mesh>) -> HashMap<BufferViewId, vk::BufferUsageFlags> {
+                let mut vk_buffer_usages = HashMap::<BufferViewId, vk::BufferUsageFlags>::new();
 
                 for (_, mesh) in meshes {
                         for p in &mesh.primitives {
@@ -118,15 +118,15 @@ impl VkAssetManager {
         }
 
         fn create_vk_buffers_from_buffers(
-                device: &Rc<VkDevice>,
-                allocator: &Rc<vma::Allocator>,
+                device: &ash::Device,
+                allocator: Rc<vma::Allocator>,
                 transfer_queue: vk::Queue,
                 cmd_buffer: &VkReusableCommandBuffer,
-                buffers: &VecMap<BufferID, Buffer>,
-                buffer_views: &VecMap<BufferViewID, BufferView>,
-                buffer_usages: &HashMap<BufferViewID, vk::BufferUsageFlags>,
-        ) -> Result<VecMap<BufferViewID, VkModelBufferView>, Box<dyn Error>> {
-                let mut vk_buffer_views: VecMap<BufferViewID, VkModelBufferView> = VecMap::new();
+                buffers: &VecMap<BufferId, Buffer>,
+                buffer_views: &VecMap<BufferViewId, BufferView>,
+                buffer_usages: &HashMap<BufferViewId, vk::BufferUsageFlags>,
+        ) -> Result<VecMap<BufferViewId, VkModelBufferView>, Box<dyn Error>> {
+                let mut vk_buffer_views: VecMap<BufferViewId, VkModelBufferView> = VecMap::new();
 
                 for (bview_id, bview) in buffer_views {
                         let buffer = &buffers[bview.buffer_id];
@@ -135,7 +135,7 @@ impl VkAssetManager {
 
                         let vk_buffer_cinfo = VkImmutableBufferCreateInfo {
                                 device,
-                                allocator,
+                                allocator: Rc::clone(&allocator),
                                 cmd_buffer,
                                 transfer_queue,
                                 // TODO: accurate buffer usage flags
@@ -147,7 +147,7 @@ impl VkAssetManager {
                                 },
                         };
 
-                        let vk_buffer = VkBuffer::new_immutable(&vk_buffer_cinfo)?;
+                        let vk_buffer = VkBuffer::new_immutable(vk_buffer_cinfo)?;
 
                         let format =
                                 Self::vk_format_from_component_and_data_type(bview.component_type, bview.data_type);
@@ -174,13 +174,13 @@ impl VkAssetManager {
         fn create_vk_images_from_images(
                 instance: &ash::Instance,
                 pdevice: &VkPhysicalDevice,
-                device: &Rc<VkDevice>,
-                allocator: &Rc<vma::Allocator>,
+                device: Rc<VkDevice>,
+                allocator: Rc<vma::Allocator>,
                 transfer_queue: vk::Queue,
                 cmd_buffer: &VkReusableCommandBuffer,
-                images: &VecMap<ImageID, Image>,
-        ) -> Result<VecMap<ImageID, VkModelImage>, Box<dyn Error>> {
-                let mut vk_images: VecMap<ImageID, VkModelImage> = VecMap::new();
+                images: &VecMap<ImageId, Image>,
+        ) -> Result<VecMap<ImageId, VkModelImage>, Box<dyn Error>> {
+                let mut vk_images: VecMap<ImageId, VkModelImage> = VecMap::new();
 
                 for (image_id, image) in images {
                         let vk_image_cinfo = VkImageCreateFromDataInfo {
@@ -195,7 +195,7 @@ impl VkAssetManager {
                         };
 
                         let vk_image =
-                                unsafe { VkImage::from_data(instance, pdevice, device, allocator, &vk_image_cinfo)? };
+                                unsafe { VkImage::from_data(instance, pdevice, &device, Rc::clone(&allocator), &vk_image_cinfo)? };
 
                         let vk_image_view_cinfo = vk::ImageViewCreateInfo {
                                 image: *vk_image,
@@ -212,7 +212,7 @@ impl VkAssetManager {
                                 ..Default::default()
                         };
 
-                        let vk_image_view = unsafe { VkImageView::new(device, &vk_image_view_cinfo)? };
+                        let vk_image_view = unsafe { VkImageView::new(Rc::clone(&device), &vk_image_view_cinfo)? };
 
                         let vk_image_id = vk_images.insert(VkModelImage {
                                 image: vk_image,
@@ -227,10 +227,10 @@ impl VkAssetManager {
 
         fn create_vk_samplers_from_samplers(
                 pdevice: &VkPhysicalDevice,
-                device: &Rc<VkDevice>,
-                samplers: &VecMap<SamplerID, Sampler>,
-        ) -> Result<VecMap<SamplerID, VkSampler>, Box<dyn Error>> {
-                let mut vk_samplers = VecMap::<SamplerID, VkSampler>::new();
+                device: Rc<VkDevice>,
+                samplers: &VecMap<SamplerId, Sampler>,
+        ) -> Result<VecMap<SamplerId, VkSampler>, Box<dyn Error>> {
+                let mut vk_samplers = VecMap::<SamplerId, VkSampler>::new();
 
                 for (sampler_id, sampler) in samplers {
                         let vk_sampler_cinfo = vk::SamplerCreateInfo {
@@ -252,7 +252,7 @@ impl VkAssetManager {
                                 ..Default::default()
                         };
 
-                        let vk_sampler = unsafe { VkSampler::new(device, &vk_sampler_cinfo)? };
+                        let vk_sampler = unsafe { VkSampler::new(Rc::clone(&device), &vk_sampler_cinfo)? };
                         let vk_sampler_id = vk_samplers.insert(vk_sampler);
 
                         assert_eq!(sampler_id, vk_sampler_id);
@@ -265,18 +265,18 @@ impl VkAssetManager {
                 device: &VkDevice,
                 dst_pool: vk::DescriptorPool,
                 material_dst_set_layout: vk::DescriptorSetLayout,
-                textures: &VecMap<TextureID, Texture>,
-                materials: &VecMap<MaterialID, Material>,
-                vk_images: &VecMap<ImageID, VkModelImage>,
-                vk_samplers: &VecMap<SamplerID, VkSampler>,
-        ) -> Result<VecMap<MaterialID, vk::DescriptorSet>, Box<dyn Error>> {
+                textures: &VecMap<TextureId, Texture>,
+                materials: &VecMap<MaterialId, Material>,
+                vk_images: &VecMap<ImageId, VkModelImage>,
+                vk_samplers: &VecMap<SamplerId, VkSampler>,
+        ) -> Result<VecMap<MaterialId, vk::DescriptorSet>, Box<dyn Error>> {
                 let material_dst_set_layouts = vec![material_dst_set_layout; materials.len()];
                 let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
                         .descriptor_pool(dst_pool)
                         .set_layouts(&material_dst_set_layouts);
                 let material_dst_sets = unsafe { device.allocate_descriptor_sets(&dst_set_ainfo)? };
 
-                let mut material_dst_sets_map = VecMap::<MaterialID, vk::DescriptorSet>::new();
+                let mut material_dst_sets_map = VecMap::<MaterialId, vk::DescriptorSet>::new();
 
                 for ((mat_id, mat), &material_dst_set) in materials.iter().zip(&material_dst_sets) {
                         let color_texture = &textures[mat.base_color_texture.unwrap()];
