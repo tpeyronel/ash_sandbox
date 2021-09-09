@@ -1,24 +1,19 @@
-use std::{collections::HashMap, error::Error, rc::Rc};
+use std::{error::Error, rc::Rc};
 
 use ash::{version::DeviceV1_0, vk};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 
-use crate::{
-        asset_manager::{
+use crate::{asset_manager::{
                 AssetManager, Buffer, BufferId, BufferView, BufferViewId, ComponentType, DataType, Image, ImageFormat,
                 ImageId, MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, Sampler, SamplerId,
                 Texture, TextureId, WrappingMode,
-        },
-        constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
-        vec_map::VecMap,
-        vk::{
+        }, constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE}, hashmap::HashMap, vec_map::VecMap, vk::{
                 vk_buffer::{BufferData, VkBuffer, VkImmutableBufferCreateInfo},
                 vk_command_buffer::VkReusableCommandBuffer,
                 vk_image::{MipLevels, VkImage, VkImageCreateFromDataInfo},
                 vk_wrapper::{VkCommandPool, VkDevice, VkImageView, VkPhysicalDevice, VkSampler},
-        },
-};
+        }};
 
 pub struct VkModelBufferView {
         pub buffer: VkBuffer,

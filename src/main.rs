@@ -16,6 +16,7 @@ mod application_config;
 mod actions;
 mod logic_thread;
 mod render_state_switcher;
+mod hashmap;
 
 #[allow(unused_imports)]
 #[macro_use]

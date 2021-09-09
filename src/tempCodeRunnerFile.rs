@@ -1,3 +1,8 @@
-self.input_manager.on_device_event(&event, |action_event| {
-					self.logic_thread_tx.send(LogicThreadMessage::ActionEvent(action_event));
-				});
+let player_hor_orien = UnitQuat::new_normalize(Quat::new(
+                                                player_orien.as_vector().w,
+                                                0.0,
+                                                player_orien.as_vector().y,
+                                                0.0,
+                                        ));
+                                        let right_dir = player_hor_orien * Vec3::x_axis();
+                                        info!("{:#?}", right_dir);

@@ -81,24 +81,22 @@ impl Application {
 		trace!("Initialized ImGui");
 
 		let mut input_manager = InputManager::new();
+
 		let mut input_map = InputBindingMap::new();
 		input_map.bind_key(EXIT, KeyCode::Escape, KeyBindingType::Simple(KeyState::Released));
 		input_map.bind_key(TOGGLE_CURSOR, KeyCode::T, KeyBindingType::Simple(KeyState::Released));
-		input_map.bind_key(
-			CYCLE_WINDOW_MODE,
-			KeyCode::F11,
-			KeyBindingType::Simple(KeyState::Released),
-		);
-		input_map.bind_key(MOVE_FORWARD, KeyCode::W, KeyBindingType::Extended);
-		input_map.bind_key(MOVE_BACKWARD, KeyCode::S, KeyBindingType::Extended);
-		input_map.bind_key(MOVE_RIGHTWARD, KeyCode::D, KeyBindingType::Extended);
-		input_map.bind_key(MOVE_RIGHTWARD, KeyCode::F, KeyBindingType::Extended);
-		input_map.bind_key(MOVE_LEFTWARD, KeyCode::A, KeyBindingType::Extended);
+		input_map.bind_key(CYCLE_WINDOW_MODE, KeyCode::F11, KeyBindingType::Simple(KeyState::Released));
+		input_map.bind_key(MOVE_FORWARD, KeyCode::W, KeyBindingType::Continuous);
+		input_map.bind_key(MOVE_BACKWARD, KeyCode::S, KeyBindingType::Continuous);
+		input_map.bind_key(MOVE_RIGHTWARD, KeyCode::D, KeyBindingType::Continuous);
+		input_map.bind_key(MOVE_RIGHTWARD, KeyCode::F, KeyBindingType::Continuous);
+		input_map.bind_key(MOVE_LEFTWARD, KeyCode::A, KeyBindingType::Continuous);
 		input_map.bind_mouse_motion(YAW_POSITIVE, MouseMotionType::PositiveX, None);
 		input_map.bind_mouse_motion(YAW_NEGATIVE, MouseMotionType::NegativeX, None);
 		input_map.bind_mouse_motion(PITCH_POSITIVE, MouseMotionType::PositiveY, None);
 		input_map.bind_mouse_motion(PITCH_NEGATIVE, MouseMotionType::NegativeY, None);
 		input_manager.push_input_binding_map(input_map);
+
 		trace!("Initialized InputManager");
 
 		let dsampler = Sampler {
@@ -140,20 +138,25 @@ impl Application {
 
 		let (logic_thread_tx, logic_thread_rx) = std::sync::mpsc::channel();
 		let (window_thread_tx, window_thread_rx) = std::sync::mpsc::channel();
-		let input_state = input_manager.get_input_state();
 
+                let logic_thread_tx_clone = logic_thread_tx.clone();
+                input_manager.register_listener(Box::new(move |action_event| {
+                        logic_thread_tx_clone
+                                .send(LogicThreadMessage::ActionEvent(action_event.clone()))
+                                .expect("Error sending action event!");
+                }));
+
+		let continuous_actions = input_manager.clone_continuous_actions_state();
 		let logic_thread_params = LogicThreadSpawnParams {
 			target_tps: config.tps,
 			logic_thread_rx,
 			window_thread_tx,
-			input_state,
+			continuous_actions,
 			asset_manager: Arc::clone(&asset_manager),
 			render_state_switcher,
 		};
 
 		let logic_thread = LogicThread::spawn(logic_thread_params);
-
-		window.set_visible(true);
 
 		Ok(Self {
 			event_loop: Some(event_loop),
@@ -172,10 +175,12 @@ impl Application {
 	}
 
 	pub fn run(mut self) -> ! {
+		self.window.set_visible(true);
+
 		self.event_loop.take().unwrap().run(move |event, _, control_flow| {
 			*control_flow = ControlFlow::Poll;
 
-			self.handle_winit_event(event, control_flow);
+			self.on_winit_event(event, control_flow);
 		});
 	}
 
@@ -208,7 +213,7 @@ impl Application {
 		ImGuiState { context, platform }
 	}
 
-	fn handle_winit_event(&mut self, event: winit::event::Event<'_, ()>, control_flow: &mut ControlFlow) {
+	fn on_winit_event(&mut self, event: winit::event::Event<'_, ()>, control_flow: &mut ControlFlow) {
 		self.imgui_state
 			.platform
 			.handle_event(self.imgui_state.context.io_mut(), &self.window, &event);
@@ -218,13 +223,7 @@ impl Application {
 				self.on_new_events(start_cause);
 			}
 			Event::DeviceEvent { event, .. } => {
-				let logic_thread_tx = &mut self.logic_thread_tx;
-
-				self.input_manager.on_device_event(&event, |action_event| {
-					logic_thread_tx
-						.send(LogicThreadMessage::ActionEvent(action_event))
-						.expect("Error sending action event!");
-				});
+				self.input_manager.on_device_event(&event);
 			}
 			Event::WindowEvent { window_id, event } if self.window.id() == window_id => {
 				self.on_window_event(event, control_flow);

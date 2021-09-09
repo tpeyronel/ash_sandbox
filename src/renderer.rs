@@ -1,6 +1,6 @@
-use std::{collections::HashMap, error::Error};
+use std::{error::Error};
 
-use crate::{asset_manager::ModelId, input_manager::ActionEvent, logic_thread::ProjectionCameraComponent, my_glm::*};
+use crate::{asset_manager::ModelId, hashmap::HashMap, input_manager::ActionEvent, logic_thread::ProjectionCameraComponent, my_glm::*};
 
 pub struct ModelInstance {
 	pub pos: Vec3,

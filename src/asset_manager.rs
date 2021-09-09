@@ -1,12 +1,11 @@
 use std::{
-	collections::HashMap,
 	path::{Path, PathBuf},
 };
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 
-use crate::{my_glm::*, scoped_timer::TimePrefix, vec_map::{VecMap, VecMapKey}};
+use crate::{hashmap::{GetOrInsert, HashMap}, my_glm::*, scoped_timer::TimePrefix, vec_map::{VecMap, VecMapKey}};
 
 /*enum ComponentType {
 	I8 = 1,
@@ -377,21 +376,14 @@ impl AssetManager {
 					}
 				};
 
-				let image_id = match image_path_map.get(&image_relative_path) {
-					Some(&image_id) => image_id,
-					None => {
-						let image_id = out_images.insert(Image {
-							pixels: image.pixels,
-							width: image.width,
-							height: image.height,
-							format: image.format,
-						});
-
-						image_path_map.insert(image_relative_path, image_id);
-
-						image_id
-					}
-				};
+                                let image_id = *image_path_map.get_or_insert_with(&image_relative_path, || {
+                                        out_images.insert(Image {
+                                                pixels: image.pixels,
+                                                width: image.width,
+                                                height: image.height,
+                                                format: image.format,
+                                        })
+                                });
 
 				Some(Ok(image_id))
 			})

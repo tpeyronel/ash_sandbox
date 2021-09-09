@@ -1,8 +1,6 @@
-use std::{
-	collections::HashMap,
-	sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
+use crate::hashmap::{GetOrInsert, HashMap};
 use enum_map::EnumMap;
 #[allow(unused_imports)]
 use log::info;
@@ -23,29 +21,41 @@ pub struct ActionStrength(pub f32);
 
 const KEY_ACTION_STRENGTH: ActionStrength = ActionStrength(1.0);
 
-pub type ActionIdRx = std::sync::mpsc::Receiver<ActionEvent>;
-type ActionIdTx = std::sync::mpsc::Sender<ActionEvent>;
+type ActionEventListener = Box<dyn FnMut(&ActionEvent)>;
 
 pub struct InputManager {
-	window_focused: bool,
-	keyboard_state: KeyboardState,
-	// modifiers_state: ModifiersState,
 	binding_map: InputBindingMap,
-	input_state: Arc<Mutex<InputState>>,
+
+	action_event_listeners: Vec<ActionEventListener>,
+	action_pollable_state: Arc<Mutex<ActionPollableState>>,
+
+	mouse_input_processor: MouseInputProcessor,
+	keyboard_input_processor: KeyboardInputProcessor,
+
+	window_focused: bool,
 }
 
 impl InputManager {
 	pub fn new() -> Self {
 		Self {
-			window_focused: true,
-			keyboard_state: KeyboardState::new(),
 			binding_map: InputBindingMap::new(),
-			input_state: Arc::new(Mutex::new(InputState { values: HashMap::new() })),
+
+			action_event_listeners: Vec::new(),
+			action_pollable_state: Arc::new(Mutex::new(ActionPollableState { values: HashMap::new() })),
+
+			mouse_input_processor: MouseInputProcessor::new(),
+			keyboard_input_processor: KeyboardInputProcessor::new(),
+
+			window_focused: true,
 		}
 	}
 
-	pub fn get_input_state(&mut self) -> Arc<Mutex<InputState>> {
-		Arc::clone(&self.input_state)
+	pub fn register_listener(&mut self, listener: Box<dyn FnMut(&ActionEvent)>) {
+		self.action_event_listeners.push(listener);
+	}
+
+	pub fn clone_continuous_actions_state(&mut self) -> Arc<Mutex<ActionPollableState>> {
+		Arc::clone(&self.action_pollable_state)
 	}
 
 	pub fn push_input_binding_map(&mut self, map: InputBindingMap) {
@@ -55,124 +65,50 @@ impl InputManager {
 	pub fn on_window_focused(&mut self, focused: bool) {
 		self.window_focused = focused;
 
-		for key_code in self.keyboard_state.iter_presed() {
-			let KeyBinding {
-				action_id,
-				key_binding_type,
-			} = match self.binding_map.get_key_binding(key_code) {
-				Some(b) => b,
-				None => continue,
-			};
-
-			match key_binding_type {
-				KeyBindingType::Extended => {
-					let mut input_state = self.input_state.lock().unwrap();
-
-					if !focused {
-						input_state.reset(action_id);
-					} else {
-						input_state.accumulate(action_id, KEY_ACTION_STRENGTH);
-					}
-				}
-				_ => (),
-			}
-		}
+		self.keyboard_input_processor.on_window_focused(
+			&self.binding_map.key_bindings,
+			&self.action_pollable_state,
+			focused,
+		);
 	}
 
-	pub fn on_device_event(&mut self, device_event: &DeviceEvent, mut notify_action: impl FnMut(ActionEvent)) {
+	pub fn on_device_event(&mut self, device_event: &DeviceEvent) {
+		let listeners = &mut self.action_event_listeners;
+
 		match device_event {
-			DeviceEvent::MouseMotion { delta: (dx, dy) } => self.on_mouse_motion(*dx, -(*dy), &mut notify_action),
+			DeviceEvent::MouseMotion { delta: (dx, dy) } => {
+				self.mouse_input_processor.process_mouse_motion(
+					self.window_focused,
+					&self.binding_map.mouse_bindings,
+					*dx as f32,
+					-*dy as f32,
+					&mut |action| {
+                                                listeners.iter_mut().for_each(|listener| listener(action));
+                                        },
+				);
+			}
 			DeviceEvent::MouseWheel { delta } => (),
 			DeviceEvent::Motion { axis, value } => (),
 			DeviceEvent::Button { button, state } => (),
-			DeviceEvent::Key(kinput) => self.on_keyboard_input(kinput, &mut notify_action),
+			DeviceEvent::Key(input) => {
+				self.keyboard_input_processor.process_keyboard_input(
+					self.window_focused,
+					&self.binding_map.key_bindings,
+					&self.action_pollable_state,
+					input,
+					&mut |action| {
+                                                listeners.iter_mut().for_each(|listener| listener(action));
+                                        },
+				);
+			}
 			_ => (),
 		}
 	}
+}
 
-	fn on_mouse_motion(&mut self, dx: f64, dy: f64, notify_action: &mut impl FnMut(ActionEvent)) {
-		if !self.window_focused {
-			return;
-		}
+pub struct ActionListener {
+        events: ,
 
-		if relative_ne!(dx, 0.0) {
-			let motion_type = if dx > 0.0 {
-				MouseMotionType::PositiveX
-			} else {
-				MouseMotionType::NegativeX
-			};
-
-			self.binding_map.mouse_bindings.process_mouse_motion(
-				motion_type,
-				dx.abs(),
-                                notify_action
-			);
-		}
-
-		if relative_ne!(dy, 0.0) {
-			let motion_type = if dy > 0.0 {
-				MouseMotionType::PositiveY
-			} else {
-				MouseMotionType::NegativeY
-			};
-
-			self.binding_map.mouse_bindings.process_mouse_motion(
-				motion_type,
-				dy.abs(),
-                                notify_action
-			);
-		}
-	}
-
-	fn on_keyboard_input(&mut self, kinput: &KeyboardInput, notify_action: &mut impl FnMut(ActionEvent)) {
-		let key_code = match kinput.virtual_keycode {
-			Some(key_code) => key_code,
-			None => return,
-		};
-
-		if self.keyboard_state.is_key_repeat(key_code, kinput.state) {
-			return;
-		}
-		self.keyboard_state.set_key_state(key_code, kinput.state);
-
-		let KeyBinding {
-			action_id,
-			key_binding_type,
-		} = match self.binding_map.get_key_binding(key_code) {
-			Some(key_binding) => key_binding,
-			None => return,
-		};
-
-		match key_binding_type {
-			KeyBindingType::Simple(activator_state) => {
-				if !self.window_focused {
-					return;
-				}
-
-				if *activator_state == kinput.state {
-					let action_event = ActionEvent {
-						action_id: action_id.clone(),
-						strength: KEY_ACTION_STRENGTH,
-					};
-
-					notify_action(action_event);
-				}
-			}
-			KeyBindingType::Extended => {
-				// If not focused, we only want to release keys that were pressed while focused.
-				if !self.window_focused && (kinput.state != KeyState::Released) {
-					return;
-				}
-
-				let mut input_state = self.input_state.lock().unwrap();
-
-				match kinput.state {
-					KeyState::Pressed => input_state.accumulate(action_id, KEY_ACTION_STRENGTH),
-					KeyState::Released => input_state.reset(action_id),
-				}
-			}
-		};
-	}
 }
 
 struct KeyboardState {
@@ -204,7 +140,7 @@ impl KeyboardState {
 		&mut self.key_states[key_code as usize]
 	}
 
-	fn iter_presed(
+	/* fn iter_presed(
 		&self,
 	) -> std::iter::FilterMap<
 		std::iter::Enumerate<std::slice::Iter<'_, KeyState>>,
@@ -222,6 +158,13 @@ impl KeyboardState {
 			.iter()
 			.enumerate()
 			.filter_map(f as fn((usize, &KeyState)) -> Option<KeyCode>)
+	} */
+
+	fn pressed(&self) -> impl Iterator<Item = KeyCode> + '_ {
+		self.key_states.iter().enumerate().filter_map(|(kc, ks)| match ks {
+			KeyState::Pressed => Some(unsafe { std::mem::transmute::<u32, KeyCode>(kc as u32) }),
+			KeyState::Released => None,
+		})
 	}
 }
 
@@ -245,24 +188,12 @@ impl<'a> IntoIterator for &'a KeyboardState {
 	}
 }
 
-pub struct InputState {
+pub struct ActionPollableState {
 	values: HashMap<ActionId, ActionStrength>,
 }
 
-impl InputState {
+impl ActionPollableState {
 	pub fn poll(&mut self) -> HashMap<ActionId, ActionStrength> {
-		/* self.values
-		.iter()
-		.filter_map(|(action, accum)| {
-			if !accum.is_empty() {
-				let avg = accum.iter().sum::<f32>() / accum.len() as f32;
-
-				Some((action.clone(), avg))
-			} else {
-				None
-			}
-		})
-		.collect() */
 		self.values.clone()
 	}
 
@@ -285,8 +216,8 @@ impl InputState {
 pub struct InputBindingMap {
 	action_types: HashMap<ActionId, ActionType>,
 
-	key_bindings: KeyBindingMap,
-	mouse_bindings: MouseBindingMap,
+	key_bindings: KeyBindings,
+	mouse_bindings: MouseBindings,
 }
 
 impl InputBindingMap {
@@ -294,8 +225,8 @@ impl InputBindingMap {
 		Self {
 			action_types: HashMap::new(),
 
-			key_bindings: KeyBindingMap::new(),
-			mouse_bindings: MouseBindingMap::new(),
+			key_bindings: KeyBindings::new(),
+			mouse_bindings: MouseBindings::new(),
 		}
 	}
 
@@ -311,20 +242,16 @@ impl InputBindingMap {
 		self.key_bindings.bind(key_code, action_id, key_binding_type);
 	}
 
-	pub fn bind_mouse_motion(&mut self, action_id: &str, motion_type: MouseMotionType, threshold: Option<f64>) {
+	pub fn bind_mouse_motion(&mut self, action_id: &str, motion_type: MouseMotionType, threshold: Option<f32>) {
 		self.mouse_bindings.bind_motion(action_id, motion_type, threshold);
-        }
-
-	fn get_key_binding(&self, key_code: KeyCode) -> Option<&KeyBinding> {
-		self.key_bindings.get(key_code)
 	}
 }
 
-struct KeyBindingMap {
+struct KeyBindings {
 	key_bindings: HashMap<KeyCode, KeyBinding>,
 }
 
-impl KeyBindingMap {
+impl KeyBindings {
 	fn new() -> Self {
 		Self {
 			key_bindings: HashMap::new(),
@@ -346,59 +273,123 @@ impl KeyBindingMap {
 	}
 }
 
-struct MouseBindingMap {
+struct KeyboardInputProcessor {
+	keyboard_state: KeyboardState,
+}
+
+impl KeyboardInputProcessor {
+	fn new() -> Self {
+		Self {
+			keyboard_state: KeyboardState::new(),
+		}
+	}
+
+	fn process_keyboard_input(
+		&mut self,
+		window_focused: bool,
+		key_bindings: &KeyBindings,
+		input_state: &Mutex<ActionPollableState>,
+		input: &KeyboardInput,
+		for_each_action: &mut impl FnMut(&ActionEvent),
+	) {
+		let key_code = match input.virtual_keycode {
+			Some(kc) => kc,
+			None => return,
+		};
+
+		if self.keyboard_state.is_key_repeat(key_code, input.state) {
+			return;
+		}
+
+		self.keyboard_state.set_key_state(key_code, input.state);
+
+		if !window_focused {
+			return;
+		}
+
+		let binding = match key_bindings.get(key_code) {
+			Some(b) => b,
+			None => return,
+		};
+
+		match binding.key_binding_type {
+			KeyBindingType::Simple(activator_state) => {
+				if activator_state == input.state {
+                                        let event = ActionEvent {
+                                                action_id: binding.action_id.clone(),
+						strength: KEY_ACTION_STRENGTH,
+                                        };
+					for_each_action(&event)
+				}
+			}
+			KeyBindingType::Continuous => {
+				let mut input_state = input_state.lock().unwrap();
+
+				match input.state {
+					KeyState::Pressed => {
+						input_state.accumulate(&binding.action_id, KEY_ACTION_STRENGTH)
+					}
+					KeyState::Released => input_state.reset(&binding.action_id),
+				}
+			}
+		}
+	}
+
+	fn on_window_focused(&self, key_bindings: &KeyBindings, input_state: &Mutex<ActionPollableState>, window_focused: bool) {
+		for key_code in self.keyboard_state.pressed() {
+			let binding = match key_bindings.get(key_code) {
+				Some(b) => b,
+				None => continue,
+			};
+
+			match binding.key_binding_type {
+				KeyBindingType::Continuous => {
+					let mut input_state = input_state.lock().unwrap();
+
+					if !window_focused {
+						input_state.reset(&binding.action_id);
+					} else {
+						input_state.accumulate(&binding.action_id, KEY_ACTION_STRENGTH);
+					}
+				}
+				_ => (),
+			}
+		}
+	}
+}
+
+struct MouseBindings {
 	motion_bindings: EnumMap<MouseMotionType, Option<MouseMotionBinding>>,
 }
 
-impl MouseBindingMap {
+impl MouseBindings {
 	fn new() -> Self {
 		Self {
 			motion_bindings: enum_map! { _ => None },
 		}
 	}
 
-	fn bind_motion(&mut self, action_id: &str, motion_type: MouseMotionType, threshold: Option<f64>) {
-		assert!(self.motion_bindings[motion_type].is_none());
-
+	fn bind_motion(&mut self, action_id: &str, motion_type: MouseMotionType, threshold: Option<f32>) {
 		self.motion_bindings[motion_type] = Some(MouseMotionBinding {
 			action_id: ActionId::from(action_id),
-			threshold: threshold.map(|t| (t, 0.0)),
+			threshold,
 		});
 	}
 
-	fn process_mouse_motion(&mut self, motion_type: MouseMotionType, delta: f64, notify_action: &mut impl FnMut(ActionEvent)) {
-		let binding = match &mut self.motion_bindings[motion_type] {
-			Some(binding) => binding,
-			None => return,
-		};
-
-		match &mut binding.threshold {
-			Some((threshold, accumulated)) => {
-				*accumulated += delta;
-
-				let quotient = (*accumulated / *threshold).trunc();
-				*accumulated -= quotient;
-
-				let quotient = quotient as usize;
-
-                                for _ in 0..quotient {
-                                        notify_action(ActionEvent {
-                                                action_id: binding.action_id.clone(),
-                                                strength: ActionStrength(delta as f32),
-                                        });
-                                }
-			}
-			None => notify_action(ActionEvent {
-				action_id: binding.action_id.clone(),
-				strength: ActionStrength(delta as f32),
-			}),
-		}
+	fn get_motion_binding(&self, motion_type: MouseMotionType) -> Option<&MouseMotionBinding> {
+		self.motion_bindings[motion_type].as_ref()
 	}
 }
 
 struct MouseMotionBinding {
 	action_id: ActionId,
-	threshold: Option<(f64, f64)>,
+	threshold: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MouseMotionAxis {
+	X,
+	Y,
 }
 
 #[derive(Debug, Clone, Copy, Enum)]
@@ -407,6 +398,96 @@ pub enum MouseMotionType {
 	NegativeX,
 	PositiveY,
 	NegativeY,
+}
+
+struct MouseInputProcessor {
+	accumulators: HashMap<ActionId, f32>,
+}
+
+impl MouseInputProcessor {
+	fn new() -> Self {
+		Self {
+			accumulators: HashMap::new(),
+		}
+	}
+
+	fn process_mouse_motion(
+		&mut self,
+		window_focused: bool,
+		mouse_bindings: &MouseBindings,
+		dx: f32,
+		dy: f32,
+		for_each_action: &mut impl FnMut(&ActionEvent),
+	) {
+		if !window_focused {
+			return;
+		}
+
+		if let Some(motion_type) = Self::figure_motion_type(MouseMotionAxis::X, dx) {
+			self.process_directional_motion(mouse_bindings, motion_type, dx.abs(), for_each_action)
+		}
+
+		if let Some(motion_type) = Self::figure_motion_type(MouseMotionAxis::Y, dy) {
+			self.process_directional_motion(mouse_bindings, motion_type, dy.abs(), for_each_action)
+		}
+	}
+
+	fn figure_motion_type(motion_axis: MouseMotionAxis, delta: f32) -> Option<MouseMotionType> {
+		if relative_eq!(delta, 0.0) {
+			return None;
+		}
+
+		let motion_type = if delta > 0.0 {
+			match motion_axis {
+				MouseMotionAxis::X => MouseMotionType::PositiveX,
+				MouseMotionAxis::Y => MouseMotionType::PositiveY,
+			}
+		} else {
+			match motion_axis {
+				MouseMotionAxis::X => MouseMotionType::NegativeX,
+				MouseMotionAxis::Y => MouseMotionType::NegativeY,
+			}
+		};
+
+		Some(motion_type)
+	}
+
+	fn process_directional_motion(
+		&mut self,
+		mouse_bindings: &MouseBindings,
+		motion_type: MouseMotionType,
+		delta: f32,
+		for_each_action: &mut impl FnMut(&ActionEvent),
+	) {
+		let binding = match mouse_bindings.get_motion_binding(motion_type) {
+			Some(binding) => binding,
+			None => return,
+		};
+
+		let accumulator = self.accumulators.get_mut_or_insert(&binding.action_id, 0.0);
+
+		match binding.threshold {
+			Some(threshold) => {
+				*accumulator += delta;
+
+				let quotient = (*accumulator / threshold).trunc();
+				*accumulator -= quotient;
+
+                                let event = ActionEvent {
+					action_id: binding.action_id.clone(),
+					strength: ActionStrength(delta as f32),
+				};
+				(0..quotient as usize).for_each(|_| for_each_action(&event))
+			}
+			None => {
+				let event = ActionEvent {
+					action_id: binding.action_id.clone(),
+					strength: ActionStrength(delta as f32),
+				};
+				for_each_action(&event)
+			}
+		}
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -419,7 +500,7 @@ impl From<KeyBindingType> for ActionType {
 	fn from(key_binding_type: KeyBindingType) -> Self {
 		match key_binding_type {
 			KeyBindingType::Simple(_) => ActionType::Simple,
-			KeyBindingType::Extended => ActionType::Extended,
+			KeyBindingType::Continuous => ActionType::Extended,
 		}
 	}
 }
@@ -433,5 +514,5 @@ pub struct KeyBinding {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum KeyBindingType {
 	Simple(KeyState),
-	Extended,
+	Continuous,
 }

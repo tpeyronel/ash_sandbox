@@ -106,6 +106,7 @@ dependencies = [
  "env_logger",
  "fps_counter",
  "gltf",
+ "hashbrown",
  "imgui",
  "imgui-rs-vulkan-renderer",
  "imgui-winit-support",
