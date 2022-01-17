@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::hashmap::{GetOrInsert, HashMap};
+use crate::{hashmap::{GetOrInsert, HashMap}, actions::{ActionId, Action}};
 use enum_map::EnumMap;
 #[allow(unused_imports)]
 use log::info;
@@ -15,7 +15,6 @@ pub struct ActionEvent {
 	pub strength: ActionStrength,
 }
 
-pub type ActionId = String;
 #[derive(Debug, Clone, Copy)]
 pub struct ActionStrength(pub f32);
 
@@ -104,11 +103,6 @@ impl InputManager {
 			_ => (),
 		}
 	}
-}
-
-pub struct ActionListener {
-        events: ,
-
 }
 
 struct KeyboardState {
@@ -230,19 +224,19 @@ impl InputBindingMap {
 		}
 	}
 
-	pub fn bind_key(&mut self, action_id: &str, key_code: KeyCode, key_binding_type: KeyBindingType) {
+	pub fn bind_key(&mut self, action_id: ActionId, key_code: KeyCode, key_binding_type: KeyBindingType) {
 		let action_type = ActionType::from(key_binding_type);
 
-		if let Some(&prev_action_type) = self.action_types.get(action_id) {
+		if let Some(&prev_action_type) = self.action_types.get(&action_id) {
 			assert!(action_type == prev_action_type);
 		} else {
-			self.action_types.insert(String::from(action_id), action_type);
+			self.action_types.insert(action_id, action_type);
 		}
 
 		self.key_bindings.bind(key_code, action_id, key_binding_type);
 	}
 
-	pub fn bind_mouse_motion(&mut self, action_id: &str, motion_type: MouseMotionType, threshold: Option<f32>) {
+	pub fn bind_mouse_motion(&mut self, action_id: ActionId, motion_type: MouseMotionType, threshold: Option<f32>) {
 		self.mouse_bindings.bind_motion(action_id, motion_type, threshold);
 	}
 }
@@ -258,11 +252,11 @@ impl KeyBindings {
 		}
 	}
 
-	fn bind(&mut self, key_code: KeyCode, action_id: &str, key_binding_type: KeyBindingType) {
+	fn bind(&mut self, key_code: KeyCode, action_id: ActionId, key_binding_type: KeyBindingType) {
 		self.key_bindings.insert(
 			key_code,
 			KeyBinding {
-				action_id: String::from(action_id),
+				action_id,
 				key_binding_type,
 			},
 		);
@@ -369,9 +363,9 @@ impl MouseBindings {
 		}
 	}
 
-	fn bind_motion(&mut self, action_id: &str, motion_type: MouseMotionType, threshold: Option<f32>) {
+	fn bind_motion(&mut self, action_id: ActionId, motion_type: MouseMotionType, threshold: Option<f32>) {
 		self.motion_bindings[motion_type] = Some(MouseMotionBinding {
-			action_id: ActionId::from(action_id),
+			action_id,
 			threshold,
 		});
 	}

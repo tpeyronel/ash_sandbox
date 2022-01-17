@@ -12,13 +12,12 @@ use crate::{
 	actions::*,
 	application_config::ApplicationConfig,
 	asset_manager::*,
-	constants::FONT_SIZE,
-	input_manager::{InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType},
+	input_manager::{InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType, ActionEvent},
 	logic_thread::{LogicThread, LogicThreadCommand, LogicThreadMessage, LogicThreadSpawnParams},
 	my_glm::*,
 	render_state_switcher::RenderStateSwitcher,
 	renderer::Renderer,
-	vk::vk_renderer::VkRenderer,
+	vk::vk_renderer::VkRenderer, constants::FONT_SIZE,
 };
 use log::{error, info, trace};
 use serde::{Deserialize, Serialize};
@@ -42,6 +41,8 @@ pub struct Application {
 	asset_manager: Arc<AssetManager>,
 
 	renderer: VkRenderer,
+
+        player_orien: UnitQuat,
 
 	tps_counter: TPSCounter,
 	frame_begin: Instant,
@@ -168,6 +169,8 @@ impl Application {
 			input_manager,
 			asset_manager,
 			renderer,
+
+                        player_orien: UnitQuat::identity(),
 
 			tps_counter: TPSCounter::new(5),
 			frame_begin: Instant::now(),
@@ -375,6 +378,10 @@ impl Application {
 					&mut self.imgui_state.context.io_mut(),
 					&mut self.window_state,
 				),
+                                WindowThreadMessage::ActionEvent(action_event) => Self::process_action_event(
+                                        action_event,
+                                        &mut self.player_orien,
+                                ),
 			}
 		}
 	}
@@ -396,6 +403,40 @@ impl Application {
 			}
 		}
 	}
+
+        fn process_action_event(ActionEvent{ action_id, strength}: ActionEvent, player_orien: &mut UnitQuat) {
+                const PIXELS_PER_360_ROTATION: f32 = 480.0;
+
+                match action_id {
+                        YAW_POSITIVE => {
+                                *player_orien = UnitQuat::from_axis_angle(&Vec3::y_axis(), strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
+                        }
+                        YAW_NEGATIVE => {
+                                *player_orien = UnitQuat::from_axis_angle(&Vec3::y_axis(), -strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
+                        }
+                        PITCH_POSITIVE => {
+                                let player_yaw = UnitQuat::new_normalize(Quat::new(
+                                        player_orien.as_vector().w,
+                                        0.0,
+                                        player_orien.as_vector().y,
+                                        0.0,
+                                ));
+                                let right_dir = player_yaw * Vec3::x_axis();
+                                *player_orien = UnitQuat::from_axis_angle(&right_dir, -strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
+                        }
+                        PITCH_NEGATIVE => {
+                                let player_hor_orien = UnitQuat::new_normalize(Quat::new(
+                                        player_orien.as_vector().w,
+                                        0.0,
+                                        player_orien.as_vector().y,
+                                        0.0,
+                                ));
+                                let right_dir = player_hor_orien * Vec3::x_axis();
+                                *player_orien = UnitQuat::from_axis_angle(&right_dir, strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
+                        }
+                        _ => ()
+                }
+        }
 
 	fn on_quit(&mut self) {
 		let _ = self
@@ -458,6 +499,7 @@ struct ImGuiState {
 
 pub enum WindowThreadMessage {
 	Command(WindowThreadCommand),
+	ActionEvent(ActionEvent),
 }
 
 pub enum WindowThreadCommand {

@@ -225,11 +225,21 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
 		let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
 
 		for (action_id, strength) in active_actions {
-			match action_id.as_str() {
-				MOVE_FORWARD => desired_dir.z += strength.0,
-				MOVE_BACKWARD => desired_dir.z -= strength.0,
-				MOVE_RIGHTWARD => desired_dir.x += strength.0,
-				MOVE_LEFTWARD => desired_dir.x -= strength.0,
+                        // if action_id == MOVE_FORWARD {
+                        //         desired_dir.z += strength.0;
+                        // } else if action_id == MOVE_BACKWARD {
+                        //         desired_dir.z -= strength.0;
+                        // } else if action_id == MOVE_RIGHTWARD {
+                        //         desired_dir.x += strength.0;
+                        // } else if action_id == MOVE_LEFTWARD {
+                        //         desired_dir.x -= strength.0
+                        // }
+
+			match action_id {
+				MOVE_FORWARD=> desired_dir.z += strength.0,
+				MOVE_BACKWARD=> desired_dir.z -= strength.0,
+				MOVE_RIGHTWARD=> desired_dir.x += strength.0,
+				MOVE_LEFTWARD=> desired_dir.x -= strength.0,
 				_ => (),
 			}
 		}
@@ -255,8 +265,8 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
 
                 const PIXELS_PER_360_ROTATION: f32 = 480.0;
 
-		for ActionEvent { action_id, strength } in action_event_ch.read(self.reader_id.as_mut().unwrap()) {
-			match action_id.as_str() {
+		for &ActionEvent { action_id, strength } in action_event_ch.read(self.reader_id.as_mut().unwrap()) {
+			match action_id {
 				EXIT => queued_window_thread_messages
 					.0
 					.push_back(WindowThreadMessage::Command(WindowThreadCommand::Exit)),
