@@ -2,7 +2,7 @@ use std::{
 	error::Error,
 	path::Path,
 	rc::Rc,
-	sync::{Arc, Mutex},
+	sync::{Arc, Mutex, mpsc::Sender},
 	time::{Duration, Instant},
 };
 
@@ -141,9 +141,14 @@ impl Application {
 		let (window_thread_tx, window_thread_rx) = std::sync::mpsc::channel();
 
                 let logic_thread_tx_clone = logic_thread_tx.clone();
+                let window_thread_tx_clone = window_thread_tx.clone();
                 input_manager.register_listener(Box::new(move |action_event| {
                         logic_thread_tx_clone
                                 .send(LogicThreadMessage::ActionEvent(action_event.clone()))
+                                .expect("Error sending action event!");
+
+                        window_thread_tx_clone
+                                .send(WindowThreadMessage::ActionEvent(action_event.clone()))
                                 .expect("Error sending action event!");
                 }));
 
@@ -361,7 +366,7 @@ impl Application {
 
 		let imgui_draw_data = ui.render();
 
-		self.renderer.draw().expect("Error while drawing");
+		self.renderer.draw(&self.player_orien).expect("Error while drawing");
 
 		/* self.renderer
 		.draw(&mut self.camera, imgui_draw_data)
@@ -381,6 +386,7 @@ impl Application {
                                 WindowThreadMessage::ActionEvent(action_event) => Self::process_action_event(
                                         action_event,
                                         &mut self.player_orien,
+                                        &self.logic_thread_tx,
                                 ),
 			}
 		}
@@ -404,17 +410,26 @@ impl Application {
 		}
 	}
 
-        fn process_action_event(ActionEvent{ action_id, strength}: ActionEvent, player_orien: &mut UnitQuat) {
+        fn process_action_event(
+                ActionEvent{ action_id, strength}: ActionEvent,
+                player_orien: &mut UnitQuat,
+                logic_thread_tx: &Sender<LogicThreadMessage>,
+        ) {
                 const PIXELS_PER_360_ROTATION: f32 = 480.0;
+
+                let mut player_orien_changed = false;
 
                 match action_id {
                         YAW_POSITIVE => {
+                                player_orien_changed = true;
                                 *player_orien = UnitQuat::from_axis_angle(&Vec3::y_axis(), strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
                         }
                         YAW_NEGATIVE => {
+                                player_orien_changed = true;
                                 *player_orien = UnitQuat::from_axis_angle(&Vec3::y_axis(), -strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
                         }
                         PITCH_POSITIVE => {
+                                player_orien_changed = true;
                                 let player_yaw = UnitQuat::new_normalize(Quat::new(
                                         player_orien.as_vector().w,
                                         0.0,
@@ -425,6 +440,7 @@ impl Application {
                                 *player_orien = UnitQuat::from_axis_angle(&right_dir, -strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
                         }
                         PITCH_NEGATIVE => {
+                                player_orien_changed = true;
                                 let player_hor_orien = UnitQuat::new_normalize(Quat::new(
                                         player_orien.as_vector().w,
                                         0.0,
@@ -435,6 +451,10 @@ impl Application {
                                 *player_orien = UnitQuat::from_axis_angle(&right_dir, strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
                         }
                         _ => ()
+                }
+
+                if player_orien_changed {
+                        logic_thread_tx.send(LogicThreadMessage::SetPlayerOrien(*player_orien)).expect("Error while sending message to logic thread!");
                 }
         }
 

@@ -178,7 +178,10 @@ impl LogicThread {
 					},
 					LogicThreadMessage::ActionEvent(action_event) => {
 						world.fetch_mut::<ActionEventChannel>().single_write(action_event);
-					}
+					},
+                                        LogicThreadMessage::SetPlayerOrien(new_player_orien) => {
+                                                world.write_storage::<OrientationComponent>().get_mut(player).unwrap().0 = new_player_orien;
+                                        },
 				}
 			}
 
@@ -193,6 +196,7 @@ impl LogicThread {
 pub enum LogicThreadMessage {
 	Command(LogicThreadCommand),
 	ActionEvent(ActionEvent),
+	SetPlayerOrien(UnitQuat),
 }
 pub enum LogicThreadCommand {
 	Exit,
@@ -225,16 +229,6 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
 		let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
 
 		for (action_id, strength) in active_actions {
-                        // if action_id == MOVE_FORWARD {
-                        //         desired_dir.z += strength.0;
-                        // } else if action_id == MOVE_BACKWARD {
-                        //         desired_dir.z -= strength.0;
-                        // } else if action_id == MOVE_RIGHTWARD {
-                        //         desired_dir.x += strength.0;
-                        // } else if action_id == MOVE_LEFTWARD {
-                        //         desired_dir.x -= strength.0
-                        // }
-
 			match action_id {
 				MOVE_FORWARD=> desired_dir.z += strength.0,
 				MOVE_BACKWARD=> desired_dir.z -= strength.0,
@@ -263,8 +257,6 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
 
                 let player_orien = &mut orien_strg.get_mut(player.0).unwrap().0;
 
-                const PIXELS_PER_360_ROTATION: f32 = 480.0;
-
 		for &ActionEvent { action_id, strength } in action_event_ch.read(self.reader_id.as_mut().unwrap()) {
 			match action_id {
 				EXIT => queued_window_thread_messages
@@ -291,32 +283,6 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
 						WindowThreadCommand::SetWindowMode(self.last_window_mode),
 					));
 				}
-                                YAW_POSITIVE => {
-                                        *player_orien = UnitQuat::from_axis_angle(&Vec3::y_axis(), strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
-                                }
-                                YAW_NEGATIVE => {
-                                        *player_orien = UnitQuat::from_axis_angle(&Vec3::y_axis(), -strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
-                                }
-                                PITCH_POSITIVE => {
-                                        let player_yaw = UnitQuat::new_normalize(Quat::new(
-                                                player_orien.as_vector().w,
-                                                0.0,
-                                                player_orien.as_vector().y,
-                                                0.0,
-                                        ));
-                                        let right_dir = player_yaw * Vec3::x_axis();
-                                        *player_orien = UnitQuat::from_axis_angle(&right_dir, -strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
-                                }
-                                PITCH_NEGATIVE => {
-                                        let player_hor_orien = UnitQuat::new_normalize(Quat::new(
-                                                player_orien.as_vector().w,
-                                                0.0,
-                                                player_orien.as_vector().y,
-                                                0.0,
-                                        ));
-                                        let right_dir = player_hor_orien * Vec3::x_axis();
-                                        *player_orien = UnitQuat::from_axis_angle(&right_dir, strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
-                                }
 				_ => (),
 			}
 		}
@@ -681,7 +647,7 @@ impl<'a> specs::System<'a> for RenderStateGeneratorSystem {
 	fn run(&mut self, (active_cam, view_cams, proj_cams, pos_strg, mdl_strg, orien_strg): Self::SystemData) {
 		let mut render_state = self.render_state.take().unwrap_or_else(|| Box::new(RenderState::new()));
 
-		render_state.view_mat = view_cams.get(active_cam.0).unwrap().0;
+                render_state.camera_pos = pos_strg.get(active_cam.0).unwrap().0;
 		render_state.proj_camera = proj_cams.get(active_cam.0).unwrap().clone();
 
 		render_state.model_instances.clear();

@@ -219,7 +219,7 @@ impl VkRenderer {
 }
 
 impl Renderer for VkRenderer {
-	fn draw(&'_ mut self) -> Result<(), Box<dyn Error>> {
+	fn draw(&'_ mut self, player_orien: &UnitQuat) -> Result<(), Box<dyn Error>> {
 		{
 			let mut render_state_switcher = match self.render_state_switcher.lock() {
 				Ok(v) => v,
@@ -255,14 +255,18 @@ impl Renderer for VkRenderer {
 		let winit::dpi::PhysicalSize { width, height } = self.window.inner_size();
 		let aspect_ratio = width as f32 / height as f32;
 
+                let old_camera_pos = &self.old_render_state.as_ref().unwrap().camera_pos;
+                let new_camera_pos = &self.new_render_state.as_ref().unwrap().camera_pos;
+                let lerped_camera_pos = Vec3::lerp(old_camera_pos, new_camera_pos, tick_scalar);
+                let translation_mat = Mat4::new_translation(&lerped_camera_pos);
+                let inverted_view_mat = translation_mat * player_orien.to_homogeneous();
+                let view_mat = inverted_view_mat.try_inverse().expect("Couldn't invert camera ViewMatrix!");
+
+                let proj_mat = self.new_render_state.as_ref().unwrap().proj_camera.calc_proj_matrix(aspect_ratio);
+
 		let mats_v_p = MatricesVP {
-			view: self.new_render_state.as_ref().unwrap().view_mat,
-			proj: self
-				.new_render_state
-				.as_ref()
-				.unwrap()
-				.proj_camera
-				.calc_proj_matrix(aspect_ratio),
+			view: view_mat,
+			proj: proj_mat,
 		};
 
 		self.update_matrices_buffer(&mats_v_p, self.framei)?;
