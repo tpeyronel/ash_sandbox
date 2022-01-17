@@ -271,6 +271,10 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
 					queued_window_thread_messages.0.push_back(WindowThreadMessage::Command(
 						WindowThreadCommand::SetCursorState(self.last_cursor_state),
 					));
+
+					queued_window_thread_messages.0.push_back(WindowThreadMessage::Command(
+						WindowThreadCommand::SetPlayerCameraEnabled(self.last_cursor_state == CursorState::Hidden),
+					));
 				}
 				CYCLE_WINDOW_MODE => {
 					self.last_window_mode = match self.last_window_mode {

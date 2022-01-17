@@ -219,7 +219,7 @@ impl VkRenderer {
 }
 
 impl Renderer for VkRenderer {
-	fn draw(&'_ mut self, player_orien: &UnitQuat) -> Result<(), Box<dyn Error>> {
+	fn draw(&'_ mut self, player_orien: &UnitQuat, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>> {
 		{
 			let mut render_state_switcher = match self.render_state_switcher.lock() {
 				Ok(v) => v,
@@ -317,8 +317,8 @@ impl Renderer for VkRenderer {
 				);
 			}
 
-			/* self.imgui_renderer
-			.cmd_draw(&self.vk_context, draw_cmd_buffer, imgui_draw_data)?; */
+			self.imgui_renderer
+			        .cmd_draw(&self.vk_context, draw_cmd_buffer, imgui_draw_data)?;
 
 			self.end_frame(imagei)?;
 		}

@@ -3,7 +3,7 @@ use std::{
 	path::Path,
 	rc::Rc,
 	sync::{Arc, Mutex, mpsc::Sender},
-	time::{Duration, Instant},
+	time::{Instant},
 };
 
 use tps_counter::TPSCounter;
@@ -22,8 +22,7 @@ use crate::{
 use log::{error, info, trace};
 use serde::{Deserialize, Serialize};
 use winit::{
-	dpi::PhysicalSize,
-	event::{DeviceEvent, Event, MouseScrollDelta, StartCause, WindowEvent},
+	event::{Event, StartCause, WindowEvent},
 	event_loop::{ControlFlow, EventLoop},
 	monitor::VideoMode,
 	window::{Fullscreen, Window, WindowBuilder},
@@ -43,6 +42,7 @@ pub struct Application {
 	renderer: VkRenderer,
 
         player_orien: UnitQuat,
+        player_camera_enabled: bool,
 
 	tps_counter: TPSCounter,
 	frame_begin: Instant,
@@ -176,6 +176,7 @@ impl Application {
 			renderer,
 
                         player_orien: UnitQuat::identity(),
+                        player_camera_enabled: false,
 
 			tps_counter: TPSCounter::new(5),
 			frame_begin: Instant::now(),
@@ -366,11 +367,11 @@ impl Application {
 
 		let imgui_draw_data = ui.render();
 
-		self.renderer.draw(&self.player_orien).expect("Error while drawing");
+		// self.renderer.draw(&self.player_orien).expect("Error while drawing");
 
-		/* self.renderer
-		.draw(&mut self.camera, imgui_draw_data)
-		.expect("Error occurred while drawing"); */
+		self.renderer
+                        .draw(&self.player_orien, imgui_draw_data)
+                        .expect("Error occurred while drawing!");
 	}
 
 	fn process_logic_thread_messages(&mut self, control_flow: &mut ControlFlow) {
@@ -382,10 +383,12 @@ impl Application {
 					&self.window,
 					&mut self.imgui_state.context.io_mut(),
 					&mut self.window_state,
+                                        &mut self.player_camera_enabled,
 				),
                                 WindowThreadMessage::ActionEvent(action_event) => Self::process_action_event(
                                         action_event,
                                         &mut self.player_orien,
+                                        self.player_camera_enabled,
                                         &self.logic_thread_tx,
                                 ),
 			}
@@ -398,38 +401,46 @@ impl Application {
 		window: &winit::window::Window,
 		imgui_io: &mut imgui::Io,
 		window_state: &mut WindowState,
+                player_camera_enabled: &mut bool,
 	) {
 		match command {
 			WindowThreadCommand::Exit => *control_flow = ControlFlow::Exit,
 			WindowThreadCommand::SetCursorState(cursor_state) => {
 				window_state.set_cursor_state(window, imgui_io, cursor_state);
-			}
+			},
 			WindowThreadCommand::SetWindowMode(window_mode) => {
 				window_state.set_window_mode(window, window_mode);
-			}
+			},
+                        WindowThreadCommand::SetPlayerCameraEnabled(enabled) => {
+                                *player_camera_enabled = enabled;
+                        }
 		}
 	}
 
         fn process_action_event(
                 ActionEvent{ action_id, strength}: ActionEvent,
                 player_orien: &mut UnitQuat,
+                player_camera_enabled: bool,
                 logic_thread_tx: &Sender<LogicThreadMessage>,
         ) {
+                if !player_camera_enabled {
+                        return;
+                }
+
                 const PIXELS_PER_360_ROTATION: f32 = 480.0;
 
-                let mut player_orien_changed = false;
-
-                match action_id {
+                let player_orien_changed = match action_id {
                         YAW_POSITIVE => {
-                                player_orien_changed = true;
                                 *player_orien = UnitQuat::from_axis_angle(&Vec3::y_axis(), strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
-                        }
+
+                                true
+                        },
                         YAW_NEGATIVE => {
-                                player_orien_changed = true;
                                 *player_orien = UnitQuat::from_axis_angle(&Vec3::y_axis(), -strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
-                        }
+
+                                true
+                        },
                         PITCH_POSITIVE => {
-                                player_orien_changed = true;
                                 let player_yaw = UnitQuat::new_normalize(Quat::new(
                                         player_orien.as_vector().w,
                                         0.0,
@@ -438,9 +449,10 @@ impl Application {
                                 ));
                                 let right_dir = player_yaw * Vec3::x_axis();
                                 *player_orien = UnitQuat::from_axis_angle(&right_dir, -strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
-                        }
+
+                                true
+                        },
                         PITCH_NEGATIVE => {
-                                player_orien_changed = true;
                                 let player_hor_orien = UnitQuat::new_normalize(Quat::new(
                                         player_orien.as_vector().w,
                                         0.0,
@@ -449,12 +461,16 @@ impl Application {
                                 ));
                                 let right_dir = player_hor_orien * Vec3::x_axis();
                                 *player_orien = UnitQuat::from_axis_angle(&right_dir, strength.0 / PIXELS_PER_360_ROTATION) * *player_orien;
-                        }
-                        _ => ()
-                }
+
+                                true
+                        },
+                        _ => false,
+                };
 
                 if player_orien_changed {
-                        logic_thread_tx.send(LogicThreadMessage::SetPlayerOrien(*player_orien)).expect("Error while sending message to logic thread!");
+                        logic_thread_tx
+                                .send(LogicThreadMessage::SetPlayerOrien(*player_orien))
+                                .expect("Error while sending message to logic thread!");
                 }
         }
 
@@ -526,6 +542,7 @@ pub enum WindowThreadCommand {
 	Exit,
 	SetCursorState(CursorState),
 	SetWindowMode(WindowMode),
+        SetPlayerCameraEnabled(bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

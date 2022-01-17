@@ -14,7 +14,7 @@ struct ModelInstanceID(usize);
 
 pub trait Renderer {
         // fn draw(&mut self, cam: &mut Camera, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>>;
-        fn draw(&mut self, player_orien: &UnitQuat) -> Result<(), Box<dyn Error>>;
+        fn draw(&mut self, player_orien: &UnitQuat, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>>;
         fn on_window_resize(&mut self, width: u32, height: u32);
         //fn on_action_event(&mut self, action_event: ActionEvent);
 
