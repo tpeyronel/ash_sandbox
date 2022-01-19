@@ -1,3 +1,4 @@
 pub const ENABLE_ANISOTROPY: bool = true;
 pub const LOD_CLAMP_NONE: f32 = ash::vk::LOD_CLAMP_NONE;
 pub const FONT_SIZE: f32 = 13.0;
+pub const PIXELS_PER_TURN: f32 = 480.0;

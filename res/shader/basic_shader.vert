@@ -17,7 +17,7 @@ layout (location = 1) in vec2 i_tex_coord;
 layout (location = 0) out vec2 o_tex_coord;
 
 void main() {
-        gl_Position = u_mats_m_mvp.mvp * vec4(i_pos, 1.0);
-
         o_tex_coord = i_tex_coord;
+
+        gl_Position = u_mats_m_mvp.mvp * vec4(i_pos, 1.0);
 }

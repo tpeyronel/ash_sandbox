@@ -258,8 +258,8 @@ impl Renderer for VkRenderer {
                 let old_camera_pos = &self.old_render_state.as_ref().unwrap().camera_pos;
                 let new_camera_pos = &self.new_render_state.as_ref().unwrap().camera_pos;
                 let lerped_camera_pos = Vec3::lerp(old_camera_pos, new_camera_pos, tick_scalar);
-                let translation_mat = Mat4::new_translation(&lerped_camera_pos);
-                let inverted_view_mat = translation_mat * player_orien.to_homogeneous();
+
+                let inverted_view_mat = Mat4::new_translation(&lerped_camera_pos) * player_orien.to_homogeneous();
                 let view_mat = inverted_view_mat.try_inverse().expect("Couldn't invert camera ViewMatrix!");
 
                 let proj_mat = self.new_render_state.as_ref().unwrap().proj_camera.calc_proj_matrix(aspect_ratio);
@@ -291,13 +291,13 @@ impl Renderer for VkRenderer {
 			let matrices_dst_set = self.matrices_dst_sets[imagei as usize];
 
 			for (model, new_instance) in &self.new_render_state.as_ref().unwrap().model_instances {
-				let old_instance = self.old_render_state.as_ref().unwrap().model_instances.get(model);
+				let old_instance = self.old_render_state.as_ref().unwrap().model_instances.get(model).unwrap_or(new_instance);
 
-				let old_pos = &old_instance.unwrap_or(new_instance).pos;
+				let old_pos = &old_instance.pos;
 				let new_pos = &new_instance.pos;
 				let interpolated_pos = Vec3::lerp(old_pos, new_pos, tick_scalar);
 
-				let old_orien = &old_instance.unwrap_or(new_instance).orien;
+				let old_orien = &old_instance.orien;
 				let new_orien = &new_instance.orien;
 				let interpolated_orien = UnitQuat::slerp(old_orien, new_orien, tick_scalar);
 
