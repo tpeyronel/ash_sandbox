@@ -1,42 +1,39 @@
 [package]
-name = "ash_sandbox"
-version = "0.1.0"
 authors = ["'TorvalHG' <'tpeyronel@gmail.com'>"]
 edition = "2018"
+name = "ash_sandbox"
+version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 approx = "0.5.0"
-rand = "0.8.2"
-libc = "0.2.82"
 ash = "0.31.0"
 ash-window = "0.5.0"
+bitflags = "1.3.2"
+bus = "2.2.3"
+chrono = "0.4.19"
+const-cstr = "0.3.0"
+enum-map = "2.0.0"
+env_logger = "0.9.0"
+gltf = "0.16.0"
+hashbrown = "0.12.0"
+imgui = "0.7.0"
+imgui-rs-vulkan-renderer = {path = "../imgui-rs-vulkan-renderer"}
+imgui-winit-support = "0.7.1"
+log = "0.4.14"
+memoffset = "0.6.1"
+nalgebra = "0.30.1"
+nalgebra-glm = "0.16.0"
+serde = {version = "1.0.133", features = ["derive"]}
+serde_json = "1.0.75"
+shrev = "1.1.1"
+slotmap = "1.0.2"
+specs = {version = "0.17.0", features = ["specs-derive"]}
+stb_image = "0.2.3"
+tps_counter = {path = "../tps_counter"}
 vk-mem = "0.2.2"
 winit = "0.24.0"
-nalgebra = "0.25.3"
-nalgebra-glm = "0.11.0"
-log = "0.4.11"
-env_logger = "0.8.2"
-memoffset = "0.6.1"
-chrono = "0.4"
-fps_counter = "1.0.0"
-tps_counter = { path = "../tps_counter" }
-stb_image = "0.2.2"
-const-cstr = "0.3.0"
-imgui = "0.7.0"
-imgui-winit-support = "0.7.1"
-imgui-rs-vulkan-renderer = { path = "../imgui-rs-vulkan-renderer" }
-bitflags = "1.2.1"
-gltf = "0.15.2"
-slotmap = "1.0.2"
-enum-map = "1.1.1"
-bus = "2.2.3"
-specs = { version = "0.17.0", features = ["specs-derive"] }
-shrev = "1.1.1"
-serde = "1.0.126"
-serde_json = "1.0.64"
-hashbrown = "0.11.2"
 
 [profile.dev.package."*"]
 opt-level = 3
