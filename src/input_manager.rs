@@ -1,10 +1,10 @@
-use std::{sync::{
+use std::sync::{
         mpsc::{self},
         Arc, Mutex,
-}};
+};
 
 use crate::{
-        actions::{ActionId},
+        actions::ActionId,
         hashmap::{GetOrInsert, HashMap},
 };
 use enum_map::EnumMap;
@@ -216,7 +216,11 @@ impl ActionReceiver {
         }
 
         pub fn receive(&self) -> Vec<(ActionId, ActionStrength)> {
-                let polled_actions = self.pollable_actions.lock().expect("Failed to lock pollable actions!").clone();
+                let polled_actions = self
+                        .pollable_actions
+                        .lock()
+                        .expect("Failed to lock pollable actions!")
+                        .clone();
                 let action_events = self.action_events.try_iter().map(|e| (e.action_id, e.strength));
 
                 polled_actions.into_iter().chain(action_events).collect()
@@ -333,11 +337,16 @@ impl KeyboardInputProcessor {
                                 }
                         },
                         KeyBindingType::Continuous => {
-                                let mut pollable_actions = pollable_actions.lock().expect("Error ocurred locking pollable actions!");
+                                let mut pollable_actions = pollable_actions
+                                        .lock()
+                                        .expect("Error ocurred locking pollable actions!");
 
                                 match input.state {
                                         KeyState::Pressed => {
-                                                *pollable_actions.get_mut_or_insert(&binding.action_id, ActionStrength::default()) = KEY_ACTION_STRENGTH;
+                                                *pollable_actions.get_mut_or_insert(
+                                                        &binding.action_id,
+                                                        ActionStrength::default(),
+                                                ) = KEY_ACTION_STRENGTH;
                                         },
                                         KeyState::Released => {
                                                 pollable_actions.remove(&binding.action_id);
@@ -347,9 +356,17 @@ impl KeyboardInputProcessor {
                 }
         }
 
-        fn on_window_focused(&self, key_bindings: &KeyBindings, pollable_actions: &Mutex<HashMap<ActionId, ActionStrength>>, is_window_focused: bool) {
+        fn on_window_focused(
+                &self,
+                key_bindings: &KeyBindings,
+                pollable_actions: &Mutex<HashMap<ActionId, ActionStrength>>,
+                is_window_focused: bool,
+        ) {
                 for key_code in self.keyboard_state.pressed_keys() {
-                        let &KeyBinding{ action_id, key_binding_type}  = match key_bindings.get(key_code) {
+                        let &KeyBinding {
+                                action_id,
+                                key_binding_type,
+                        } = match key_bindings.get(key_code) {
                                 Some(binding) => binding,
                                 None => continue,
                         };
@@ -358,12 +375,15 @@ impl KeyboardInputProcessor {
                                 continue;
                         }
 
-                        let mut pollable_actions = pollable_actions.lock().expect("Error ocurred locking pollable actions!");
+                        let mut pollable_actions = pollable_actions
+                                .lock()
+                                .expect("Error ocurred locking pollable actions!");
 
                         if !is_window_focused {
                                 pollable_actions.remove(&action_id);
                         } else {
-                                *pollable_actions.get_mut_or_insert(&action_id, ActionStrength::default()) = KEY_ACTION_STRENGTH;
+                                *pollable_actions.get_mut_or_insert(&action_id, ActionStrength::default()) =
+                                        KEY_ACTION_STRENGTH;
                         }
                 }
         }

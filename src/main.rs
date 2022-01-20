@@ -17,6 +17,7 @@ mod actions;
 mod logic_thread;
 mod render_state_switcher;
 mod hashmap;
+mod euler_angles;
 
 #[allow(unused_imports)]
 #[macro_use]

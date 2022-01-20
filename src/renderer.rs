@@ -1,9 +1,6 @@
 use std::error::Error;
 
-use crate::{
-        asset_manager::ModelId, hashmap::HashMap, logic_thread::ProjectionCameraComponent,
-        my_glm::*,
-};
+use crate::{asset_manager::ModelId, hashmap::HashMap, logic_thread::ProjectionCameraComponent, my_glm::*};
 
 pub struct ModelInstance {
         pub pos: Vec3,
@@ -16,7 +13,6 @@ pub trait Renderer {
         // fn draw(&mut self, cam: &mut Camera, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>>;
         fn draw(&mut self, player_orien: &UnitQuat, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>>;
         fn on_window_resize(&mut self, width: u32, height: u32);
-        //fn on_action_event(&mut self, action_event: ActionEvent);
 
         /*
         fn begin_frame(&mut self);

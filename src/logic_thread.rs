@@ -5,9 +5,9 @@ use std::{
 };
 
 use specs::{
-        prelude::ComponentEvent, storage::GenericWriteStorage, BitSet, Builder, Component, DenseVecStorage, DispatcherBuilder,
-        Entities, Entity, FlaggedStorage, Join, ReadExpect, ReadStorage, ReaderId, SystemData, VecStorage, World, WorldExt,
-        WriteExpect, WriteStorage,
+        prelude::ComponentEvent, storage::GenericWriteStorage, BitSet, Builder, Component, DenseVecStorage,
+        DispatcherBuilder, Entities, Entity, FlaggedStorage, Join, ReadExpect, ReadStorage, ReaderId, SystemData,
+        VecStorage, World, WorldExt, WriteExpect, WriteStorage,
 };
 
 #[allow(unused_imports)]
@@ -20,7 +20,7 @@ use crate::{
         input_manager::ActionReceiver,
         my_glm::{Mat4, Quat, UnitQuat, Vec3},
         render_state_switcher::RenderStateSwitcher,
-        renderer::{ModelInstance, RenderState},
+        renderer::{ModelInstance, RenderState}, constants::PLAYER_MOVEMENT_SPEED,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -102,7 +102,11 @@ impl LogicThread {
                                 "window-thread-message-dispatcher",
                                 &[],
                         )
-                        .with(RelativePositionUpdaterSystem::default(), "relative-position-updater", &[])
+                        .with(
+                                RelativePositionUpdaterSystem::default(),
+                                "relative-position-updater",
+                                &[],
+                        )
                         .with(
                                 RelativeOrientationUpdaterSystem::default(),
                                 "relative-orientation-updater",
@@ -113,8 +117,16 @@ impl LogicThread {
                                 "pending-movement-resolver-system",
                                 &["relative-position-updater"],
                         )
-                        .with(ModelRotationSystem, "model-rotation", &["pending-movement-resolver-system"])
-                        .with(QuaternionRenormalizationSystem, "quaternion-renormalization-system", &[])
+                        .with(
+                                ModelRotationSystem,
+                                "model-rotation",
+                                &["pending-movement-resolver-system"],
+                        )
+                        .with(
+                                QuaternionRenormalizationSystem,
+                                "quaternion-renormalization-system",
+                                &[],
+                        )
                         .with_thread_local(RenderStateGeneratorSystem {
                                 render_state: None,
                                 render_state_switcher: params.render_state_switcher,
@@ -163,8 +175,10 @@ impl LogicThread {
                                         //         world.fetch_mut::<ActionEventChannel>().single_write(action_event);
                                         // },
                                         LogicThreadMessage::SetPlayerOrien(new_player_orien) => {
-                                                world.write_storage::<OrientationComponent>().get_mut(player).unwrap().0 =
-                                                        new_player_orien;
+                                                world.write_storage::<OrientationComponent>()
+                                                        .get_mut(player)
+                                                        .unwrap()
+                                                        .0 = new_player_orien;
                                         },
                                 }
                         }
@@ -261,9 +275,8 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
                                 0.0,
                         ));
 
-                        const PLAYER_MOVE_SPEED: f32 = 2.5;
-                        let move_speed = PLAYER_MOVE_SPEED * target_ticktime.0;
-                        let move_dir = player_hor_orien * desired_dir.normalize() * move_speed;
+                        let move_amount = PLAYER_MOVEMENT_SPEED * target_ticktime.0;
+                        let move_dir = player_hor_orien * desired_dir.normalize() * move_amount;
 
                         let player_pos = &mut pos_strg.get_mut(player.0).unwrap().0;
                         *player_pos += move_dir;
@@ -515,11 +528,11 @@ impl<'a> specs::System<'a> for ModelRotationSystem {
 
         fn run(&mut self, (ticktime, mdl_strg, mut pos_strg, mut orien_strg): Self::SystemData) {
                 for (_, pos, orien) in (&mdl_strg, &mut pos_strg, &mut orien_strg).join() {
-                        pos.0 = UnitQuat::from_axis_angle(&Vec3::y_axis(), -22.5f32.to_radians() * ticktime.0)
-                                .to_rotation_matrix()
-                                * pos.0;
+                        let mov = UnitQuat::from_axis_angle(&Vec3::y_axis(), -22.5f32.to_radians() * ticktime.0);
+                        pos.0 = mov * pos.0;
 
-                        orien.0 = UnitQuat::from_axis_angle(&Vec3::y_axis(), 45.0f32.to_radians() * ticktime.0) * orien.0;
+                        let rot = UnitQuat::from_axis_angle(&Vec3::y_axis(), 45.0f32.to_radians() * ticktime.0);
+                        orien.0 = rot * orien.0;
                 }
         }
 }

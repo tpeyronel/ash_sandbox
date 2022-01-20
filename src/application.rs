@@ -13,9 +13,9 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         constants::{FONT_SIZE, PIXELS_PER_TURN},
+        euler_angles::EulerAngles,
         input_manager::{
-                ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode,
-                KeyState, MouseMotionType,
+                ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType,
         },
         logic_thread::{LogicThread, LogicThreadCommand, LogicThreadMessage, LogicThreadSpawnParams},
         my_glm::*,
@@ -33,37 +33,6 @@ use winit::{
         window::{Fullscreen, Window, WindowBuilder},
 };
 
-#[derive(Debug, Clone)]
-struct EulerAngles {
-        pitch: f32,
-        yaw: f32,
-        roll: f32,
-}
-
-impl EulerAngles {
-        fn to_quat(&self) -> UnitQuat {
-                // UnitQuat::from_euler_angles();
-
-                // let cy = f32::cos(self.yaw * 0.5);
-                // let sy = f32::sin(self.yaw * 0.5);
-                // let cp = f32::cos(self.pitch * 0.5);
-                // let sp = f32::sin(self.pitch * 0.5);
-                // let cr = f32::cos(self.roll * 0.5);
-                // let sr = f32::sin(self.roll * 0.5);
-
-                // UnitQuat::new_unchecked(Quat::new(
-                //         cr * cp * cy + sr * sp * sy,
-                //         cr * sp * cy + sr * cp * sy,
-                //         cr * cp * sy - sr * sp * cy,
-                //         sr * cp * cy - cr * sp * sy,
-                // ))
-
-                UnitQuat::from_axis_angle(&Vec3::y_axis(), self.yaw)
-                        * UnitQuat::from_axis_angle(&Vec3::x_axis(), self.pitch)
-                        * UnitQuat::from_axis_angle(&Vec3::z_axis(), self.roll)
-        }
-}
-
 #[allow(dead_code)]
 pub struct Application {
         event_loop: Option<EventLoop<()>>,
@@ -71,15 +40,13 @@ pub struct Application {
         window_state: WindowState,
         window_thread_rx: std::sync::mpsc::Receiver<WindowThreadMessage>,
         logic_thread_tx: std::sync::mpsc::Sender<LogicThreadMessage>,
-        imgui_state: ImGuiState,
+        imgui_context: ImguiContext,
         input_manager: InputManager,
         action_receiver: ActionReceiver,
-        // pollable_actions: Arc<Mutex<ActionPollableState>>,
         asset_manager: Arc<AssetManager>,
 
         renderer: VkRenderer,
 
-        // player_orien: UnitQuat,
         player_orien: EulerAngles,
         player_camera_enabled: bool,
 
@@ -101,7 +68,10 @@ impl Application {
                         })
                         .with_visible(false)
                         .with_always_on_top(false)
-                        .with_min_inner_size(winit::dpi::PhysicalSize { width: 144, height: 144 })
+                        .with_min_inner_size(winit::dpi::PhysicalSize {
+                                width: 144,
+                                height: 144,
+                        })
                         .build(&event_loop)?);
                 trace!("Created window");
 
@@ -124,7 +94,11 @@ impl Application {
                 let mut input_map = InputBindingMap::new();
                 input_map.bind_key(EXIT, KeyCode::Escape, KeyBindingType::Simple(KeyState::Released));
                 input_map.bind_key(TOGGLE_CURSOR, KeyCode::T, KeyBindingType::Simple(KeyState::Released));
-                input_map.bind_key(CYCLE_WINDOW_MODE, KeyCode::F11, KeyBindingType::Simple(KeyState::Released));
+                input_map.bind_key(
+                        CYCLE_WINDOW_MODE,
+                        KeyCode::F11,
+                        KeyBindingType::Simple(KeyState::Released),
+                );
                 input_map.bind_key(MOVE_FORWARD, KeyCode::W, KeyBindingType::Continuous);
                 input_map.bind_key(MOVE_BACKWARD, KeyCode::S, KeyBindingType::Continuous);
                 input_map.bind_key(MOVE_RIGHTWARD, KeyCode::D, KeyBindingType::Continuous);
@@ -162,8 +136,10 @@ impl Application {
                 };
 
                 let mut asset_manager = AssetManager::new(dsampler, dmaterial);
-                let _model_colt = asset_manager.import_gltf_file(std::path::Path::new("res/model/new-colt/colt.gltf"))?;
-                let _model_grass_plane = asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
+                let _model_colt =
+                        asset_manager.import_gltf_file(std::path::Path::new("res/model/new-colt/colt.gltf"))?;
+                let _model_grass_plane =
+                        asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
                 let asset_manager = Arc::new(asset_manager);
                 trace!("Initialized AssetManager");
 
@@ -198,18 +174,13 @@ impl Application {
                         window_state,
                         window_thread_rx,
                         logic_thread_tx,
-                        imgui_state,
+                        imgui_context: imgui_state,
                         input_manager,
                         action_receiver,
                         asset_manager,
                         renderer,
 
-                        // player_orien: UnitQuat::identity(),
-                        player_orien: EulerAngles {
-                                pitch: 0f32.to_radians(),
-                                yaw: 0f32.to_radians(),
-                                roll: 0f32.to_radians(),
-                        },
+                        player_orien: EulerAngles::new(0.0, 0.0, 0.0),
                         player_camera_enabled: false,
 
                         tps_counter: TPSCounter::new(5),
@@ -230,7 +201,7 @@ impl Application {
                 });
         }
 
-        fn init_imgui(window: &Window) -> ImGuiState {
+        fn init_imgui(window: &Window) -> ImguiContext {
                 let mut context = imgui::Context::create();
                 let mut platform = imgui_winit_support::WinitPlatform::init(&mut context);
 
@@ -256,7 +227,7 @@ impl Application {
                 context.io_mut().font_global_scale = 1.0 / hidpi_factor;
                 platform.attach_window(context.io_mut(), &window, imgui_winit_support::HiDpiMode::Rounded);
 
-                ImGuiState { context, platform }
+                ImguiContext { context, platform }
         }
 
         fn on_winit_event(
@@ -264,9 +235,9 @@ impl Application {
                 event: winit::event::Event<'_, ()>,
                 control_flow: &mut ControlFlow,
         ) -> Result<(), Box<dyn Error>> {
-                self.imgui_state
+                self.imgui_context
                         .platform
-                        .handle_event(self.imgui_state.context.io_mut(), &self.window, &event);
+                        .handle_event(self.imgui_context.context.io_mut(), &self.window, &event);
 
                 match event {
                         Event::NewEvents(start_cause) => {
@@ -290,7 +261,7 @@ impl Application {
                 let previous_frame_begin = std::mem::replace(&mut self.frame_begin, Instant::now());
                 let delta_time = self.frame_begin - previous_frame_begin;
 
-                self.imgui_state.context.io_mut().update_delta_time(delta_time);
+                self.imgui_context.context.io_mut().update_delta_time(delta_time);
         }
 
         fn on_window_event(&mut self, window_event: WindowEvent, control_flow: &mut ControlFlow) {
@@ -299,7 +270,7 @@ impl Application {
                                 self.input_manager.on_modifiers_changed(modifiers_state)
                         } */
                         WindowEvent::Focused(focused) => {
-                                self.window_state.focused = focused;
+                                self.window_state.has_focus = focused;
                                 self.input_manager.on_window_focused(focused);
                         },
                         WindowEvent::Resized(new_size) => {
@@ -324,35 +295,19 @@ impl Application {
                         }
 
                         match action_id {
-                                YAW_POSITIVE => self.player_orien.yaw += strength.0 / PIXELS_PER_TURN,
-                                YAW_NEGATIVE => self.player_orien.yaw -= strength.0 / PIXELS_PER_TURN,
-                                PITCH_POSITIVE => self.player_orien.pitch += strength.0 / PIXELS_PER_TURN,
-                                PITCH_NEGATIVE => self.player_orien.pitch -= strength.0 / PIXELS_PER_TURN,
-                                ROLL_POSITIVE => self.player_orien.roll += strength.0 / PIXELS_PER_TURN,
-                                ROLL_NEGATIVE => self.player_orien.roll -= strength.0 / PIXELS_PER_TURN,
+                                YAW_POSITIVE => self.player_orien.yaw_by(strength.0 / PIXELS_PER_TURN),
+                                YAW_NEGATIVE => self.player_orien.yaw_by(-strength.0 / PIXELS_PER_TURN),
+                                PITCH_POSITIVE => self.player_orien.pitch_by(strength.0 / PIXELS_PER_TURN),
+                                PITCH_NEGATIVE => self.player_orien.pitch_by(-strength.0 / PIXELS_PER_TURN),
+                                ROLL_POSITIVE => self.player_orien.roll_by(strength.0 / PIXELS_PER_TURN),
+                                ROLL_NEGATIVE => self.player_orien.roll_by(-strength.0 / PIXELS_PER_TURN),
                                 _ => continue,
                         }
 
                         self.logic_thread_tx
                                 .send(LogicThreadMessage::SetPlayerOrien(self.player_orien.to_quat()))
                                 .expect("Failed to send command to logic thread!");
-                };
-
-                // let active_actions = self.pollable_actions.lock().unwrap().poll();
-
-                // for (action_id, strength) in active_actions {
-                //         match action_id {
-                //                 YAW_POSITIVE => self.player_orien.yaw += strength.0 / PIXELS_PER_TURN,
-                //                 YAW_NEGATIVE => self.player_orien.yaw -= strength.0 / PIXELS_PER_TURN,
-                //                 PITCH_POSITIVE => self.player_orien.pitch += strength.0 / PIXELS_PER_TURN,
-                //                 PITCH_NEGATIVE => self.player_orien.pitch -= strength.0 / PIXELS_PER_TURN,
-                //                 ROLL_POSITIVE => self.player_orien.roll += strength.0 / PIXELS_PER_TURN,
-                //                 ROLL_NEGATIVE => self.player_orien.roll -= strength.0 / PIXELS_PER_TURN,
-                //                 _ => continue,
-                //         }
-
-                //         self.logic_thread_tx.send(LogicThreadMessage::SetPlayerOrien(self.player_orien.to_quat()))?;
-                // }
+                }
 
                 // self.tps_counter.tick_and_map(|tps| info!("FPS: {:.2}", tps));
 
@@ -417,17 +372,19 @@ impl Application {
                         }
                 } */
 
-                let imgui_ui = Self::build_imgui_ui(&mut self.imgui_state, &self.window, self.player_orien.clone());
+                let imgui_ui = Self::build_imgui_ui(&mut self.imgui_context, &self.window, self.player_orien.clone());
 
                 self.renderer.draw(&self.player_orien.to_quat(), imgui_ui?.render())
         }
 
         fn build_imgui_ui<'a>(
-                imgui_state: &'a mut ImGuiState,
+                imgui_state: &'a mut ImguiContext,
                 window: &winit::window::Window,
                 player_orien: EulerAngles,
         ) -> Result<imgui::Ui<'a>, winit::error::ExternalError> {
-                imgui_state.platform.prepare_frame(imgui_state.context.io_mut(), &window)?;
+                imgui_state
+                        .platform
+                        .prepare_frame(imgui_state.context.io_mut(), &window)?;
 
                 let ui = imgui_state.context.frame();
 
@@ -439,9 +396,9 @@ impl Application {
                                 ui.separator();
                                 ui.text(format!(
                                         "Pitch: {:.1}, Yaw: {:.1}, Roll: {:.1}",
-                                        player_orien.pitch.to_degrees(),
-                                        player_orien.yaw.to_degrees(),
-                                        player_orien.roll.to_degrees(),
+                                        player_orien.pitch().to_degrees(),
+                                        player_orien.yaw().to_degrees(),
+                                        player_orien.roll().to_degrees(),
                                 ));
                         });
 
@@ -457,7 +414,7 @@ impl Application {
                                         command,
                                         control_flow,
                                         &self.window,
-                                        &mut self.imgui_state.context.io_mut(),
+                                        &mut self.imgui_context.context.io_mut(),
                                         &mut self.window_state,
                                         &mut self.player_camera_enabled,
                                 ),
@@ -498,7 +455,7 @@ pub struct WindowState {
         window_mode: WindowMode,
         fullscreen_video_mode: VideoMode,
         cursor_state: CursorState,
-        focused: bool,
+        has_focus: bool,
 }
 
 impl WindowState {
@@ -515,7 +472,7 @@ impl WindowState {
                         window_mode,
                         fullscreen_video_mode,
                         cursor_state,
-                        focused: true,
+                        has_focus: true,
                 }
         }
 
@@ -541,23 +498,6 @@ impl WindowState {
         }
 }
 
-struct ImGuiState {
-        context: imgui::Context,
-        platform: imgui_winit_support::WinitPlatform,
-}
-
-pub enum WindowThreadMessage {
-        Command(WindowThreadCommand),
-        // ActionEvent(ActionEvent),
-}
-
-pub enum WindowThreadCommand {
-        Exit,
-        SetCursorState(CursorState),
-        SetWindowMode(WindowMode),
-        SetPlayerCameraEnabled(bool),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorState {
         Normal,
@@ -569,4 +509,20 @@ pub enum WindowMode {
         Windowed,
         Borderless,
         Fullscreen,
+}
+
+struct ImguiContext {
+        context: imgui::Context,
+        platform: imgui_winit_support::WinitPlatform,
+}
+
+pub enum WindowThreadMessage {
+        Command(WindowThreadCommand),
+}
+
+pub enum WindowThreadCommand {
+        Exit,
+        SetCursorState(CursorState),
+        SetWindowMode(WindowMode),
+        SetPlayerCameraEnabled(bool),
 }
