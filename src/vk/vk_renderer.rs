@@ -1,18 +1,16 @@
-use std::io::prelude::*;
 use std::{
 	error::Error,
 	ffi::CString,
-	fs::OpenOptions,
 	mem::size_of,
 	process::Command,
 	rc::Rc,
 	slice,
 	sync::{Arc, Mutex},
-	time::{Duration, Instant},
+	time::{Instant},
 };
 
 use ash::{prelude::VkResult, version::DeviceV1_0, vk};
-use imgui::DrawData;
+
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use winit::window::Window;
@@ -38,7 +36,6 @@ use crate::{
 };
 
 pub struct VkRenderer {
-	target_tps: f32,
 	target_ticktime: f32,
 	window: Rc<Window>,
 	asset_manager: Arc<AssetManager>,
@@ -175,7 +172,6 @@ impl VkRenderer {
 		)?;
 
 		Ok(Self {
-			target_tps: target_tps as f32,
 			target_ticktime: 1.0 / target_tps as f32,
 			window,
 			asset_manager,
@@ -299,7 +295,7 @@ impl Renderer for VkRenderer {
 
 				let old_orien = &old_instance.orien;
 				let new_orien = &new_instance.orien;
-				let interpolated_orien = UnitQuat::slerp(old_orien, new_orien, tick_scalar);
+				let interpolated_orien = UnitQuat::nlerp(old_orien, new_orien, tick_scalar);
 
 				let transform =
 					Mat4::new_translation(&interpolated_pos) * interpolated_orien.to_homogeneous();
@@ -915,8 +911,6 @@ impl VkRenderer {
 	}
 
 	fn update_matrices_buffer(&self, mats_v_p: &MatricesVP, framei: usize) -> vma::Result<()> {
-		let time = self.creation_instant.elapsed().as_secs_f32();
-
 		let buffer_size = std::mem::size_of::<MatricesVP>() as vk::DeviceSize;
 		let buffer = &self.matrices_buffers[framei];
 		let map = buffer.map_memory()?;

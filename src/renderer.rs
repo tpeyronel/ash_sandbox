@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use crate::{
-        asset_manager::ModelId, hashmap::HashMap, input_manager::ActionEvent, logic_thread::ProjectionCameraComponent,
+        asset_manager::ModelId, hashmap::HashMap, logic_thread::ProjectionCameraComponent,
         my_glm::*,
 };
 

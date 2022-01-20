@@ -1,25 +1,23 @@
 use std::{
         collections::VecDeque,
-        fs::OpenOptions,
-        io::prelude::*,
-        sync::{mpsc::Receiver, Arc, Mutex},
+        sync::{Arc, Mutex},
         time::{Duration, Instant},
 };
 
-use shrev::EventChannel;
 use specs::{
         prelude::ComponentEvent, storage::GenericWriteStorage, BitSet, Builder, Component, DenseVecStorage, DispatcherBuilder,
         Entities, Entity, FlaggedStorage, Join, ReadExpect, ReadStorage, ReaderId, SystemData, VecStorage, World, WorldExt,
         WriteExpect, WriteStorage,
 };
 
+#[allow(unused_imports)]
 use log::{error, info, trace, warn};
 
 use crate::{
         actions::*,
-        application::{CursorState, WindowMode, WindowState, WindowThreadCommand, WindowThreadMessage},
+        application::{CursorState, WindowMode, WindowThreadCommand, WindowThreadMessage},
         asset_manager::{AssetManager, ModelId},
-        input_manager::{ActionEvent, ActionPollableState},
+        input_manager::ActionReceiver,
         my_glm::{Mat4, Quat, UnitQuat, Vec3},
         render_state_switcher::RenderStateSwitcher,
         renderer::{ModelInstance, RenderState},
@@ -43,13 +41,11 @@ struct PlayerResource(Entity);
 #[derive(Default)]
 struct QueuedWindowThreadMessagesResource(VecDeque<WindowThreadMessage>);
 
-type ActionEventChannel = shrev::EventChannel<ActionEvent>;
-
 pub struct LogicThreadSpawnParams {
         pub target_tps: u32,
         pub logic_thread_rx: std::sync::mpsc::Receiver<LogicThreadMessage>,
         pub window_thread_tx: std::sync::mpsc::Sender<WindowThreadMessage>,
-        pub continuous_actions: Arc<Mutex<ActionPollableState>>,
+        pub action_receiver: ActionReceiver,
         pub asset_manager: Arc<AssetManager>,
         pub render_state_switcher: Arc<Mutex<RenderStateSwitcher>>,
 }
@@ -80,14 +76,14 @@ impl LogicThread {
                 world.insert(TargetTicktimeResource(target_ticktime));
                 world.insert(TargetTicktimeF32Resource(target_ticktime.as_secs_f32()));
 
-                world.insert(ActionEventChannel::new());
+                // world.insert(ActionEventChannel::new());
                 world.insert(QueuedWindowThreadMessagesResource::default());
 
                 let mut dispatcher = DispatcherBuilder::new()
                         .with(
                                 InputHandlerSystem {
-                                        reader_id: None,
-                                        continuous_actions: params.continuous_actions,
+                                        // reader_id: None,
+                                        action_receiver: params.action_receiver,
                                         last_cursor_state: CursorState::Normal,
                                         last_window_mode: WindowMode::Windowed,
                                 },
@@ -118,7 +114,7 @@ impl LogicThread {
                                 &["relative-position-updater"],
                         )
                         .with(ModelRotationSystem, "model-rotation", &["pending-movement-resolver-system"])
-                        .with(CameraUpdaterSystem, "camera-updater", &["pending-movement-resolver-system"])
+                        .with(QuaternionRenormalizationSystem, "quaternion-renormalization-system", &[])
                         .with_thread_local(RenderStateGeneratorSystem {
                                 render_state: None,
                                 render_state_switcher: params.render_state_switcher,
@@ -144,14 +140,13 @@ impl LogicThread {
                         .with(RelativePositionComponent(Vec3::new(0.0, 1.0, 0.0)))
                         .with(OrientationComponent::default())
                         .with(RelativeOrientationComponent::default())
-                        .with(ViewCameraComponent::default())
                         .with(ProjectionCameraComponent::new(90.0f32.to_radians(), 1.0, 0.1, 100.0))
                         .build();
                 world.insert(ActiveCameraResource(camera));
 
                 let _colt = world
                         .create_entity()
-                        .with(PositionComponent(Vec3::new(0.0, 1.0, 0.0)))
+                        .with(PositionComponent(Vec3::new(1.0, 1.0, 0.0)))
                         .with(OrientationComponent(UnitQuat::identity()))
                         .with(ModelComponent(params.asset_manager.get_model_by_name("colt")))
                         .build();
@@ -164,9 +159,9 @@ impl LogicThread {
                                         LogicThreadMessage::Command(command) => match command {
                                                 LogicThreadCommand::Exit => break 'main,
                                         },
-                                        LogicThreadMessage::ActionEvent(action_event) => {
-                                                world.fetch_mut::<ActionEventChannel>().single_write(action_event);
-                                        },
+                                        // LogicThreadMessage::ActionEvent(action_event) => {
+                                        //         world.fetch_mut::<ActionEventChannel>().single_write(action_event);
+                                        // },
                                         LogicThreadMessage::SetPlayerOrien(new_player_orien) => {
                                                 world.write_storage::<OrientationComponent>().get_mut(player).unwrap().0 =
                                                         new_player_orien;
@@ -184,7 +179,7 @@ impl LogicThread {
 
 pub enum LogicThreadMessage {
         Command(LogicThreadCommand),
-        ActionEvent(ActionEvent),
+        // ActionEvent(ActionEvent),
         SetPlayerOrien(UnitQuat),
 }
 pub enum LogicThreadCommand {
@@ -192,15 +187,15 @@ pub enum LogicThreadCommand {
 }
 
 struct InputHandlerSystem {
-        reader_id: Option<ReaderId<ActionEvent>>,
-        continuous_actions: Arc<Mutex<ActionPollableState>>,
+        // reader_id: Option<ReaderId<ActionEvent>>,
+        action_receiver: ActionReceiver,
+        // continuous_actions: Arc<Mutex<ActionPollableState>>,
         last_cursor_state: CursorState,
         last_window_mode: WindowMode,
 }
 
 impl<'a> specs::System<'a> for InputHandlerSystem {
         type SystemData = (
-                ReadExpect<'a, ActionEventChannel>,
                 ReadExpect<'a, TargetTicktimeF32Resource>,
                 ReadExpect<'a, PlayerResource>,
                 WriteExpect<'a, QueuedWindowThreadMessagesResource>,
@@ -210,13 +205,11 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
 
         fn run(
                 &mut self,
-                (action_event_ch, target_ticktime, player, mut queued_window_thread_messages, mut orien_strg, mut pos_strg): Self::SystemData,
+                (target_ticktime, player, mut queued_window_thread_messages, mut orien_strg, mut pos_strg): Self::SystemData,
         ) {
-                let active_actions = self.continuous_actions.lock().unwrap().poll();
-
                 let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
 
-                for (action_id, strength) in active_actions {
+                for (action_id, strength) in self.action_receiver.receive() {
                         match action_id {
                                 MOVE_FORWARD => desired_dir.z -= strength.0,
                                 MOVE_BACKWARD => desired_dir.z += strength.0,
@@ -224,34 +217,10 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
                                 MOVE_LEFTWARD => desired_dir.x -= strength.0,
                                 MOVE_UPWARD => desired_dir.y += strength.0,
                                 MOVE_DOWNARD => desired_dir.y -= strength.0,
-                                _ => (),
-                        }
-                }
-
-                if desired_dir.norm_squared() > f32::EPSILON {
-                        let player_orien = &orien_strg.get(player.0).unwrap().0;
-                        let player_hor_orien = UnitQuat::new_normalize(Quat::new(
-                                player_orien.as_vector().w,
-                                0.0,
-                                player_orien.as_vector().y,
-                                0.0,
-                        ));
-
-                        const PLAYER_MOVE_SPEED: f32 = 2.5;
-                        let move_speed = PLAYER_MOVE_SPEED * target_ticktime.0;
-                        let move_dir = player_hor_orien * desired_dir.normalize() * move_speed;
-
-                        let player_pos = &mut pos_strg.get_mut(player.0).unwrap().0;
-                        *player_pos += move_dir;
-                }
-
-                let player_orien = &mut orien_strg.get_mut(player.0).unwrap().0;
-
-                for &ActionEvent { action_id, strength } in action_event_ch.read(self.reader_id.as_mut().unwrap()) {
-                        match action_id {
-                                EXIT => queued_window_thread_messages
-                                        .0
-                                        .push_back(WindowThreadMessage::Command(WindowThreadCommand::Exit)),
+                                EXIT => {
+                                        let command = WindowThreadMessage::Command(WindowThreadCommand::Exit);
+                                        queued_window_thread_messages.0.push_back(command);
+                                },
                                 TOGGLE_CURSOR => {
                                         self.last_cursor_state = match self.last_cursor_state {
                                                 CursorState::Normal => CursorState::Hidden,
@@ -283,40 +252,28 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
                         }
                 }
 
-                // let q = *player_orien.as_vector();
+                if desired_dir.norm_squared() > f32::EPSILON {
+                        let player_orien = &orien_strg.get(player.0).unwrap().0;
+                        let player_hor_orien = UnitQuat::new_normalize(Quat::new(
+                                player_orien.as_vector().w,
+                                0.0,
+                                player_orien.as_vector().y,
+                                0.0,
+                        ));
 
-                // // roll (z-axis rotation)
-                // let sinr_cosp = 2.0 * (q.w * q.z + q.x * q.y);
-                // let cosr_cosp = 1.0 - 2.0 * (q.z * q.z + q.x * q.x);
-                // let roll = f32::atan2(sinr_cosp, cosr_cosp);
+                        const PLAYER_MOVE_SPEED: f32 = 2.5;
+                        let move_speed = PLAYER_MOVE_SPEED * target_ticktime.0;
+                        let move_dir = player_hor_orien * desired_dir.normalize() * move_speed;
 
-                // // pitch (y-axis rotation)
-                // let sinp = 2.0 * (q.w * q.x - q.y * q.z);
-                // let pitch = if sinp.abs() >= 1.0 {
-                //         f32::copysign(std::f32::consts::PI / 2.0, sinp) // use 90 degrees if out of range
-                // } else {
-                //         f32::asin(sinp)
-                // };
-
-                // // yaw (z-axis rotation)
-                // let siny_cosp = 2.0 * (q.w * q.y + q.z * q.x);
-                // let cosy_cosp = 1.0 - 2.0 * (q.x * q.x + q.y * q.y);
-                // let yaw = siny_cosp.atan2(cosy_cosp);
-
-                // info!(
-                //         "Roll: {:.4}  |  Pitch: {:.4}  |  Yaw: {:.4}",
-                //         roll.to_degrees(),
-                //         pitch.to_degrees(),
-                //         yaw.to_degrees()
-                // );
-
-                // *player_orien = UnitQuat::from_axis_angle(&Vec3::y_axis(), yaw) * UnitQuat::from_axis_angle(&Vec3::x_axis(), pitch);
+                        let player_pos = &mut pos_strg.get_mut(player.0).unwrap().0;
+                        *player_pos += move_dir;
+                }
         }
 
         fn setup(&mut self, world: &mut World) {
                 Self::SystemData::setup(world);
 
-                self.reader_id = Some(WriteExpect::<ActionEventChannel>::fetch(world).register_reader());
+                // self.reader_id = Some(WriteExpect::<ActionEventChannel>::fetch(world).register_reader());
         }
 }
 
@@ -367,7 +324,9 @@ impl<'a> specs::System<'a> for WindowThreadMessageDispatcherSystem {
 
         fn run(&mut self, mut queued_messages: Self::SystemData) {
                 while let Some(message) = queued_messages.0.pop_front() {
-                        self.window_thread_tx.send(message);
+                        if let Err(err) = self.window_thread_tx.send(message) {
+                                error!("Error ocurred sending message to window thread: {}", err);
+                        }
                 }
         }
 }
@@ -555,28 +514,13 @@ impl<'a> specs::System<'a> for ModelRotationSystem {
         );
 
         fn run(&mut self, (ticktime, mdl_strg, mut pos_strg, mut orien_strg): Self::SystemData) {
-                for (mdl, pos, orien) in (&mdl_strg, &mut pos_strg, &mut orien_strg).join() {
-                        // pos.0 = UnitQuat::from_axis_angle(&Vec3::y_axis(), -22.5f32.to_radians() * ticktime.0)
-                        //         .to_rotation_matrix()
-                        //         * pos.0;
+                for (_, pos, orien) in (&mdl_strg, &mut pos_strg, &mut orien_strg).join() {
+                        pos.0 = UnitQuat::from_axis_angle(&Vec3::y_axis(), -22.5f32.to_radians() * ticktime.0)
+                                .to_rotation_matrix()
+                                * pos.0;
 
-                        // orien.0 = UnitQuat::new_unchecked(
-                        //         (UnitQuat::from_axis_angle(&Vec3::y_axis(), 45.0f32.to_radians() * ticktime.0) * orien.0)
-                        //                 .normalize(),
-                        // );
+                        orien.0 = UnitQuat::from_axis_angle(&Vec3::y_axis(), 45.0f32.to_radians() * ticktime.0) * orien.0;
                 }
-        }
-}
-
-#[derive(Debug, Default, Clone, Component)]
-#[storage(VecStorage)]
-struct ViewCameraComponent(Mat4);
-
-impl ViewCameraComponent {
-        fn new(pos: &Vec3, orien: &UnitQuat) -> Self {
-                Self((Mat4::new_translation(pos) * orien.to_homogeneous())
-                        .try_inverse()
-                        .expect("Couldn't invert camera ViewMatrix!"))
         }
 }
 
@@ -599,22 +543,6 @@ impl ProjectionCameraComponent {
         }
 }
 
-struct CameraUpdaterSystem;
-
-impl<'a> specs::System<'a> for CameraUpdaterSystem {
-        type SystemData = (
-                ReadStorage<'a, PositionComponent>,
-                ReadStorage<'a, OrientationComponent>,
-                WriteStorage<'a, ViewCameraComponent>,
-        );
-
-        fn run(&mut self, (pos_strg, orien_strg, mut view_strg): Self::SystemData) {
-                for (pos, orien, view) in (&pos_strg, &orien_strg, &mut view_strg).join() {
-                        *view = ViewCameraComponent::new(&pos.0, &orien.0);
-                }
-        }
-}
-
 struct PendingMovementResolverSystem;
 
 impl<'a> specs::System<'a> for PendingMovementResolverSystem {
@@ -630,6 +558,18 @@ impl<'a> specs::System<'a> for PendingMovementResolverSystem {
         }
 }
 
+struct QuaternionRenormalizationSystem;
+
+impl<'a> specs::System<'a> for QuaternionRenormalizationSystem {
+        type SystemData = WriteStorage<'a, OrientationComponent>;
+
+        fn run(&mut self, mut orien_strg: Self::SystemData) {
+                for orien in (&mut orien_strg).join() {
+                        orien.0 = UnitQuat::new_unchecked(orien.0.normalize());
+                }
+        }
+}
+
 struct RenderStateGeneratorSystem {
         render_state: Option<Box<RenderState>>,
         render_state_switcher: Arc<Mutex<RenderStateSwitcher>>,
@@ -638,14 +578,13 @@ struct RenderStateGeneratorSystem {
 impl<'a> specs::System<'a> for RenderStateGeneratorSystem {
         type SystemData = (
                 ReadExpect<'a, ActiveCameraResource>,
-                ReadStorage<'a, ViewCameraComponent>,
                 ReadStorage<'a, ProjectionCameraComponent>,
                 ReadStorage<'a, PositionComponent>,
                 ReadStorage<'a, ModelComponent>,
                 ReadStorage<'a, OrientationComponent>,
         );
 
-        fn run(&mut self, (active_cam, view_cams, proj_cams, pos_strg, mdl_strg, orien_strg): Self::SystemData) {
+        fn run(&mut self, (active_cam, proj_cams, pos_strg, mdl_strg, orien_strg): Self::SystemData) {
                 let mut render_state = self.render_state.take().unwrap_or_else(|| Box::new(RenderState::new()));
 
                 render_state.camera_pos = pos_strg.get(active_cam.0).unwrap().0;

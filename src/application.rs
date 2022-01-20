@@ -2,7 +2,7 @@ use std::{
         error::Error,
         path::Path,
         rc::Rc,
-        sync::{mpsc::Sender, Arc, Mutex},
+        sync::{Arc, Mutex},
         time::Instant,
 };
 
@@ -14,8 +14,8 @@ use crate::{
         asset_manager::*,
         constants::{FONT_SIZE, PIXELS_PER_TURN},
         input_manager::{
-                ActionEvent, ActionPollableState, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState,
-                MouseMotionType,
+                ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode,
+                KeyState, MouseMotionType,
         },
         logic_thread::{LogicThread, LogicThreadCommand, LogicThreadMessage, LogicThreadSpawnParams},
         my_glm::*,
@@ -23,6 +23,7 @@ use crate::{
         renderer::Renderer,
         vk::vk_renderer::VkRenderer,
 };
+#[allow(unused_imports)]
 use log::{error, info, trace};
 use serde::{Deserialize, Serialize};
 use winit::{
@@ -72,7 +73,8 @@ pub struct Application {
         logic_thread_tx: std::sync::mpsc::Sender<LogicThreadMessage>,
         imgui_state: ImGuiState,
         input_manager: InputManager,
-        pollable_actions: Arc<Mutex<ActionPollableState>>,
+        action_receiver: ActionReceiver,
+        // pollable_actions: Arc<Mutex<ActionPollableState>>,
         asset_manager: Arc<AssetManager>,
 
         renderer: VkRenderer,
@@ -116,7 +118,8 @@ impl Application {
                 trace!("Initialized ImGui");
 
                 let mut input_manager = InputManager::new();
-                let pollable_actions = input_manager.clone_continuous_actions_state();
+
+                // let pollable_actions = input_manager.clone_continuous_actions_state();
 
                 let mut input_map = InputBindingMap::new();
                 input_map.bind_key(EXIT, KeyCode::Escape, KeyBindingType::Simple(KeyState::Released));
@@ -160,8 +163,7 @@ impl Application {
 
                 let mut asset_manager = AssetManager::new(dsampler, dmaterial);
                 let _model_colt = asset_manager.import_gltf_file(std::path::Path::new("res/model/new-colt/colt.gltf"))?;
-                let _model_grass_plane =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
+                let _model_grass_plane = asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
                 let asset_manager = Arc::new(asset_manager);
                 trace!("Initialized AssetManager");
 
@@ -177,29 +179,18 @@ impl Application {
                 let (logic_thread_tx, logic_thread_rx) = std::sync::mpsc::channel();
                 let (window_thread_tx, window_thread_rx) = std::sync::mpsc::channel();
 
-                let logic_thread_tx_clone = logic_thread_tx.clone();
-                let window_thread_tx_clone = window_thread_tx.clone();
-                input_manager.register_listener(Box::new(move |action_event| {
-                        logic_thread_tx_clone
-                                .send(LogicThreadMessage::ActionEvent(action_event.clone()))
-                                .expect("Error sending action event!");
-
-                        window_thread_tx_clone
-                                .send(WindowThreadMessage::ActionEvent(action_event.clone()))
-                                .expect("Error sending action event!");
-                }));
-
-                let continuous_actions = input_manager.clone_continuous_actions_state();
                 let logic_thread_params = LogicThreadSpawnParams {
                         target_tps: config.tps,
                         logic_thread_rx,
                         window_thread_tx,
-                        continuous_actions,
+                        action_receiver: input_manager.create_action_receiver(),
                         asset_manager: Arc::clone(&asset_manager),
                         render_state_switcher,
                 };
 
                 let logic_thread = LogicThread::spawn(logic_thread_params);
+
+                let action_receiver = input_manager.create_action_receiver();
 
                 Ok(Self {
                         event_loop: Some(event_loop),
@@ -209,7 +200,7 @@ impl Application {
                         logic_thread_tx,
                         imgui_state,
                         input_manager,
-                        pollable_actions,
+                        action_receiver,
                         asset_manager,
                         renderer,
 
@@ -233,8 +224,8 @@ impl Application {
                         *control_flow = ControlFlow::Poll;
 
                         match self.on_winit_event(event, control_flow) {
-                            Ok(_) => (),
-                            Err(err) => error!("Error ocurred in render loop: {}", err),
+                                Ok(_) => (),
+                                Err(err) => error!("Error ocurred in render loop: {}", err),
                         }
                 });
         }
@@ -268,7 +259,11 @@ impl Application {
                 ImGuiState { context, platform }
         }
 
-        fn on_winit_event(&mut self, event: winit::event::Event<'_, ()>, control_flow: &mut ControlFlow) -> Result<(), Box<dyn Error>> {
+        fn on_winit_event(
+                &mut self,
+                event: winit::event::Event<'_, ()>,
+                control_flow: &mut ControlFlow,
+        ) -> Result<(), Box<dyn Error>> {
                 self.imgui_state
                         .platform
                         .handle_event(self.imgui_state.context.io_mut(), &self.window, &event);
@@ -323,9 +318,11 @@ impl Application {
         fn update(&mut self, control_flow: &mut ControlFlow) -> Result<(), Box<dyn Error>> {
                 self.process_logic_thread_messages(control_flow);
 
-                let active_actions = self.pollable_actions.lock().unwrap().poll();
+                for (action_id, strength) in self.action_receiver.receive() {
+                        if !self.player_camera_enabled {
+                                continue;
+                        }
 
-                for (action_id, strength) in active_actions {
                         match action_id {
                                 YAW_POSITIVE => self.player_orien.yaw += strength.0 / PIXELS_PER_TURN,
                                 YAW_NEGATIVE => self.player_orien.yaw -= strength.0 / PIXELS_PER_TURN,
@@ -336,10 +333,28 @@ impl Application {
                                 _ => continue,
                         }
 
-                        self.logic_thread_tx.send(LogicThreadMessage::SetPlayerOrien(self.player_orien.to_quat()))?;
-                }
+                        self.logic_thread_tx
+                                .send(LogicThreadMessage::SetPlayerOrien(self.player_orien.to_quat()))
+                                .expect("Failed to send command to logic thread!");
+                };
 
-                self.tps_counter.tick_and_map(|tps| info!("FPS: {:.2}", tps));
+                // let active_actions = self.pollable_actions.lock().unwrap().poll();
+
+                // for (action_id, strength) in active_actions {
+                //         match action_id {
+                //                 YAW_POSITIVE => self.player_orien.yaw += strength.0 / PIXELS_PER_TURN,
+                //                 YAW_NEGATIVE => self.player_orien.yaw -= strength.0 / PIXELS_PER_TURN,
+                //                 PITCH_POSITIVE => self.player_orien.pitch += strength.0 / PIXELS_PER_TURN,
+                //                 PITCH_NEGATIVE => self.player_orien.pitch -= strength.0 / PIXELS_PER_TURN,
+                //                 ROLL_POSITIVE => self.player_orien.roll += strength.0 / PIXELS_PER_TURN,
+                //                 ROLL_NEGATIVE => self.player_orien.roll -= strength.0 / PIXELS_PER_TURN,
+                //                 _ => continue,
+                //         }
+
+                //         self.logic_thread_tx.send(LogicThreadMessage::SetPlayerOrien(self.player_orien.to_quat()))?;
+                // }
+
+                // self.tps_counter.tick_and_map(|tps| info!("FPS: {:.2}", tps));
 
                 //let key_states = self.input_manager.get_key_states();
 
@@ -446,12 +461,6 @@ impl Application {
                                         &mut self.window_state,
                                         &mut self.player_camera_enabled,
                                 ),
-                                WindowThreadMessage::ActionEvent(action_event) => Self::process_action_event(
-                                        action_event,
-                                        &mut self.player_orien,
-                                        self.player_camera_enabled,
-                                        &self.logic_thread_tx,
-                                ),
                         }
                 }
         }
@@ -476,79 +485,6 @@ impl Application {
                                 *player_camera_enabled = enabled;
                         },
                 }
-        }
-
-        fn process_action_event(
-                ActionEvent { action_id, strength }: ActionEvent,
-                player_orien: &mut EulerAngles,
-                player_camera_enabled: bool,
-                logic_thread_tx: &Sender<LogicThreadMessage>,
-        ) {
-                if !player_camera_enabled {
-                        return;
-                }
-
-                const PIXELS_PER_360_ROTATION: f32 = 480.0;
-
-                let angle = strength.0 / PIXELS_PER_360_ROTATION;
-
-                let player_orien_changed = match action_id {
-                        YAW_POSITIVE | YAW_NEGATIVE => {
-                                let yaw_angle = if action_id == YAW_POSITIVE { angle } else { -angle };
-
-                                // *player_orien = UnitQuat::from_axis_angle(&Vec3::y_axis(), yaw_angle) * *player_orien;
-
-                                player_orien.yaw += yaw_angle;
-
-                                true
-                        },
-                        PITCH_POSITIVE | PITCH_NEGATIVE => {
-                                // let yaw_quat = UnitQuat::new_normalize(Quat::new(
-                                //         player_orien.as_vector().w,
-                                //         0.0,
-                                //         player_orien.as_vector().y,
-                                //         0.0,
-                                // ));
-                                // let right_vector = yaw_quat * Vec3::x_axis();
-                                let pitch_angle = if action_id == PITCH_POSITIVE { angle } else { -angle };
-
-                                // *player_orien = UnitQuat::from_axis_angle(&right_vector, pitch_angle) * *player_orien;
-
-                                player_orien.pitch += pitch_angle;
-
-                                true
-                        },
-                        ROLL_POSITIVE | ROLL_NEGATIVE => {
-                                let roll_angle = if action_id == ROLL_POSITIVE { angle } else { -angle };
-
-                                // *player_orien = UnitQuat::from_axis_angle(&right_vector, pitch_angle) * *player_orien;
-
-                                player_orien.roll += roll_angle;
-
-                                true
-                        },
-                        _ => false,
-                };
-
-                if player_orien_changed {
-                        logic_thread_tx
-                                .send(LogicThreadMessage::SetPlayerOrien(player_orien.to_quat()))
-                                .expect("Error while sending message to logic thread!");
-                }
-
-                // for (action_id, strength) in active_actions {
-                //         match action_id {
-                //                 YAW_POSITIVE => player_orien.yaw += strength.0 / PIXELS_PER_TURN,
-                //                 YAW_NEGATIVE => player_orien.yaw -= strength.0 / PIXELS_PER_TURN,
-                //                 PITCH_POSITIVE => player_orien.pitch += strength.0 / PIXELS_PER_TURN,
-                //                 PITCH_NEGATIVE => player_orien.pitch -= strength.0 / PIXELS_PER_TURN,
-                //                 ROLL_POSITIVE => player_orien.roll += strength.0 / PIXELS_PER_TURN,
-                //                 ROLL_NEGATIVE => player_orien.roll -= strength.0 / PIXELS_PER_TURN,
-                //                 _ => continue,
-                //         }
-
-                //         logic_thread_tx.send(LogicThreadMessage::SetPlayerOrien(player_orien.to_quat()))?;
-                // }
         }
 
         fn on_quit(&mut self) {
@@ -612,7 +548,7 @@ struct ImGuiState {
 
 pub enum WindowThreadMessage {
         Command(WindowThreadCommand),
-        ActionEvent(ActionEvent),
+        // ActionEvent(ActionEvent),
 }
 
 pub enum WindowThreadCommand {

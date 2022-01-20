@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use log::info;
 
+#[allow(dead_code)]
 pub enum TimePrefix {
 	Nano,
 	Micro,
