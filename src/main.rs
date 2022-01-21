@@ -2,27 +2,26 @@
 mod vec_map;
 #[macro_use]
 mod scoped_timer;
+mod actions;
+mod application;
+mod application_config;
 mod asset_manager;
 pub mod camera;
 mod constants;
+mod euler_angles;
+mod hashmap;
 mod image;
 mod input_manager;
+mod logic_thread;
 mod my_glm;
+mod render_state_switcher;
 mod renderer;
 mod vertex;
 mod vk;
-mod application;
-mod application_config;
-mod actions;
-mod logic_thread;
-mod render_state_switcher;
-mod hashmap;
-mod euler_angles;
 
 #[allow(unused_imports)]
 #[macro_use]
 extern crate const_cstr;
-#[macro_use]
 extern crate imgui;
 extern crate nalgebra as na;
 extern crate nalgebra_glm as glm;

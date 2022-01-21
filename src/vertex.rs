@@ -36,9 +36,9 @@ impl Vertex {
                         },
                         vk::VertexInputAttributeDescription {
                                 location: 1,
-                                binding:  1,
-                                format:   vk::Format::R32G32_SFLOAT,
-                                offset:   0,
+                                binding: 1,
+                                format: vk::Format::R32G32_SFLOAT,
+                                offset: 0,
                                 //offset:   memoffset::offset_of!(Vertex, tex_coord) as u32,
                         },
                 ]

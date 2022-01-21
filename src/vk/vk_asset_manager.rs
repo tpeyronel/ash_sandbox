@@ -4,16 +4,22 @@ use ash::vk;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 
-use crate::{asset_manager::{
+use crate::{
+        asset_manager::{
                 AssetManager, Buffer, BufferId, BufferView, BufferViewId, ComponentType, DataType, Image, ImageFormat,
-                ImageId, MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, Sampler, SamplerId,
-                Texture, TextureId, WrappingMode,
-        }, constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE}, hashmap::HashMap, vec_map::VecMap, vk::{
+                ImageId, MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, Sampler, SamplerId, Texture,
+                TextureId, WrappingMode,
+        },
+        constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
+        hashmap::HashMap,
+        vec_map::VecMap,
+        vk::{
                 vk_buffer::{BufferData, VkBuffer, VkImmutableBufferCreateInfo},
                 vk_command_buffer::VkReusableCommandBuffer,
                 vk_image::{MipLevels, VkImage, VkImageCreateFromDataInfo},
                 vk_wrapper::{VkCommandPool, VkDevice, VkImageView, VkPhysicalDevice, VkSampler},
-        }};
+        },
+};
 
 pub struct VkModelBufferView {
         pub buffer: VkBuffer,
@@ -71,7 +77,8 @@ impl VkAssetManager {
                 )?;
 
                 trace!("Creating VkSamplers...");
-                let vk_samplers = Self::create_vk_samplers_from_samplers(pdevice, Rc::clone(&device), asset_manager.samplers())?;
+                let vk_samplers =
+                        Self::create_vk_samplers_from_samplers(pdevice, Rc::clone(&device), asset_manager.samplers())?;
 
                 trace!("Creating material VkDescriptorSets...");
                 let vk_material_dst_sets = Self::create_vk_material_dst_sets_from_materials(
@@ -81,14 +88,14 @@ impl VkAssetManager {
                         asset_manager.textures(),
                         asset_manager.materials(),
                         &vk_images,
-                        &vk_samplers
+                        &vk_samplers,
                 )?;
 
                 Ok(Self {
                         buffer_views: vk_buffer_views,
                         images: vk_images,
                         samplers: vk_samplers,
-                        material_dst_sets: vk_material_dst_sets
+                        material_dst_sets: vk_material_dst_sets,
                 })
         }
 
@@ -189,8 +196,9 @@ impl VkAssetManager {
                                 transfer_queue,
                         };
 
-                        let vk_image =
-                                unsafe { VkImage::from_data(instance, pdevice, &device, Rc::clone(&allocator), &vk_image_cinfo)? };
+                        let vk_image = unsafe {
+                                VkImage::from_data(instance, pdevice, &device, Rc::clone(&allocator), &vk_image_cinfo)?
+                        };
 
                         let vk_image_view_cinfo = vk::ImageViewCreateInfo {
                                 image: *vk_image,

@@ -26,7 +26,7 @@ use super::{
                 VkShaderModule,
         },
 };
-use crate::scoped_timer::{ScopedTimer, TimePrefix};
+use crate::scoped_timer::TimePrefix;
 use crate::{
         asset_manager::{AssetManager, Mesh, ModelId, Primitive},
         my_glm::*,
@@ -164,10 +164,10 @@ impl VkRenderer {
                 trace!("Created VkGraphicsPipeline");
 
                 let imgui_renderer_options = imgui_rs_vulkan_renderer::Options {
-                    in_flight_frames: swapchain.img_count as usize,
-                    enable_depth_test: false,
-                    enable_depth_write: false,
-                    sample_count: swapchain.samples,
+                        in_flight_frames: swapchain.img_count as usize,
+                        enable_depth_test: false,
+                        enable_depth_write: false,
+                        sample_count: swapchain.samples,
                 };
 
                 let imgui_renderer = imgui_rs_vulkan_renderer::Renderer::with_default_allocator(
@@ -418,7 +418,7 @@ impl VkRenderer {
                         unsafe {
                                 self.vk_context
                                         .device
-                                        .free_descriptor_sets(*self.vk_context.dst_pool, &self.matrices_dst_sets)
+                                        .free_descriptor_sets(*self.vk_context.dst_pool, &self.matrices_dst_sets)?
                         };
 
                         self.matrices_dst_sets = Self::create_matrices_dst_sets(

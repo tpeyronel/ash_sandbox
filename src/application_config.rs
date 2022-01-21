@@ -1,7 +1,7 @@
 use std::{error::Error, path::Path};
 
 use crate::application::WindowMode;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApplicationConfig {
@@ -10,7 +10,7 @@ pub struct ApplicationConfig {
 }
 
 impl ApplicationConfig {
-        pub fn from_file(path: &Path) -> Result<Self, Box<dyn Error>>{
+        pub fn from_file(path: &Path) -> Result<Self, Box<dyn Error>> {
                 let json = std::fs::read_to_string(path)?;
 
                 Ok(serde_json::from_str(&json)?)

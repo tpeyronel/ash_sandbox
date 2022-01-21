@@ -388,7 +388,7 @@ impl Application {
 
                 let ui = imgui_state.context.frame();
 
-                imgui::Window::new(im_str!("Hello world"))
+                imgui::Window::new("Hello world")
                         .size([300.0, 100.0], imgui::Condition::FirstUseEver)
                         .build(&ui, || {
                                 let mouse_pos = ui.io().mouse_pos;

@@ -1,9 +1,9 @@
 use std::ffi::CStr;
 
 pub struct Image2D {
-        data:     Vec<u8>,
-        width:    u32,
-        height:   u32,
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
         channels: u32,
 }
 
@@ -34,9 +34,9 @@ impl Image2D {
                 let data_len = (width as usize) * (height as usize) * (desired_channels as usize);
 
                 Ok(Self {
-                        data:     unsafe { Vec::from_raw_parts(data, data_len, data_len) },
-                        width:    width as u32,
-                        height:   height as u32,
+                        data: unsafe { Vec::from_raw_parts(data, data_len, data_len) },
+                        width: width as u32,
+                        height: height as u32,
                         channels: desired_channels,
                 })
         }

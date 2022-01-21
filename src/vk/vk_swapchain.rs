@@ -14,33 +14,33 @@ use super::{
 pub struct VkSwapchain {
         loader: Swapchain,
 
-        window:          Rc<winit::window::Window>,
-        instance:        Rc<VkInstance>,
-        surface:         Rc<VkSurface>,
+        window: Rc<winit::window::Window>,
+        instance: Rc<VkInstance>,
+        surface: Rc<VkSurface>,
         physical_device: vk::PhysicalDevice,
-        device:          Rc<VkDevice>,
-        allocator:       Rc<vma::Allocator>,
+        device: Rc<VkDevice>,
+        allocator: Rc<vma::Allocator>,
 
         handle: vk::SwapchainKHR,
 
         pub color_format: vk::SurfaceFormatKHR,
         pub depth_format: vk::Format,
-        pub extent:       vk::Extent2D,
-        pub viewport:     vk::Viewport,
-        pub scissor:      vk::Rect2D,
+        pub extent: vk::Extent2D,
+        pub viewport: vk::Viewport,
+        pub scissor: vk::Rect2D,
         pub present_mode: vk::PresentModeKHR,
-        pub samples:      vk::SampleCountFlags,
+        pub samples: vk::SampleCountFlags,
 
-        pub color_img:      VkImage,
+        pub color_img: VkImage,
         pub color_img_view: VkImageView,
 
-        pub depth_img:      VkImage,
+        pub depth_img: VkImage,
         pub depth_img_view: VkImageView,
 
-        pub resolve_imgs:      Vec<vk::Image>,
+        pub resolve_imgs: Vec<vk::Image>,
         pub resolve_img_views: Vec<VkImageView>,
-        pub img_count:         u32,
-        pub framebuffers:      Vec<VkFramebuffer>,
+        pub img_count: u32,
+        pub framebuffers: Vec<VkFramebuffer>,
 }
 
 impl VkSwapchain {
@@ -105,13 +105,24 @@ impl VkSwapchain {
                 let samples = Self::choose_sample_count(&instance, physical_device);
                 debug!("Swapchain samples: {:?}", samples);
 
-                let (color_img, color_img_view) =
-                        Self::create_color_img_resources(Rc::clone(&device), Rc::clone(&allocator), color_format.format, &extent, samples)?;
-                let (depth_img, depth_img_view) =
-                        Self::create_depth_img_resources(Rc::clone(&device), Rc::clone(&allocator), depth_format, &extent, samples)?;
+                let (color_img, color_img_view) = Self::create_color_img_resources(
+                        Rc::clone(&device),
+                        Rc::clone(&allocator),
+                        color_format.format,
+                        &extent,
+                        samples,
+                )?;
+                let (depth_img, depth_img_view) = Self::create_depth_img_resources(
+                        Rc::clone(&device),
+                        Rc::clone(&allocator),
+                        depth_format,
+                        &extent,
+                        samples,
+                )?;
 
                 let resolve_imgs = unsafe { loader.get_swapchain_images(handle)? };
-                let resolve_img_views = Self::create_resolve_img_views(Rc::clone(&device), &resolve_imgs, color_format.format)?;
+                let resolve_img_views =
+                        Self::create_resolve_img_views(Rc::clone(&device), &resolve_imgs, color_format.format)?;
 
                 let img_count = resolve_imgs.len() as u32;
 
@@ -155,9 +166,9 @@ impl VkSwapchain {
 
                 let mut recreation_info = VkSwapchainRecreationInfo {
                         color_format_changed: false,
-                        extent_changed:       false,
-                        samples_changed:      false,
-                        img_count_changed:    false,
+                        extent_changed: false,
+                        samples_changed: false,
+                        img_count_changed: false,
                 };
 
                 let old_color_format = self.color_format;
@@ -190,7 +201,6 @@ impl VkSwapchain {
                 self.scissor = Self::create_scissor(&self.extent);
                 recreation_info.extent_changed = old_extent != self.extent;
                 debug!("VkSwapchain extent: {:?}", self.extent);
-
 
                 let present_mode = Self::choose_present_mode(&self.surface, self.physical_device)?;
                 self.present_mode = present_mode;
@@ -252,8 +262,11 @@ impl VkSwapchain {
                 }
 
                 self.resolve_imgs = unsafe { loader.get_swapchain_images(self.handle)? };
-                self.resolve_img_views =
-                        Self::create_resolve_img_views(Rc::clone(&self.device), &self.resolve_imgs, self.color_format.format)?;
+                self.resolve_img_views = Self::create_resolve_img_views(
+                        Rc::clone(&self.device),
+                        &self.resolve_imgs,
+                        self.color_format.format,
+                )?;
 
                 let old_img_count = self.img_count;
                 self.img_count = self.resolve_imgs.len() as u32;
@@ -326,7 +339,7 @@ impl VkSwapchain {
         ) -> vk::Extent2D {
                 match surface_capabilities.current_extent.width {
                         u32::MAX => vk::Extent2D {
-                                width:  window.inner_size().width,
+                                width: window.inner_size().width,
                                 height: window.inner_size().height,
                         },
                         _ => surface_capabilities.current_extent,
@@ -335,10 +348,10 @@ impl VkSwapchain {
 
         fn create_viewport(extent: &vk::Extent2D) -> vk::Viewport {
                 vk::Viewport {
-                        x:         0.0,
-                        y:         extent.height as f32,
-                        width:     extent.width as f32,
-                        height:    -(extent.height as f32),
+                        x: 0.0,
+                        y: extent.height as f32,
+                        width: extent.width as f32,
+                        height: -(extent.height as f32),
                         min_depth: 0.0,
                         max_depth: 1.0,
                 }
@@ -346,9 +359,7 @@ impl VkSwapchain {
 
         fn create_scissor(extent: &vk::Extent2D) -> vk::Rect2D {
                 vk::Rect2D {
-                        offset: vk::Offset2D {
-                                x: 0, y: 0
-                        },
+                        offset: vk::Offset2D { x: 0, y: 0 },
                         extent: *extent,
                 }
         }
@@ -407,9 +418,9 @@ impl VkSwapchain {
                                 image_type: vk::ImageType::TYPE_2D,
                                 format,
                                 extent: vk::Extent3D {
-                                        width:  extent.width,
+                                        width: extent.width,
                                         height: extent.height,
-                                        depth:  1,
+                                        depth: 1,
                                 },
                                 mip_levels: 1,
                                 array_layers: 1,
@@ -436,11 +447,11 @@ impl VkSwapchain {
                                 format,
                                 components: vk::ComponentMapping::default(),
                                 subresource_range: vk::ImageSubresourceRange {
-                                        aspect_mask:      vk::ImageAspectFlags::COLOR,
-                                        base_mip_level:   0,
-                                        level_count:      1,
+                                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                                        base_mip_level: 0,
+                                        level_count: 1,
                                         base_array_layer: 0,
-                                        layer_count:      1,
+                                        layer_count: 1,
                                 },
                                 ..vk::ImageViewCreateInfo::default()
                         };
@@ -463,9 +474,9 @@ impl VkSwapchain {
                                 image_type: vk::ImageType::TYPE_2D,
                                 format,
                                 extent: vk::Extent3D {
-                                        width:  extent.width,
+                                        width: extent.width,
                                         height: extent.height,
-                                        depth:  1,
+                                        depth: 1,
                                 },
                                 mip_levels: 1,
                                 array_layers: 1,
@@ -491,11 +502,11 @@ impl VkSwapchain {
                                 format: vk::Format::D24_UNORM_S8_UINT,
                                 components: vk::ComponentMapping::default(),
                                 subresource_range: vk::ImageSubresourceRange {
-                                        aspect_mask:      vk::ImageAspectFlags::DEPTH,
-                                        base_mip_level:   0,
-                                        level_count:      1,
+                                        aspect_mask: vk::ImageAspectFlags::DEPTH,
+                                        base_mip_level: 0,
+                                        level_count: 1,
                                         base_array_layer: 0,
-                                        layer_count:      1,
+                                        layer_count: 1,
                                 },
                                 ..vk::ImageViewCreateInfo::default()
                         };
@@ -520,11 +531,11 @@ impl VkSwapchain {
                                         format,
                                         components: vk::ComponentMapping::default(),
                                         subresource_range: vk::ImageSubresourceRange {
-                                                aspect_mask:      vk::ImageAspectFlags::COLOR,
-                                                base_mip_level:   0,
-                                                level_count:      1,
+                                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                                base_mip_level: 0,
+                                                level_count: 1,
                                                 base_array_layer: 0,
-                                                layer_count:      1,
+                                                layer_count: 1,
                                         },
                                         ..Default::default()
                                 };
@@ -560,7 +571,7 @@ bitflags! {
 
 pub struct VkSwapchainRecreationInfo {
         pub color_format_changed: bool,
-        pub extent_changed:       bool,
-        pub samples_changed:      bool,
-        pub img_count_changed:    bool,
+        pub extent_changed: bool,
+        pub samples_changed: bool,
+        pub img_count_changed: bool,
 }

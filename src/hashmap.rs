@@ -4,25 +4,25 @@ pub type HashMap<K, V> = hashbrown::HashMap<K, V>;
 
 pub trait GetOrInsert<K: Eq + Hash + Clone, V> {
         fn get_or_insert(&mut self, k: &K, v: V) -> &V;
-	fn get_mut_or_insert(&mut self, k: &K, v: V) -> &mut V;
-	fn get_or_insert_with(&mut self, k: &K, f: impl FnOnce() -> V) -> &V;
-	fn get_mut_or_insert_with(&mut self, k: &K, f: impl FnOnce() -> V) -> &mut V;
+        fn get_mut_or_insert(&mut self, k: &K, v: V) -> &mut V;
+        fn get_or_insert_with(&mut self, k: &K, f: impl FnOnce() -> V) -> &V;
+        fn get_mut_or_insert_with(&mut self, k: &K, f: impl FnOnce() -> V) -> &mut V;
 }
 
 impl<K: Eq + Hash + Clone, V> GetOrInsert<K, V> for HashMap<K, V> {
         fn get_or_insert(&mut self, k: &K, v: V) -> &V {
                 self.raw_entry_mut().from_key(k).or_insert_with(|| (k.clone(), v)).1
-	}
+        }
 
-	fn get_mut_or_insert(&mut self, k: &K, v: V) -> &mut V {
+        fn get_mut_or_insert(&mut self, k: &K, v: V) -> &mut V {
                 self.raw_entry_mut().from_key(k).or_insert_with(|| (k.clone(), v)).1
-	}
+        }
 
         fn get_or_insert_with(&mut self, k: &K, f: impl FnOnce() -> V) -> &V {
                 self.raw_entry_mut().from_key(k).or_insert_with(|| (k.clone(), f())).1
-	}
+        }
 
-	fn get_mut_or_insert_with(&mut self, k: &K, f: impl FnOnce() -> V) -> &mut V {
+        fn get_mut_or_insert_with(&mut self, k: &K, f: impl FnOnce() -> V) -> &mut V {
                 self.raw_entry_mut().from_key(k).or_insert_with(|| (k.clone(), f())).1
-	}
+        }
 }

@@ -146,10 +146,10 @@ impl VkContext {
 
                         let app_info = vk::ApplicationInfo::builder()
                                 .application_name(&app_name)
-                                .application_version(vk::make_version(1, 0, 0))
+                                .application_version(vk::make_api_version(0, 1, 0, 0))
                                 .engine_name(&app_name)
-                                .engine_version(vk::make_version(1, 0, 0))
-                                .api_version(vk::make_version(1, 1, 0));
+                                .engine_version(vk::make_api_version(0, 1, 0, 0))
+                                .api_version(vk::make_api_version(0, 1, 1, 0));
 
                         let mut instance_cinfo = vk::InstanceCreateInfo::builder()
                                 .application_info(&app_info)

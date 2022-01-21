@@ -18,32 +18,32 @@ pub enum MipLevels {
 }
 
 pub struct VkImageCreateInfo {
-        pub image_type:           vk::ImageType,
-        pub format:               vk::Format,
-        pub extent:               vk::Extent3D,
-        pub mip_levels:           u32,
-        pub array_layers:         u32,
-        pub samples:              vk::SampleCountFlags,
-        pub tiling:               vk::ImageTiling,
-        pub usage:                vk::ImageUsageFlags,
+        pub image_type: vk::ImageType,
+        pub format: vk::Format,
+        pub extent: vk::Extent3D,
+        pub mip_levels: u32,
+        pub array_layers: u32,
+        pub samples: vk::SampleCountFlags,
+        pub tiling: vk::ImageTiling,
+        pub usage: vk::ImageUsageFlags,
         pub queue_family_indices: Option<Vec<u32>>,
-        pub initial_layout:       vk::ImageLayout,
+        pub initial_layout: vk::ImageLayout,
 
-        pub mem_usage:       vma::MemoryUsage,
-        pub alloc_cflags:    vma::AllocationCreateFlags,
-        pub required_flags:  vk::MemoryPropertyFlags,
+        pub mem_usage: vma::MemoryUsage,
+        pub alloc_cflags: vma::AllocationCreateFlags,
+        pub required_flags: vk::MemoryPropertyFlags,
         pub preferred_flags: vk::MemoryPropertyFlags,
 }
 
 pub struct VkImageCreateFromDataInfo<'a> {
-        pub data:             &'a [u8],
-        pub width:            u32,
-        pub height:           u32,
-        pub format:           vk::Format,
-        pub mip_levels:       MipLevels,
-        pub samples:          vk::SampleCountFlags,
+        pub data: &'a [u8],
+        pub width: u32,
+        pub height: u32,
+        pub format: vk::Format,
+        pub mip_levels: MipLevels,
+        pub samples: vk::SampleCountFlags,
         pub setup_cmd_buffer: &'a VkReusableCommandBuffer,
-        pub transfer_queue:   vk::Queue,
+        pub transfer_queue: vk::Queue,
 }
 
 #[allow(dead_code)]
@@ -51,8 +51,8 @@ pub struct VkImage {
         allocator: Rc<vma::Allocator>,
 
         handle: vk::Image,
-        alloc:  vma::Allocation,
-        ainfo:  vma::AllocationInfo,
+        alloc: vma::Allocation,
+        ainfo: vma::AllocationInfo,
 
         pub mip_levels: u32,
 }
@@ -89,13 +89,13 @@ impl VkImage {
                         }
 
                         let alloc_cinfo = vma::AllocationCreateInfo {
-                                usage:            create_info.mem_usage,
-                                flags:            create_info.alloc_cflags,
-                                required_flags:   create_info.required_flags,
-                                preferred_flags:  create_info.preferred_flags,
+                                usage: create_info.mem_usage,
+                                flags: create_info.alloc_cflags,
+                                required_flags: create_info.required_flags,
+                                preferred_flags: create_info.preferred_flags,
                                 memory_type_bits: 0,
-                                pool:             None,
-                                user_data:        None,
+                                pool: None,
+                                user_data: None,
                         };
 
                         allocator.create_image(&vk_img_cinfo, &alloc_cinfo)?
@@ -123,15 +123,16 @@ impl VkImage {
                         MipLevels::Number(n) => n,
                 };
 
-                let staging_buffer = Self::create_staging_buffer(device, Rc::clone(&allocator), &cinfo.data, cinfo.data.len())?;
+                let staging_buffer =
+                        Self::create_staging_buffer(device, Rc::clone(&allocator), &cinfo.data, cinfo.data.len())?;
 
                 let vk_img_cinfo = VkImageCreateInfo {
                         image_type: vk::ImageType::TYPE_2D,
                         format: cinfo.format,
                         extent: vk::Extent3D {
-                                width:  cinfo.width,
+                                width: cinfo.width,
                                 height: cinfo.height,
-                                depth:  1,
+                                depth: 1,
                         },
                         mip_levels,
                         array_layers: 1,
@@ -149,7 +150,6 @@ impl VkImage {
                 };
 
                 let vk_img = VkImage::new(allocator, &vk_img_cinfo)?;
-
 
                 let cmd_buffer = **cinfo.setup_cmd_buffer;
 
@@ -196,12 +196,10 @@ impl VkImage {
                         mip_levels,
                 });
 
-
                 cinfo.setup_cmd_buffer
                         .end_and_submit(&device, cinfo.transfer_queue, &[], &[], &[])?;
 
                 cinfo.setup_cmd_buffer.wait(device, u64::MAX)?;
-
 
                 Ok(vk_img)
         }
@@ -250,11 +248,11 @@ impl VkImage {
                         dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                         image: tinfo.image,
                         subresource_range: vk::ImageSubresourceRange {
-                                aspect_mask:      tinfo.aspect_mask,
-                                base_mip_level:   tinfo.base_mip_level,
-                                level_count:      tinfo.mip_levels,
+                                aspect_mask: tinfo.aspect_mask,
+                                base_mip_level: tinfo.base_mip_level,
+                                level_count: tinfo.mip_levels,
                                 base_array_layer: 0,
-                                layer_count:      1,
+                                layer_count: 1,
                         },
                         ..vk::ImageMemoryBarrier::default()
                 };
@@ -282,19 +280,17 @@ impl VkImage {
                 dst_image_layout: vk::ImageLayout,
         ) {
                 let region = vk::BufferImageCopy {
-                        buffer_offset:       0,
-                        buffer_row_length:   0,
+                        buffer_offset: 0,
+                        buffer_row_length: 0,
                         buffer_image_height: 0,
-                        image_subresource:   vk::ImageSubresourceLayers {
-                                aspect_mask:      vk::ImageAspectFlags::COLOR,
-                                mip_level:        0,
+                        image_subresource: vk::ImageSubresourceLayers {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                mip_level: 0,
                                 base_array_layer: 0,
-                                layer_count:      1,
+                                layer_count: 1,
                         },
-                        image_offset:        vk::Offset3D {
-                                x: 0, y: 0, z: 0
-                        },
-                        image_extent:        vk::Extent3D {
+                        image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+                        image_extent: vk::Extent3D {
                                 width,
                                 height,
                                 depth: 1,
@@ -324,19 +320,19 @@ impl VkImage {
                 );
 
                 let mut tinfo = TransitionImageLayoutInfo {
-                        device:     minfo.device,
+                        device: minfo.device,
                         cmd_buffer: minfo.cmd_buffer,
 
-                        image:       minfo.image,
+                        image: minfo.image,
                         aspect_mask: vk::ImageAspectFlags::COLOR,
 
                         base_mip_level: Default::default(),
-                        mip_levels:     1,
+                        mip_levels: 1,
 
                         src_access_mask: Default::default(),
                         dst_access_mask: Default::default(),
-                        old_layout:      Default::default(),
-                        new_layout:      Default::default(),
+                        old_layout: Default::default(),
+                        new_layout: Default::default(),
 
                         src_stage_mask: Default::default(),
                         dst_stage_mask: Default::default(),
@@ -359,7 +355,6 @@ impl VkImage {
                         tinfo.dst_stage_mask = vk::PipelineStageFlags::TRANSFER;
 
                         Self::cmd_transition_img_layout(&tinfo);
-
 
                         let mut blit = vk::ImageBlit::default();
 
@@ -396,7 +391,6 @@ impl VkImage {
                                         vk::Filter::LINEAR,
                                 );
                         }
-
 
                         tinfo.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
                         tinfo.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
@@ -443,35 +437,29 @@ impl Drop for VkImage {
         }
 }
 
-
-
-
-
 struct TransitionImageLayoutInfo<'a> {
-        device:          &'a ash::Device,
-        cmd_buffer:      vk::CommandBuffer,
-        image:           vk::Image,
-        base_mip_level:  u32,
-        mip_levels:      u32,
-        aspect_mask:     vk::ImageAspectFlags,
+        device: &'a ash::Device,
+        cmd_buffer: vk::CommandBuffer,
+        image: vk::Image,
+        base_mip_level: u32,
+        mip_levels: u32,
+        aspect_mask: vk::ImageAspectFlags,
         src_access_mask: vk::AccessFlags,
         dst_access_mask: vk::AccessFlags,
-        old_layout:      vk::ImageLayout,
-        new_layout:      vk::ImageLayout,
-        src_stage_mask:  vk::PipelineStageFlags,
-        dst_stage_mask:  vk::PipelineStageFlags,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+        src_stage_mask: vk::PipelineStageFlags,
+        dst_stage_mask: vk::PipelineStageFlags,
 }
 
-
-
 struct GenerateMipmapsInfo<'a> {
-        instance:     &'a ash::Instance,
-        pdevice:      &'a vk::PhysicalDevice,
-        device:       &'a ash::Device,
-        cmd_buffer:   vk::CommandBuffer,
-        image:        vk::Image,
+        instance: &'a ash::Instance,
+        pdevice: &'a vk::PhysicalDevice,
+        device: &'a ash::Device,
+        cmd_buffer: vk::CommandBuffer,
+        image: vk::Image,
         image_format: vk::Format,
-        width:        u32,
-        height:       u32,
-        mip_levels:   u32,
+        width: u32,
+        height: u32,
+        mip_levels: u32,
 }

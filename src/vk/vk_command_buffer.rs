@@ -5,10 +5,10 @@ use ash::{prelude::VkResult, vk};
 use super::vk_wrapper::{VkCommandPool, VkDevice, VkFence};
 
 pub struct VkReusableCommandBuffer {
-        device:   Rc<VkDevice>,
+        device: Rc<VkDevice>,
         cmd_pool: Rc<VkCommandPool>,
 
-        handle:    vk::CommandBuffer,
+        handle: vk::CommandBuffer,
         pub fence: VkFence,
 }
 

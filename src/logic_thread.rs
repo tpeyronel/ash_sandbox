@@ -17,10 +17,11 @@ use crate::{
         actions::*,
         application::{CursorState, WindowMode, WindowThreadCommand, WindowThreadMessage},
         asset_manager::{AssetManager, ModelId},
+        constants::PLAYER_MOVEMENT_SPEED,
         input_manager::ActionReceiver,
         my_glm::{Mat4, Quat, UnitQuat, Vec3},
         render_state_switcher::RenderStateSwitcher,
-        renderer::{ModelInstance, RenderState}, constants::PLAYER_MOVEMENT_SPEED,
+        renderer::{ModelInstance, RenderState},
 };
 
 #[derive(Debug, Clone, Copy)]
