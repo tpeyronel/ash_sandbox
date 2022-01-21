@@ -99,18 +99,21 @@ impl Application {
                         KeyCode::F11,
                         KeyBindingType::Simple(KeyState::Released),
                 );
+
                 input_map.bind_key(MOVE_FORWARD, KeyCode::W, KeyBindingType::Continuous);
                 input_map.bind_key(MOVE_BACKWARD, KeyCode::S, KeyBindingType::Continuous);
                 input_map.bind_key(MOVE_RIGHTWARD, KeyCode::D, KeyBindingType::Continuous);
                 input_map.bind_key(MOVE_LEFTWARD, KeyCode::A, KeyBindingType::Continuous);
                 input_map.bind_key(MOVE_UPWARD, KeyCode::Space, KeyBindingType::Continuous);
                 input_map.bind_key(MOVE_DOWNARD, KeyCode::LShift, KeyBindingType::Continuous);
+
                 input_map.bind_mouse_motion(YAW_NEGATIVE, MouseMotionType::PositiveX, None);
                 input_map.bind_mouse_motion(YAW_POSITIVE, MouseMotionType::NegativeX, None);
                 input_map.bind_mouse_motion(PITCH_POSITIVE, MouseMotionType::PositiveY, None);
                 input_map.bind_mouse_motion(PITCH_NEGATIVE, MouseMotionType::NegativeY, None);
                 input_map.bind_key(ROLL_NEGATIVE, KeyCode::Right, KeyBindingType::Continuous);
                 input_map.bind_key(ROLL_POSITIVE, KeyCode::Left, KeyBindingType::Continuous);
+
                 input_manager.push_input_binding_map(input_map);
 
                 trace!("Initialized InputManager");
@@ -310,67 +313,6 @@ impl Application {
                 }
 
                 // self.tps_counter.tick_and_map(|tps| info!("FPS: {:.2}", tps));
-
-                //let key_states = self.input_manager.get_key_states();
-
-                /* let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
-
-                if key_states[KeyCode::W as usize] == KeyState::Pressed {
-                        desired_dir.z += 1.0;
-                }
-                if key_states[KeyCode::S as usize] == KeyState::Pressed {
-                        desired_dir.z -= 1.0;
-                }
-                if key_states[KeyCode::D as usize] == KeyState::Pressed {
-                        desired_dir.x += 1.0;
-                }
-                if key_states[KeyCode::A as usize] == KeyState::Pressed {
-                        desired_dir.x -= 1.0;
-                }
-                if key_states[KeyCode::Space as usize] == KeyState::Pressed {
-                        desired_dir.y += 1.0;
-                }
-                if key_states[KeyCode::LShift as usize] == KeyState::Pressed {
-                        desired_dir.y -= 1.0;
-                }
-
-                const DEFAULT_MOVE_SPEED: f32 = 0.005;
-
-                let move_speed = if key_states[KeyCode::LControl as usize] == KeyState::Pressed {
-                        DEFAULT_MOVE_SPEED * 0.25
-                } else {
-                        DEFAULT_MOVE_SPEED
-                };
-
-                if desired_dir.norm() > f32::EPSILON {
-                        let move_dir = self.camera.hor_orien() * desired_dir.normalize() * move_speed;
-
-                        self.camera.translate(&move_dir);
-                }
-
-                const ROTATE_SPEED: f32 = 0.005;
-
-                if key_states[KeyCode::Up as usize] == KeyState::Pressed {
-                        self.camera.pitch_by(ROTATE_SPEED);
-                }
-                if key_states[KeyCode::Down as usize] == KeyState::Pressed {
-                        self.camera.pitch_by(-ROTATE_SPEED);
-                }
-                if input.all_modifiers(ModifiersState::ALT) {
-                        if key_states[KeyCode::Right as usize] == KeyState::Pressed {
-                                self.camera.roll_by(ROTATE_SPEED);
-                        }
-                        if key_states[KeyCode::Left as usize] == KeyState::Pressed {
-                                self.camera.roll_by(-ROTATE_SPEED);
-                        }
-                } else {
-                        if key_states[KeyCode::Right as usize] == KeyState::Pressed {
-                                self.camera.yaw_by(ROTATE_SPEED);
-                        }
-                        if key_states[KeyCode::Left as usize] == KeyState::Pressed {
-                                self.camera.yaw_by(-ROTATE_SPEED);
-                        }
-                } */
 
                 let imgui_ui = Self::build_imgui_ui(&mut self.imgui_context, &self.window, self.player_orien.clone());
 

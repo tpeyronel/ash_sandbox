@@ -23,8 +23,8 @@ imgui-rs-vulkan-renderer = {git = "https://github.com/TorvalHG/imgui-rs-vulkan-r
 imgui-winit-support = "0.8.2"
 log = "0.4.14"
 memoffset = "0.6.1"
-nalgebra = "0.30.1"
-nalgebra-glm = "0.16.0"
+nalgebra = "0.25.4"
+nalgebra-glm = "0.11.0"
 serde = {version = "1.0.133", features = ["derive"]}
 serde_json = "1.0.75"
 shrev = "1.1.1"

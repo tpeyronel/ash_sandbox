@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .format(|buf, record| {
                         writeln!(
                                 buf,
-                                "[{} {}] {}",
+                                "[{} {:>5}]  {}",
                                 Local::now().time().format("%H:%M:%S").to_string(),
                                 record.level(),
                                 record.args()
