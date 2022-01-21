@@ -1,6 +1,6 @@
 use std::{error::Error, ops::Deref, rc::Rc};
 
-use ash::{extensions::khr::Swapchain, prelude::VkResult, version::InstanceV1_0, vk};
+use ash::{extensions::khr::Swapchain, prelude::VkResult, vk};
 use bitflags::bitflags;
 #[allow(unused_imports)]
 use log::{debug, trace};

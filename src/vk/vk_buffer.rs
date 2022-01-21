@@ -1,6 +1,6 @@
 use std::{error::Error, ops::Deref, rc::Rc};
 
-use ash::{version::DeviceV1_0, vk};
+use ash::vk;
 use log::trace;
 
 use super::vk_command_buffer::VkReusableCommandBuffer;

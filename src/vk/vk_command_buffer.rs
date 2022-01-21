@@ -1,6 +1,6 @@
 use std::{error::Error, ops::Deref, rc::Rc};
 
-use ash::{prelude::VkResult, version::DeviceV1_0, vk};
+use ash::{prelude::VkResult, vk};
 
 use super::vk_wrapper::{VkCommandPool, VkDevice, VkFence};
 

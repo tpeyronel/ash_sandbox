@@ -3,7 +3,6 @@ use std::{ffi::CStr, ops::Deref, rc::Rc};
 use ash::{
         extensions::ext::DebugUtils,
         prelude::VkResult,
-        version::{DeviceV1_0, EntryV1_0, InstanceV1_0},
         vk,
 };
 use log::trace;
@@ -19,7 +18,7 @@ impl VkInstance {
         pub unsafe fn new(
                 entry: &Rc<ash::Entry>,
                 create_info: &vk::InstanceCreateInfo,
-        ) -> Result<Self, ash::InstanceError> {
+        ) -> VkResult<Self> {
                 Ok(Self {
                         _entry: Rc::clone(entry),
 

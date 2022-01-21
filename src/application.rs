@@ -384,7 +384,7 @@ impl Application {
         ) -> Result<imgui::Ui<'a>, winit::error::ExternalError> {
                 imgui_state
                         .platform
-                        .prepare_frame(imgui_state.context.io_mut(), &window)?;
+                        .prepare_frame(imgui_state.context.io_mut(), window)?;
 
                 let ui = imgui_state.context.frame();
 

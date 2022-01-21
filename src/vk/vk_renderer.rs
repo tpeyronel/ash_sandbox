@@ -9,7 +9,7 @@ use std::{
         time::Instant,
 };
 
-use ash::{prelude::VkResult, version::DeviceV1_0, vk};
+use ash::{prelude::VkResult, vk};
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
@@ -163,12 +163,22 @@ impl VkRenderer {
                 )?;
                 trace!("Created VkGraphicsPipeline");
 
-                let imgui_renderer = imgui_rs_vulkan_renderer::Renderer::new(
-                        &vk_context,
-                        swapchain.img_count as usize,
-                        swapchain.samples,
+                let imgui_renderer_options = imgui_rs_vulkan_renderer::Options {
+                    in_flight_frames: swapchain.img_count as usize,
+                    enable_depth_test: false,
+                    enable_depth_write: false,
+                    sample_count: swapchain.samples,
+                };
+
+                let imgui_renderer = imgui_rs_vulkan_renderer::Renderer::with_default_allocator(
+                        &**vk_context.instance,
+                        *vk_context.pdevice,
+                        (**vk_context.device).clone(),
+                        vk_context.queues.graphics,
+                        **vk_context.cmd_pool,
                         *render_pass,
                         imguic,
+                        Some(imgui_renderer_options),
                 )?;
 
                 Ok(Self {
@@ -330,8 +340,7 @@ impl Renderer for VkRenderer {
                                 );
                         }
 
-                        self.imgui_renderer
-                                .cmd_draw(&self.vk_context, draw_cmd_buffer, imgui_draw_data)?;
+                        self.imgui_renderer.cmd_draw(draw_cmd_buffer, imgui_draw_data)?;
 
                         self.end_frame(imagei)?;
                 }
@@ -389,11 +398,7 @@ impl VkRenderer {
                                 self.swapchain.depth_format,
                         )?;
 
-                        self.imgui_renderer.set_render_pass(
-                                &self.vk_context,
-                                self.swapchain.samples,
-                                *self.render_pass,
-                        )?;
+                        self.imgui_renderer.set_render_pass(*self.render_pass)?;
 
                         recreate_pipeline = true;
                 }
@@ -770,7 +775,7 @@ impl VkRenderer {
                         .build();
 
                 let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::builder()
-                        .color_write_mask(vk::ColorComponentFlags::all())
+                        .color_write_mask(vk::ColorComponentFlags::RGBA)
                         .blend_enable(false)
                         .build()];
 
@@ -1061,7 +1066,6 @@ impl VkRenderer {
 impl Drop for VkRenderer {
         fn drop(&mut self) {
                 let _ = unsafe { self.vk_context.device.device_wait_idle() };
-                let _ = self.imgui_renderer.destroy(&self.vk_context);
         }
 }
 

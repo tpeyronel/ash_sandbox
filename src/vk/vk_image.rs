@@ -1,9 +1,6 @@
 use std::{error::Error, ops::Deref, rc::Rc};
 
-use ash::{
-        version::{DeviceV1_0, InstanceV1_0},
-        vk,
-};
+use ash::vk;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 
