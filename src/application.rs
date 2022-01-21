@@ -89,9 +89,8 @@ impl Application {
 
                 let mut input_manager = InputManager::new();
 
-                // let pollable_actions = input_manager.clone_continuous_actions_state();
-
                 let mut input_map = InputBindingMap::new();
+
                 input_map.bind_key(EXIT, KeyCode::Escape, KeyBindingType::Simple(KeyState::Released));
                 input_map.bind_key(TOGGLE_CURSOR, KeyCode::T, KeyBindingType::Simple(KeyState::Released));
                 input_map.bind_key(

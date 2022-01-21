@@ -77,13 +77,11 @@ impl LogicThread {
                 world.insert(TargetTicktimeResource(target_ticktime));
                 world.insert(TargetTicktimeF32Resource(target_ticktime.as_secs_f32()));
 
-                // world.insert(ActionEventChannel::new());
                 world.insert(QueuedWindowThreadMessagesResource::default());
 
                 let mut dispatcher = DispatcherBuilder::new()
                         .with(
                                 InputHandlerSystem {
-                                        // reader_id: None,
                                         action_receiver: params.action_receiver,
                                         last_cursor_state: CursorState::Normal,
                                         last_window_mode: WindowMode::Windowed,
@@ -138,7 +136,6 @@ impl LogicThread {
                 let player = world
                         .create_entity()
                         .with(PositionComponent(Vec3::new(0.0, 0.0, 2.0)))
-                        //.with(OrientationComponent(UnitQuat::from_axis_angle(&Vec3::x_axis(), 0f32.to_radians(),)))
                         .with(OrientationComponent(UnitQuat::from_axis_angle(
                                 &Vec3::x_axis(),
                                 0.0f32.to_radians(),
@@ -172,9 +169,6 @@ impl LogicThread {
                                         LogicThreadMessage::Command(command) => match command {
                                                 LogicThreadCommand::Exit => break 'main,
                                         },
-                                        // LogicThreadMessage::ActionEvent(action_event) => {
-                                        //         world.fetch_mut::<ActionEventChannel>().single_write(action_event);
-                                        // },
                                         LogicThreadMessage::SetPlayerOrien(new_player_orien) => {
                                                 world.write_storage::<OrientationComponent>()
                                                         .get_mut(player)
@@ -194,7 +188,6 @@ impl LogicThread {
 
 pub enum LogicThreadMessage {
         Command(LogicThreadCommand),
-        // ActionEvent(ActionEvent),
         SetPlayerOrien(UnitQuat),
 }
 pub enum LogicThreadCommand {
@@ -202,9 +195,7 @@ pub enum LogicThreadCommand {
 }
 
 struct InputHandlerSystem {
-        // reader_id: Option<ReaderId<ActionEvent>>,
         action_receiver: ActionReceiver,
-        // continuous_actions: Arc<Mutex<ActionPollableState>>,
         last_cursor_state: CursorState,
         last_window_mode: WindowMode,
 }
@@ -282,12 +273,6 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
                         let player_pos = &mut pos_strg.get_mut(player.0).unwrap().0;
                         *player_pos += move_dir;
                 }
-        }
-
-        fn setup(&mut self, world: &mut World) {
-                Self::SystemData::setup(world);
-
-                // self.reader_id = Some(WriteExpect::<ActionEventChannel>::fetch(world).register_reader());
         }
 }
 
