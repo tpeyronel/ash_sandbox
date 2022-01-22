@@ -581,7 +581,7 @@ impl VkPipeline {
                         device: Rc::clone(device),
                         handle: device
                                 .create_graphics_pipelines(pipeline_cache, std::slice::from_ref(create_info), None)
-                                .map_err(|(_, result)| result)?[0],
+                                .map_err(|(_, vk_result)| vk_result)?[0],
                 })
         }
 }

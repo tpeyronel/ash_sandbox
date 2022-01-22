@@ -3,3 +3,4 @@
 imgui.ini
 *.spv
 */tempCodeRunnerFile.rs
+*.blend[1-9]

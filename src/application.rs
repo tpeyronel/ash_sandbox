@@ -142,6 +142,8 @@ impl Application {
                         asset_manager.import_gltf_file(std::path::Path::new("res/model/new-colt/colt.gltf"))?;
                 let _model_grass_plane =
                         asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
+                let _model_sphere =
+                        asset_manager.import_gltf_file(std::path::Path::new("res/model/sphere/sphere.gltf"))?;
                 let asset_manager = Arc::new(asset_manager);
                 trace!("Initialized AssetManager");
 

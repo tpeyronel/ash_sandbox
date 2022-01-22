@@ -241,6 +241,6 @@ impl Camera {
         }
 
         fn calc_proj_matrix(fovy: f32, zoom: f32, aspect_ratio: f32, near: f32, far: f32) -> Mat4 {
-                glm::perspective_lh_zo(aspect_ratio, fovy / zoom, near, far)
+                glm::perspective_rh_zo(aspect_ratio, fovy / zoom, near, far)
         }
 }

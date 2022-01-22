@@ -43,4 +43,36 @@ impl Vertex {
                         },
                 ]
         }
+
+        pub fn color_vk_binding_description() -> [vk::VertexInputBindingDescription; 2] {
+                [
+                        vk::VertexInputBindingDescription {
+                                binding: 0,
+                                stride: size_of::<Vec3>() as u32,
+                                input_rate: VertexInputRate::VERTEX,
+                        },
+                        vk::VertexInputBindingDescription {
+                                binding: 1,
+                                stride: size_of::<Vec4>() as u32,
+                                input_rate: VertexInputRate::VERTEX,
+                        },
+                ]
+        }
+
+        pub fn color_vk_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+                [
+                        vk::VertexInputAttributeDescription {
+                                location: 0,
+                                binding: 0,
+                                format: vk::Format::R32G32B32_SFLOAT,
+                                offset: 0,
+                        },
+                        vk::VertexInputAttributeDescription {
+                                location: 1,
+                                binding: 1,
+                                format: vk::Format::R32G32B32A32_SFLOAT,
+                                offset: 0,
+                        },
+                ]
+        }
 }

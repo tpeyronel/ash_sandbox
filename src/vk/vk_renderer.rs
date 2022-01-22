@@ -52,10 +52,13 @@ pub struct VkRenderer {
         draw_cmd_buffers: Vec<VkReusableCommandBuffer>,
 
         matrices_buffers: Vec<VkBuffer>,
+        lights_buffers: Vec<VkBuffer>,
 
         matrices_dst_set_layout: VkDescriptorSetLayout,
+        lights_dst_set_layout: VkDescriptorSetLayout,
         // _material_dst_set_layout: VkDescriptorSetLayout,
         matrices_dst_sets: Vec<vk::DescriptorSet>,
+        lights_dst_sets: Vec<vk::DescriptorSet>,
 
         graphics_pipeline_layout: VkPipelineLayout,
         graphics_pipeline: VkPipeline,
@@ -126,14 +129,30 @@ impl VkRenderer {
                 )?;
                 trace!("Created matrices uniform buffer");
 
-                let (matrices_dst_set_layout, material_dst_set_layout) =
+                let lights_buffers = Self::create_lights_buffers(
+                        &vk_context.device,
+                        Rc::clone(&vk_context.allocator),
+                        swapchain.img_count,
+                )?;
+                trace!("Created lights uniform buffer");
+
+                let (matrices_dst_set_layout, material_dst_set_layout, lights_dst_set_layout) =
                         Self::create_descriptor_set_layouts(&vk_context.device)?;
+
                 let matrices_dst_sets = Self::create_matrices_dst_sets(
                         &vk_context.device,
                         *vk_context.dst_pool,
                         *matrices_dst_set_layout,
                         &matrices_buffers,
                 )?;
+
+                let lights_dst_sets = Self::create_lights_dst_sets(
+                        &vk_context.device,
+                        *vk_context.dst_pool,
+                        *lights_dst_set_layout,
+                        &lights_buffers,
+                )?;
+
                 trace!("Created VkDescriptorSets");
 
                 let vk_asset_manager = VkAssetManager::new(
@@ -151,7 +170,11 @@ impl VkRenderer {
 
                 let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
                         &vk_context.device,
-                        &[*matrices_dst_set_layout, *material_dst_set_layout],
+                        &[
+                                *matrices_dst_set_layout,
+                                *material_dst_set_layout,
+                                *lights_dst_set_layout,
+                        ],
                 )?;
                 trace!("Created VkGraphicsPipelineLayout");
 
@@ -198,10 +221,13 @@ impl VkRenderer {
                         draw_cmd_buffers,
 
                         matrices_buffers,
+                        lights_buffers,
 
                         matrices_dst_set_layout,
+                        lights_dst_set_layout,
                         // _material_dst_set_layout: material_dst_set_layout,
                         matrices_dst_sets,
+                        lights_dst_sets,
 
                         graphics_pipeline_layout,
                         graphics_pipeline,
@@ -288,6 +314,12 @@ impl Renderer for VkRenderer {
 
                 self.update_matrices_buffer(&mats_v_p, self.framei)?;
 
+                let lights = UniformLights {
+                        light_color: Vec4::new(0.9, 1.0, 0.9, 1.0),
+                };
+
+                Self::update_lights_buffer(&self.lights_buffers[self.framei], &lights).unwrap();
+
                 unsafe {
                         self.vk_context.device.cmd_bind_pipeline(
                                 draw_cmd_buffer,
@@ -306,6 +338,7 @@ impl Renderer for VkRenderer {
                         );
 
                         let matrices_dst_set = self.matrices_dst_sets[imagei as usize];
+                        let lights_dst_set = self.lights_dst_sets[imagei as usize];
 
                         for (model, new_instance) in &self.new_render_state.as_ref().unwrap().model_instances {
                                 let old_instance = self
@@ -331,6 +364,7 @@ impl Renderer for VkRenderer {
                                         &self.vk_context.device,
                                         draw_cmd_buffer,
                                         matrices_dst_set,
+                                        lights_dst_set,
                                         *self.graphics_pipeline_layout,
                                         &self.asset_manager,
                                         &self.vk_asset_manager,
@@ -415,6 +449,12 @@ impl VkRenderer {
                                 self.swapchain.img_count,
                         )?;
 
+                        self.lights_buffers = Self::create_lights_buffers(
+                                &self.vk_context.device,
+                                Rc::clone(&self.vk_context.allocator),
+                                self.swapchain.img_count,
+                        )?;
+
                         unsafe {
                                 self.vk_context
                                         .device
@@ -426,6 +466,19 @@ impl VkRenderer {
                                 *self.vk_context.dst_pool,
                                 *self.matrices_dst_set_layout,
                                 &self.matrices_buffers,
+                        )?;
+
+                        unsafe {
+                                self.vk_context
+                                        .device
+                                        .free_descriptor_sets(*self.vk_context.dst_pool, &self.lights_dst_sets)?
+                        };
+
+                        self.lights_dst_sets = Self::create_lights_dst_sets(
+                                &self.vk_context.device,
+                                *self.vk_context.dst_pool,
+                                *self.lights_dst_set_layout,
+                                &self.lights_buffers,
                         )?;
 
                         self.draw_cmd_buffers = VkReusableCommandBuffer::new_vec(
@@ -599,9 +652,38 @@ impl VkRenderer {
                 Ok(buffers)
         }
 
+        fn create_lights_buffers(
+                device: &ash::Device,
+                allocator: Rc<vma::Allocator>,
+                swch_img_count: u32,
+        ) -> Result<Vec<VkBuffer>, Box<dyn Error>> {
+                let buffer_size = std::mem::size_of::<UniformLights>() as vk::DeviceSize;
+
+                let cinfo = VkBufferCreateInfo {
+                        device,
+                        allocator,
+                        buffer_size,
+                        buffer_usage: vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        mem_usage: vma::MemoryUsage::CpuToGpu,
+                        alloc_flags: vma::AllocationCreateFlags::NONE,
+                        req_mem_flags: vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+                        pref_mem_flags: Default::default(),
+                        mem_type_bits: 0,
+                        q_family_indices: None,
+                };
+
+                let mut buffers = Vec::with_capacity(swch_img_count as usize);
+
+                for _ in 0..swch_img_count {
+                        buffers.push(VkBuffer::new(cinfo.clone())?);
+                }
+
+                Ok(buffers)
+        }
+
         fn create_descriptor_set_layouts(
                 device: &Rc<VkDevice>,
-        ) -> VkResult<(VkDescriptorSetLayout, VkDescriptorSetLayout)> {
+        ) -> VkResult<(VkDescriptorSetLayout, VkDescriptorSetLayout, VkDescriptorSetLayout)> {
                 let matrices_dst_set_layout = {
                         let mat_binding = vk::DescriptorSetLayoutBinding {
                                 binding: 0,
@@ -613,6 +695,7 @@ impl VkRenderer {
 
                         let matrices_dst_set_layout_cinfo =
                                 vk::DescriptorSetLayoutCreateInfo::builder().bindings(slice::from_ref(&mat_binding));
+
                         unsafe { VkDescriptorSetLayout::new(device, &matrices_dst_set_layout_cinfo)? }
                 };
 
@@ -639,7 +722,22 @@ impl VkRenderer {
                         unsafe { VkDescriptorSetLayout::new(device, &mat_set_layout_cinfo)? }
                 };
 
-                Ok((matrices_dst_set_layout, material_dst_set_layout))
+                let lights_dst_set_layout = {
+                        let lights_binding = vk::DescriptorSetLayoutBinding {
+                                binding: 0,
+                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                                descriptor_count: 1,
+                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                                p_immutable_samplers: std::ptr::null(),
+                        };
+
+                        let lights_dst_set_layout_cinfo =
+                                vk::DescriptorSetLayoutCreateInfo::builder().bindings(slice::from_ref(&lights_binding));
+
+                        unsafe { VkDescriptorSetLayout::new(device, &lights_dst_set_layout_cinfo)? }
+                };
+
+                Ok((matrices_dst_set_layout, material_dst_set_layout, lights_dst_set_layout))
         }
 
         fn create_matrices_dst_sets(
@@ -676,6 +774,43 @@ impl VkRenderer {
                         let writes = [matrices_dst_write];
 
                         unsafe { device.update_descriptor_sets(&writes, &[]) };
+                }
+
+                Ok(dst_sets)
+        }
+
+        fn create_lights_dst_sets(
+                device: &ash::Device,
+                dst_pool: vk::DescriptorPool,
+                lights_dst_set_layout: vk::DescriptorSetLayout,
+                lights_buffers: &[VkBuffer],
+        ) -> VkResult<Vec<vk::DescriptorSet>> {
+                let dst_set_layouts = vec![lights_dst_set_layout; lights_buffers.len()];
+
+                let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
+                        .descriptor_pool(dst_pool)
+                        .set_layouts(&dst_set_layouts);
+
+                let dst_sets = unsafe { device.allocate_descriptor_sets(&dst_set_ainfo)? };
+
+                assert_eq!(lights_buffers.len(), dst_sets.len());
+
+                for (lights_buffer, &dst_set) in lights_buffers.iter().zip(dst_sets.iter()) {
+                        let buffer_info = vk::DescriptorBufferInfo {
+                                buffer: **lights_buffer,
+                                offset: 0,
+                                range: size_of::<UniformLights>() as vk::DeviceSize,
+                        };
+
+                        let lights_dst_write = vk::WriteDescriptorSet::builder()
+                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                                .dst_set(dst_set)
+                                .dst_binding(0)
+                                .dst_array_element(0)
+                                .buffer_info(std::slice::from_ref(&buffer_info))
+                                .build();
+
+                        unsafe { device.update_descriptor_sets(std::slice::from_ref(&lights_dst_write), &[]) };
                 }
 
                 Ok(dst_sets)
@@ -944,10 +1079,22 @@ impl VkRenderer {
                 Ok(())
         }
 
+        fn update_lights_buffer(light_buffer: &VkBuffer, lights: &UniformLights) -> vma::Result<()> {
+                let buffer_size = std::mem::size_of::<UniformLights>() as vk::DeviceSize;
+                let map = light_buffer.map_memory().unwrap();
+                unsafe {
+                        std::ptr::copy_nonoverlapping(lights as *const _ as *const u8, map, buffer_size as usize);
+                }
+                light_buffer.unmap_memory().unwrap();
+
+                Ok(())
+        }
+
         fn draw_model(
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
                 matrices_dst_set: vk::DescriptorSet,
+                lights_dst_set: vk::DescriptorSet,
                 pipeline_layout: vk::PipelineLayout,
                 asset_manager: &AssetManager,
                 vk_asset_manager: &VkAssetManager,
@@ -983,6 +1130,7 @@ impl VkRenderer {
                                 device,
                                 draw_cmd_buffer,
                                 matrices_dst_set,
+                                lights_dst_set,
                                 pipeline_layout,
                                 vk_asset_manager,
                                 &asset_manager.meshes()[mesh],
@@ -994,6 +1142,7 @@ impl VkRenderer {
                                 device,
                                 draw_cmd_buffer,
                                 matrices_dst_set,
+                                lights_dst_set,
                                 pipeline_layout,
                                 asset_manager,
                                 vk_asset_manager,
@@ -1008,6 +1157,7 @@ impl VkRenderer {
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
                 matrices_dst_set: vk::DescriptorSet,
+                lights_dst_set: vk::DescriptorSet,
                 pipeline_layout: vk::PipelineLayout,
                 vk_asset_manager: &VkAssetManager,
                 mesh: &Mesh,
@@ -1017,6 +1167,7 @@ impl VkRenderer {
                                 device,
                                 draw_cmd_buffer,
                                 matrices_dst_set,
+                                lights_dst_set,
                                 pipeline_layout,
                                 vk_asset_manager,
                                 primitive,
@@ -1028,6 +1179,7 @@ impl VkRenderer {
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
                 matrices_dst_set: vk::DescriptorSet,
+                lights_dst_set: vk::DescriptorSet,
                 pipeline_layout: vk::PipelineLayout,
                 vk_asset_manager: &VkAssetManager,
                 primitive: &Primitive,
@@ -1047,7 +1199,7 @@ impl VkRenderer {
                                 vk::PipelineBindPoint::GRAPHICS,
                                 pipeline_layout,
                                 0,
-                                &[matrices_dst_set, material_dst_set],
+                                &[matrices_dst_set, material_dst_set, lights_dst_set],
                                 &[],
                         );
                         device.cmd_bind_vertex_buffers(
@@ -1087,6 +1239,11 @@ struct MatricesVP {
 struct MatricesMMvp {
         model: Mat4,
         mvp: Mat4,
+}
+
+#[allow(dead_code)]
+struct UniformLights {
+        light_color: Vec4,
 }
 
 fn create_shader_module(device: &Rc<VkDevice>, path: &'static str) -> VkResult<VkShaderModule> {

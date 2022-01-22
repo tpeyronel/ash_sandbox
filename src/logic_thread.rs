@@ -159,6 +159,15 @@ impl LogicThread {
                         .with(PositionComponent(Vec3::new(1.0, 1.0, 0.0)))
                         .with(OrientationComponent(UnitQuat::identity()))
                         .with(ModelComponent(params.asset_manager.get_model_by_name("colt")))
+                        .with(ModelRotateComponent)
+                        .build();
+
+                let _light = world
+                        .create_entity()
+                        .with(PositionComponent(Vec3::new(1.0, 2.5, 0.0)))
+                        .with(OrientationComponent(UnitQuat::identity()))
+                        .with(ModelComponent(params.asset_manager.get_model_by_name("sphere")))
+                        // .with(LightEmitterComponent { color: Vec3::new(1.0, 8.5, 8.5) })
                         .build();
 
                 'main: loop {
@@ -383,6 +392,16 @@ impl Component for OrientationComponent {
 #[storage(DenseVecStorage)]
 struct ModelComponent(ModelId);
 
+#[derive(Debug, Component)]
+#[storage(VecStorage)]
+struct ModelRotateComponent;
+
+#[derive(Debug, Component)]
+#[storage(VecStorage)]
+struct LightEmitterComponent {
+        color: Vec3,
+}
+
 #[derive(Default)]
 struct RelativePositionUpdaterSystem {
         reader_id: Option<ReaderId<ComponentEvent>>,
@@ -508,12 +527,13 @@ impl<'a> specs::System<'a> for ModelRotationSystem {
         type SystemData = (
                 ReadExpect<'a, TargetTicktimeF32Resource>,
                 ReadStorage<'a, ModelComponent>,
+                ReadStorage<'a, ModelRotateComponent>,
                 WriteStorage<'a, PositionComponent>,
                 WriteStorage<'a, OrientationComponent>,
         );
 
-        fn run(&mut self, (ticktime, mdl_strg, mut pos_strg, mut orien_strg): Self::SystemData) {
-                for (_, pos, orien) in (&mdl_strg, &mut pos_strg, &mut orien_strg).join() {
+        fn run(&mut self, (ticktime, mdl_strg, mdl_rotate_strg, mut pos_strg, mut orien_strg): Self::SystemData) {
+                for (_, _, pos, orien) in (&mdl_strg, &mdl_rotate_strg, &mut pos_strg, &mut orien_strg).join() {
                         let mov = UnitQuat::from_axis_angle(&Vec3::y_axis(), -22.5f32.to_radians() * ticktime.0);
                         pos.0 = mov * pos.0;
 
