@@ -1,6 +1,6 @@
 use std::{
         error::Error,
-        path::Path,
+        path::{Path, PathBuf},
         rc::Rc,
         sync::{Arc, Mutex},
         time::Instant,
@@ -144,6 +144,10 @@ impl Application {
                         asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
                 let _model_sphere =
                         asset_manager.import_gltf_file(std::path::Path::new("res/model/sphere/sphere.gltf"))?;
+
+                let _basic_shader = asset_manager.load_shader(PathBuf::from("res/shader/basic_shader"))?;
+                let _color_shader = asset_manager.load_shader(PathBuf::from("res/shader/color_shader"))?;
+
                 let asset_manager = Arc::new(asset_manager);
                 trace!("Initialized AssetManager");
 

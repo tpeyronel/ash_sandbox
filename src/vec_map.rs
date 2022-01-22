@@ -192,7 +192,7 @@ macro_rules! impl_vec_map_key {
 }
 
 macro_rules! new_vec_map_keys {
-        ($($t:ident),+) => {
+        ($($t:ident),+$(,)?) => {
                 $(
                 #[derive(Debug, Clone, Copy, std::hash::Hash)]
                 pub struct $t (pub usize);

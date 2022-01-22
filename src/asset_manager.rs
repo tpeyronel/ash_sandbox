@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+        ffi::OsString,
+        path::{Path, PathBuf},
+        process::Command,
+};
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
@@ -118,6 +122,41 @@ pub struct Sampler {
         pub wrap_t: WrappingMode,
 }
 
+#[derive(Debug)]
+pub struct Shader {
+        pub name: String,
+        pub vert_module: ShaderModule,
+        pub frag_module: ShaderModule,
+}
+
+#[derive(Debug)]
+pub struct ShaderModule {
+        pub bin: Vec<u8>,
+}
+
+impl ShaderModule {
+        fn from_directory_and_suffix(directory: &str, suffix: &str) -> Result<Self, ShaderLoadError> {
+                let input_path = directory.to_owned() + suffix;
+                let output_path = format!("{}.spv", input_path);
+
+                let mut child = Command::new("res/misc/glslc.exe")
+                        .arg(input_path)
+                        .arg("-o")
+                        .arg(&output_path)
+                        .spawn()?;
+
+                let exit_status = child.wait()?;
+
+                if !exit_status.success() {
+                        return Err(ShaderLoadError::CompileError(exit_status));
+                }
+
+                let bin = std::fs::read(&output_path)?;
+
+                Ok(Self { bin })
+        }
+}
+
 new_vec_map_keys!(
         ModelId,
         MeshId,
@@ -126,7 +165,8 @@ new_vec_map_keys!(
         MaterialId,
         TextureId,
         ImageId,
-        SamplerId
+        SamplerId,
+        ShaderId,
 );
 
 #[derive(Debug)]
@@ -178,6 +218,42 @@ impl std::error::Error for GLTFImportError {
         }
 }
 
+#[derive(Debug)]
+pub enum ShaderLoadError {
+        InvalidPath,
+        InvalidUnicode(OsString),
+        ShaderNameRepeated(String),
+        IoError(std::io::Error),
+        CompileError(std::process::ExitStatus),
+}
+
+impl std::fmt::Display for ShaderLoadError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{:?}", self)
+        }
+}
+
+impl std::error::Error for ShaderLoadError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                match self {
+                        ShaderLoadError::IoError(e) => Some(e),
+                        _ => None,
+                }
+        }
+}
+
+impl From<std::io::Error> for ShaderLoadError {
+        fn from(e: std::io::Error) -> Self {
+                Self::IoError(e)
+        }
+}
+
+impl From<OsString> for ShaderLoadError {
+        fn from(s: OsString) -> Self {
+                Self::InvalidUnicode(s)
+        }
+}
+
 /* pub struct AssetManagerBuilder {
         gltf_paths: Vec<PathBuf>,
 }
@@ -199,6 +275,9 @@ pub struct AssetManager {
         meshes: VecMap<MeshId, Mesh>,
         models: VecMap<ModelId, Model>,
         root_models: HashMap<String, ModelId>,
+
+        shaders: VecMap<ShaderId, Shader>,
+        shader_names: HashMap<String, ShaderId>,
 
         default_sampler: SamplerId,
         default_material: MaterialId,
@@ -223,9 +302,43 @@ impl AssetManager {
                         meshes: VecMap::new(),
                         models: VecMap::new(),
                         root_models: HashMap::new(),
+
+                        shaders: VecMap::new(),
+                        shader_names: HashMap::new(),
+
                         default_sampler,
                         default_material,
                 }
+        }
+
+        pub fn load_shader(&mut self, path: PathBuf) -> Result<ShaderId, ShaderLoadError> {
+                if !path.is_dir() {
+                        return Err(ShaderLoadError::InvalidPath);
+                }
+
+                let shader_name = path
+                        .file_name()
+                        .ok_or(ShaderLoadError::InvalidPath)?
+                        .to_owned()
+                        .into_string()?;
+
+                if self.shader_names.contains_key(&shader_name) {
+                        return Err(ShaderLoadError::ShaderNameRepeated(shader_name));
+                }
+
+                let directory = path.into_os_string().into_string()?;
+                let base_path = directory + "/" + &shader_name;
+
+                let shader = Shader {
+                        name: shader_name.clone(),
+                        vert_module: ShaderModule::from_directory_and_suffix(&base_path, ".vert")?,
+                        frag_module: ShaderModule::from_directory_and_suffix(&base_path, ".frag")?,
+                };
+
+                let shader_id = self.shaders.insert(shader);
+                self.shader_names.insert(shader_name, shader_id);
+
+                Ok(shader_id)
         }
 
         pub fn import_gltf_file(&mut self, gltf_path: &Path) -> Result<ModelId, GLTFImportError> {
@@ -300,6 +413,24 @@ impl AssetManager {
         #[allow(dead_code)]
         pub fn root_models(&self) -> &HashMap<String, ModelId> {
                 &self.root_models
+        }
+
+        fn compile_shader_module(input_path: &str) -> Result<Vec<u8>, ShaderLoadError> {
+                let output_path = format!("{}.spv", input_path);
+
+                let mut child = Command::new("res/misc/glslc.exe")
+                        .arg(input_path)
+                        .arg("-o")
+                        .arg(&output_path)
+                        .spawn()?;
+
+                let exit_status = child.wait()?;
+
+                if !exit_status.success() {
+                        return Err(ShaderLoadError::CompileError(exit_status));
+                }
+
+                Ok(std::fs::read(&output_path)?)
         }
 
         fn load_buffers(
