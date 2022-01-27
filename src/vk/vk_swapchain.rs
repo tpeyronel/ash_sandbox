@@ -197,13 +197,12 @@ impl VkSwapchain {
 
                 let old_extent = self.extent;
                 self.extent = Self::create_extent(&self.window, &surface_capabilities);
+                recreation_info.extent_changed = old_extent != self.extent;
                 self.viewport = Self::create_viewport(&self.extent);
                 self.scissor = Self::create_scissor(&self.extent);
-                recreation_info.extent_changed = old_extent != self.extent;
                 debug!("VkSwapchain extent: {:?}", self.extent);
 
-                let present_mode = Self::choose_present_mode(&self.surface, self.physical_device)?;
-                self.present_mode = present_mode;
+                self.present_mode = Self::choose_present_mode(&self.surface, self.physical_device)?;
                 debug!("VkSwapchain present mode: {:?}", self.present_mode);
 
                 let loader = Swapchain::new(&**self.instance, &**self.device);
@@ -221,7 +220,7 @@ impl VkSwapchain {
                         p_queue_family_indices: std::ptr::null(),
                         pre_transform: surface_capabilities.current_transform,
                         composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
-                        present_mode,
+                        present_mode: self.present_mode,
                         clipped: vk::TRUE,
                         old_swapchain: self.handle,
                         ..Default::default()
@@ -234,7 +233,7 @@ impl VkSwapchain {
                 let old_samples = self.samples;
                 self.samples = Self::choose_sample_count(&self.instance, self.physical_device);
                 recreation_info.samples_changed = old_samples != self.samples;
-                debug!("Swapchain samples: {:?}", self.samples);
+                debug!("VkSwapchain samples: {:?}", self.samples);
 
                 if recreation_info.color_format_changed
                         || recreation_info.extent_changed

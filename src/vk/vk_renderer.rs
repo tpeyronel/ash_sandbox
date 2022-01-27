@@ -419,7 +419,7 @@ impl VkRenderer {
                 };
 
                 trace!("Recreating VkSwapchain...");
-                scoped_timer!("Recreated VkSwapchain in: ", TimePrefix::Base);
+                scoped_timer!("Recreated VkSwapchain in: ", TimePrefix::Milli);
 
                 let mut recreate_render_pass: bool = false;
                 let mut recreate_pipeline: bool = self
