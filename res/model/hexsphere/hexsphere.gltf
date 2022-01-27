@@ -6,7 +6,7 @@
     "scene" : 0,
     "scenes" : [
         {
-            "name" : "sphere",
+            "name" : "hexsphere",
             "nodes" : [
                 0
             ]
@@ -15,13 +15,13 @@
     "nodes" : [
         {
             "mesh" : 0,
-            "name" : "Sphere"
+            "name" : "Hexsphere"
         }
     ],
     "materials" : [
         {
             "doubleSided" : true,
-            "name" : "Material",
+            "name" : "Material.001",
             "pbrMetallicRoughness" : {
                 "baseColorTexture" : {
                     "index" : 0
@@ -33,16 +33,14 @@
     ],
     "meshes" : [
         {
-            "name" : "Sphere",
+            "name" : "Hexsphere",
             "primitives" : [
                 {
                     "attributes" : {
                         "POSITION" : 0,
-                        "NORMAL" : 1,
-                        "TANGENT" : 2,
-                        "TEXCOORD_0" : 3
+                        "NORMAL" : 1
                     },
-                    "indices" : 4,
+                    "indices" : 2,
                     "material" : 0
                 }
             ]
@@ -65,69 +63,47 @@
         {
             "bufferView" : 0,
             "componentType" : 5126,
-            "count" : 129024,
+            "count" : 25920,
             "max" : [
-                0.2491980791091919,
-                0.2499181181192398,
-                0.2491980493068695
+                0.24986395239830017,
+                0.24992045760154724,
+                0.24984337389469147
             ],
             "min" : [
-                -0.2491980493068695,
-                -0.2499181181192398,
-                -0.2491980791091919
+                -0.24986395239830017,
+                -0.24992045760154724,
+                -0.24984337389469147
             ],
             "type" : "VEC3"
         },
         {
             "bufferView" : 1,
             "componentType" : 5126,
-            "count" : 129024,
+            "count" : 25920,
             "type" : "VEC3"
         },
         {
             "bufferView" : 2,
-            "componentType" : 5126,
-            "count" : 129024,
-            "type" : "VEC4"
-        },
-        {
-            "bufferView" : 3,
-            "componentType" : 5126,
-            "count" : 129024,
-            "type" : "VEC2"
-        },
-        {
-            "bufferView" : 4,
-            "componentType" : 5125,
-            "count" : 193536,
+            "componentType" : 5123,
+            "count" : 51828,
             "type" : "SCALAR"
         }
     ],
     "bufferViews" : [
         {
             "buffer" : 0,
-            "byteLength" : 1548288,
+            "byteLength" : 311040,
             "byteOffset" : 0
         },
         {
             "buffer" : 0,
-            "byteLength" : 1548288,
-            "byteOffset" : 1548288
+            "byteLength" : 311040,
+            "byteOffset" : 311040
         },
         {
             "buffer" : 0,
-            "byteLength" : 2064384,
-            "byteOffset" : 3096576
-        },
-        {
-            "buffer" : 0,
-            "byteLength" : 1032192,
-            "byteOffset" : 5160960
-        },
-        {
-            "buffer" : 0,
-            "byteLength" : 774144,
-            "byteOffset" : 6193152
+            "byteLength" : 103656,
+            "byteOffset" : 622080
         }
     ],
     "samplers" : [
@@ -138,8 +114,8 @@
     ],
     "buffers" : [
         {
-            "byteLength" : 6967296,
-            "uri" : "sphere.bin"
+            "byteLength" : 725736,
+            "uri" : "hexsphere.bin"
         }
     ]
 }

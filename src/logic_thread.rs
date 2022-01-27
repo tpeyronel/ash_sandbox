@@ -21,7 +21,7 @@ use crate::{
         input_manager::ActionReceiver,
         my_glm::{Mat4, Quat, UnitQuat, Vec3},
         render_state_switcher::RenderStateSwitcher,
-        renderer::{ModelInstance, RenderState},
+        renderer::{ModelInstance, RenderState, ModelInstanceId}, hashmap::GetOrInsert,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -156,9 +156,18 @@ impl LogicThread {
 
                 let _colt = world
                         .create_entity()
-                        .with(PositionComponent(Vec3::new(1.0, 1.0, 0.0)))
+                        .with(PositionComponent(Vec3::new(2.5, 0.0, 0.0)))
                         .with(OrientationComponent(UnitQuat::identity()))
                         .with(ModelComponent(params.asset_manager.get_model_by_name("colt")))
+                        .with(ModelRotateComponent)
+                        .build();
+
+                let _icosphere = world
+                        .create_entity()
+                        .with(PositionComponent(Vec3::new(0.0, 0.0, 0.0)))
+                        .with(OrientationComponent(UnitQuat::identity()))
+                        .with(ScaleComponent(Vec3::new(4.0, 4.0, 4.0)))
+                        .with(ModelComponent(params.asset_manager.get_model_by_name("icosphere")))
                         .with(ModelRotateComponent)
                         .build();
 
@@ -166,7 +175,7 @@ impl LogicThread {
                         .create_entity()
                         .with(PositionComponent(Vec3::new(1.0, 2.5, 0.0)))
                         .with(OrientationComponent(UnitQuat::identity()))
-                        .with(ModelComponent(params.asset_manager.get_model_by_name("sphere")))
+                        .with(ModelComponent(params.asset_manager.get_model_by_name("icosphere")))
                         // .with(LightEmitterComponent { color: Vec3::new(1.0, 8.5, 8.5) })
                         .build();
 
@@ -343,6 +352,13 @@ impl<'a> specs::System<'a> for WindowThreadMessageDispatcherSystem {
 struct PositionComponent(Vec3);
 
 impl Component for PositionComponent {
+        type Storage = FlaggedStorage<Self, VecStorage<Self>>;
+}
+
+#[derive(Debug, Default)]
+struct ScaleComponent(Vec3);
+
+impl Component for ScaleComponent {
         type Storage = FlaggedStorage<Self, VecStorage<Self>>;
 }
 
@@ -597,26 +613,29 @@ struct RenderStateGeneratorSystem {
 impl<'a> specs::System<'a> for RenderStateGeneratorSystem {
         type SystemData = (
                 ReadExpect<'a, ActiveCameraResource>,
+                Entities<'a>,
                 ReadStorage<'a, ProjectionCameraComponent>,
-                ReadStorage<'a, PositionComponent>,
                 ReadStorage<'a, ModelComponent>,
+                ReadStorage<'a, PositionComponent>,
                 ReadStorage<'a, OrientationComponent>,
+                ReadStorage<'a, ScaleComponent>,
         );
 
-        fn run(&mut self, (active_cam, proj_cams, pos_strg, mdl_strg, orien_strg): Self::SystemData) {
+        fn run(&mut self, (active_cam, entities, proj_cams, mdl_strg, pos_strg, orien_strg, scale_strg): Self::SystemData) {
                 let mut render_state = self.render_state.take().unwrap_or_else(|| Box::new(RenderState::new()));
 
                 render_state.camera_pos = pos_strg.get(active_cam.0).unwrap().0;
                 render_state.proj_camera = proj_cams.get(active_cam.0).unwrap().clone();
 
                 render_state.model_instances.clear();
-                for (pos, model, orien) in (&pos_strg, &mdl_strg, &orien_strg).join() {
-                        render_state.model_instances.insert(
-                                model.0,
+                for (e, model, pos, orien, scale) in (&entities, &mdl_strg, &pos_strg, &orien_strg, (&scale_strg).maybe()).join() {
+                        render_state.model_instances.insert(ModelInstanceId(e),
                                 ModelInstance {
+                                        model_id: model.0,
                                         pos: pos.0,
                                         orien: orien.0,
-                                },
+                                        scale: scale.unwrap_or(&ScaleComponent(Vec3::new(1.0, 1.0, 1.0))).0,
+                                }
                         );
                 }
 

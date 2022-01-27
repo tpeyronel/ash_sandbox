@@ -16,7 +16,7 @@ use log::{debug, error, info, trace, warn};
 use winit::window::Window;
 
 use super::{
-        vk_asset_manager::VkAssetManager,
+        vk_asset_manager::{VkAssetManager, VkShader},
         vk_buffer::{VkBuffer, VkBufferCreateInfo},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
@@ -26,7 +26,7 @@ use super::{
                 VkShaderModule,
         },
 };
-use crate::scoped_timer::TimePrefix;
+use crate::{scoped_timer::TimePrefix, asset_manager::ShaderId, renderer::ModelInstance};
 use crate::{
         asset_manager::{AssetManager, Mesh, ModelId, Primitive},
         my_glm::*,
@@ -42,6 +42,8 @@ pub struct VkRenderer {
 
         vk_context: VkContext,
         vk_asset_manager: VkAssetManager,
+
+        basic_shader_id: ShaderId,
 
         swapchain: VkSwapchain,
         swapchain_outdated_causes: VkSwapchainOutdatedCauses,
@@ -168,6 +170,8 @@ impl VkRenderer {
                 )?;
                 trace!("Created VkAssetManager");
 
+                let basic_shader_id  = asset_manager.shader_names()["basic_shader"];
+
                 let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
                         &vk_context.device,
                         &[
@@ -179,6 +183,7 @@ impl VkRenderer {
                 trace!("Created VkGraphicsPipelineLayout");
 
                 let graphics_pipeline = Self::create_graphics_pipeline(
+                        &vk_asset_manager.shaders[basic_shader_id],
                         &vk_context.device,
                         swapchain.samples,
                         *render_pass,
@@ -211,6 +216,7 @@ impl VkRenderer {
 
                         vk_context,
                         vk_asset_manager,
+                        basic_shader_id,
 
                         swapchain,
                         swapchain_outdated_causes: VkSwapchainOutdatedCauses::NONE,
@@ -296,6 +302,7 @@ impl Renderer for VkRenderer {
                 let lerped_camera_pos = Vec3::lerp(old_camera_pos, new_camera_pos, tick_scalar);
 
                 let inverted_view_mat = Mat4::new_translation(&lerped_camera_pos) * player_orien.to_homogeneous();
+
                 let view_mat = inverted_view_mat
                         .try_inverse()
                         .expect("Couldn't invert camera ViewMatrix!");
@@ -307,14 +314,16 @@ impl Renderer for VkRenderer {
                         .proj_camera
                         .calc_proj_matrix(aspect_ratio);
 
-                let mats_v_p = MatricesVP {
+                let mut matrices = MatricesVPN {
                         view: view_mat,
                         proj: proj_mat,
+                        normal: Mat4::identity(),
                 };
 
-                self.update_matrices_buffer(&mats_v_p, self.framei)?;
+                Self::update_matrices_buffer(&self.matrices_buffers[self.framei], &matrices)?;
 
                 let lights = UniformLights {
+                        light_pos: view_mat * Vec4::new(1.0, 2.5, 0.0, 1.0),
                         light_color: Vec4::new(0.9, 1.0, 0.9, 1.0),
                 };
 
@@ -358,7 +367,9 @@ impl Renderer for VkRenderer {
                                 let interpolated_orien = UnitQuat::nlerp(old_orien, new_orien, tick_scalar);
 
                                 let transform =
-                                        Mat4::new_translation(&interpolated_pos) * interpolated_orien.to_homogeneous();
+                                        Mat4::new_translation(&interpolated_pos)
+                                        * interpolated_orien.to_homogeneous()
+                                        * Mat4::new_nonuniform_scaling(&new_instance.scale);
 
                                 Self::draw_model(
                                         &self.vk_context.device,
@@ -368,10 +379,11 @@ impl Renderer for VkRenderer {
                                         *self.graphics_pipeline_layout,
                                         &self.asset_manager,
                                         &self.vk_asset_manager,
-                                        &mats_v_p,
-                                        *model,
+                                        &self.matrices_buffers[self.framei],
+                                        &mut matrices,
+                                        new_instance.model_id,
                                         &transform,
-                                );
+                                )?;
                         }
 
                         self.imgui_renderer.cmd_draw(draw_cmd_buffer, imgui_draw_data)?;
@@ -498,6 +510,7 @@ impl VkRenderer {
                 if recreate_pipeline {
                         trace!("Recreating VkGraphicsPipeline...");
                         self.graphics_pipeline = Self::create_graphics_pipeline(
+                                &self.vk_asset_manager.shaders[self.basic_shader_id],
                                 &self.vk_context.device,
                                 self.swapchain.samples,
                                 *self.render_pass,
@@ -628,7 +641,7 @@ impl VkRenderer {
                 allocator: Rc<vma::Allocator>,
                 swch_img_count: u32,
         ) -> Result<Vec<VkBuffer>, Box<dyn Error>> {
-                let buffer_size = std::mem::size_of::<MatricesVP>() as vk::DeviceSize;
+                let buffer_size = std::mem::size_of::<MatricesVPN>() as vk::DeviceSize;
 
                 let cinfo = VkBufferCreateInfo {
                         device,
@@ -760,7 +773,7 @@ impl VkRenderer {
                         let buffer_info = vk::DescriptorBufferInfo {
                                 buffer: **matrices_buffer,
                                 offset: 0,
-                                range: size_of::<MatricesVP>() as vk::DeviceSize,
+                                range: size_of::<MatricesVPN>() as vk::DeviceSize,
                         };
 
                         let matrices_dst_write = vk::WriteDescriptorSet::builder()
@@ -834,25 +847,23 @@ impl VkRenderer {
         }
 
         fn create_graphics_pipeline(
+                shader: &VkShader,
                 device: &Rc<VkDevice>,
                 swapchain_samples: vk::SampleCountFlags,
                 render_pass: vk::RenderPass,
                 pipeline_layout: &VkPipelineLayout,
         ) -> VkResult<VkPipeline> {
-                let vert_shader = create_shader_module(device, "res/shader/basic_shader.vert")?;
-                let frag_shader = create_shader_module(device, "res/shader/basic_shader.frag")?;
-
                 let entry_point = CString::new("main").unwrap();
 
                 let shader_stages = [
                         vk::PipelineShaderStageCreateInfo::builder()
                                 .stage(vk::ShaderStageFlags::VERTEX)
-                                .module(*vert_shader)
+                                .module(*shader.vert_module)
                                 .name(&entry_point)
                                 .build(),
                         vk::PipelineShaderStageCreateInfo::builder()
                                 .stage(vk::ShaderStageFlags::FRAGMENT)
-                                .module(*frag_shader)
+                                .module(*shader.frag_module)
                                 .name(&entry_point)
                                 .build(),
                 ];
@@ -890,8 +901,8 @@ impl VkRenderer {
                         .rasterizer_discard_enable(false)
                         .polygon_mode(vk::PolygonMode::FILL)
                         .line_width(1.0)
-                        .cull_mode(vk::CullModeFlags::NONE)
-                        .front_face(vk::FrontFace::CLOCKWISE)
+                        .cull_mode(vk::CullModeFlags::BACK)
+                        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
                         .depth_bias_enable(false)
                         .depth_bias_constant_factor(0.0)
                         .depth_bias_clamp(0.0)
@@ -939,6 +950,123 @@ impl VkRenderer {
 
                 unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
         }
+
+        // fn create_graphics_pipeline_for_shader(
+        //         device: &Rc<VkDevice>,
+        //         swapchain_samples: vk::SampleCountFlags,
+        //         render_pass: vk::RenderPass,
+        //         pipeline_layout: &VkPipelineLayout,
+        //         shader: VkShader,
+        // ) -> VkResult<(VkPipelineLayout, VkPipeline)> {
+        //         let push_constant_range = vk::PushConstantRange {
+        //                 stage_flags: vk::ShaderStageFlags::VERTEX,
+        //                 offset: 0,
+        //                 size: std::mem::size_of::<MatricesMMvp>() as u32,
+        //         };
+
+        //         let layout_cinfo = vk::PipelineLayoutCreateInfo::builder()
+        //                 .push_constant_ranges(std::slice::from_ref(&push_constant_range))
+        //                 .set_layouts(dst_set_layouts);
+
+        //         let pipeline_layout = unsafe { VkPipelineLayout::new(device, &layout_cinfo)? };
+
+        //         let entry_point = CString::new("main").unwrap();
+
+        //         let shader_stages = [
+        //                 vk::PipelineShaderStageCreateInfo::builder()
+        //                         .stage(vk::ShaderStageFlags::VERTEX)
+        //                         .module(*shader.vert_module)
+        //                         .name(&entry_point)
+        //                         .build(),
+        //                 vk::PipelineShaderStageCreateInfo::builder()
+        //                         .stage(vk::ShaderStageFlags::FRAGMENT)
+        //                         .module(*shader.frag_module)
+        //                         .name(&entry_point)
+        //                         .build(),
+        //         ];
+
+        //         let vert_binding_desc = Vertex::vk_binding_description();
+        //         let vert_attrib_descs = Vertex::vk_attribute_descriptions();
+        //         let vert_input_cinfo = vk::PipelineVertexInputStateCreateInfo::builder()
+        //                 .vertex_binding_descriptions(&vert_binding_desc)
+        //                 .vertex_attribute_descriptions(&vert_attrib_descs);
+
+        //         let input_assembly_cinfo = vk::PipelineInputAssemblyStateCreateInfo::builder()
+        //                 .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+        //                 .primitive_restart_enable(false);
+
+        //         let viewport = vk::Viewport {
+        //                 x: 0.0,
+        //                 y: 0.0,
+        //                 width: 1.0,
+        //                 height: 1.0,
+        //                 min_depth: 0.0,
+        //                 max_depth: 1.0,
+        //         };
+
+        //         let scissor = vk::Rect2D {
+        //                 offset: vk::Offset2D { x: 0, y: 0 },
+        //                 extent: vk::Extent2D { width: 1, height: 1 },
+        //         };
+
+        //         let viewport_state_cinfo = vk::PipelineViewportStateCreateInfo::builder()
+        //                 .viewports(slice::from_ref(&viewport))
+        //                 .scissors(slice::from_ref(&scissor));
+
+        //         let rasterization_state_cinfo = vk::PipelineRasterizationStateCreateInfo::builder()
+        //                 .depth_clamp_enable(false)
+        //                 .rasterizer_discard_enable(false)
+        //                 .polygon_mode(vk::PolygonMode::FILL)
+        //                 .line_width(1.0)
+        //                 .cull_mode(vk::CullModeFlags::NONE)
+        //                 .front_face(vk::FrontFace::CLOCKWISE)
+        //                 .depth_bias_enable(false)
+        //                 .depth_bias_constant_factor(0.0)
+        //                 .depth_bias_clamp(0.0)
+        //                 .depth_bias_slope_factor(0.0);
+
+        //         let multisample_state_cinfo = vk::PipelineMultisampleStateCreateInfo::builder()
+        //                 .rasterization_samples(swapchain_samples)
+        //                 .sample_shading_enable(false);
+
+        //         let depth_stencil_state_cinfo = vk::PipelineDepthStencilStateCreateInfo::builder()
+        //                 .depth_test_enable(true)
+        //                 .depth_write_enable(true)
+        //                 .depth_compare_op(vk::CompareOp::LESS)
+        //                 .depth_bounds_test_enable(false)
+        //                 .stencil_test_enable(false)
+        //                 .build();
+
+        //         let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::builder()
+        //                 .color_write_mask(vk::ColorComponentFlags::RGBA)
+        //                 .blend_enable(false)
+        //                 .build()];
+
+        //         let color_blend_state_cinfo = vk::PipelineColorBlendStateCreateInfo::builder()
+        //                 .attachments(&color_blend_attachments)
+        //                 .logic_op_enable(false);
+
+        //         let dyn_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        //         let pipeline_dyn_state_cinfo =
+        //                 vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dyn_states);
+
+        //         let graphics_pipeline_cinfo = vk::GraphicsPipelineCreateInfo::builder()
+        //                 .stages(&shader_stages)
+        //                 .vertex_input_state(&vert_input_cinfo)
+        //                 .input_assembly_state(&input_assembly_cinfo)
+        //                 .viewport_state(&viewport_state_cinfo)
+        //                 .rasterization_state(&rasterization_state_cinfo)
+        //                 .multisample_state(&multisample_state_cinfo)
+        //                 .depth_stencil_state(&depth_stencil_state_cinfo)
+        //                 .color_blend_state(&color_blend_state_cinfo)
+        //                 .dynamic_state(&pipeline_dyn_state_cinfo)
+        //                 .layout(**pipeline_layout)
+        //                 .render_pass(render_pass)
+        //                 .subpass(0)
+        //                 .build();
+
+        //         unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
+        // }
 
         unsafe fn begin_frame(&mut self) -> Result<BeginFrameResult, Box<dyn Error>> {
                 let wsize = self.window.inner_size();
@@ -1067,14 +1195,13 @@ impl VkRenderer {
                 Ok(())
         }
 
-        fn update_matrices_buffer(&self, mats_v_p: &MatricesVP, framei: usize) -> vma::Result<()> {
-                let buffer_size = std::mem::size_of::<MatricesVP>() as vk::DeviceSize;
-                let buffer = &self.matrices_buffers[framei];
-                let map = buffer.map_memory()?;
+        fn update_matrices_buffer(matrices_buffer: &VkBuffer, matrices: &MatricesVPN) -> vma::Result<()> {
+                let buffer_size = std::mem::size_of::<MatricesVPN>() as vk::DeviceSize;
+                let map = matrices_buffer.map_memory()?;
                 unsafe {
-                        std::ptr::copy_nonoverlapping(&mats_v_p as *const _ as *const u8, map, buffer_size as usize);
+                        std::ptr::copy_nonoverlapping(matrices as *const _ as *const u8, map, buffer_size as usize);
                 }
-                buffer.unmap_memory()?;
+                matrices_buffer.unmap_memory()?;
 
                 Ok(())
         }
@@ -1090,6 +1217,23 @@ impl VkRenderer {
                 Ok(())
         }
 
+        fn draw_instance(
+                instance: &ModelInstance,
+                device: &VkDevice,
+                draw_cmd_buffer: vk::CommandBuffer,
+                matrices_dst_set: vk::DescriptorSet,
+                lights_dst_set: vk::DescriptorSet,
+                pipeline_layout: vk::PipelineLayout,
+                asset_manager: &AssetManager,
+                vk_asset_manager: &VkAssetManager,
+                matrices_buffer: &VkBuffer,
+                matrices: &mut MatricesVPN,
+                model_id: ModelId,
+                model_instance_transform: &Mat4,
+        ) {
+
+        }
+
         fn draw_model(
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
@@ -1098,17 +1242,18 @@ impl VkRenderer {
                 pipeline_layout: vk::PipelineLayout,
                 asset_manager: &AssetManager,
                 vk_asset_manager: &VkAssetManager,
-                mats_v_p: &MatricesVP,
+                matrices_buffer: &VkBuffer,
+                matrices: &mut MatricesVPN,
                 model_id: ModelId,
                 model_instance_transform: &Mat4,
-        ) {
+        ) -> vma::Result<()> {
                 let model = &asset_manager.models()[model_id];
 
                 let transform_final = model_instance_transform * model.base_transform;
 
                 let mats_m_mvp = MatricesMMvp {
                         model: transform_final,
-                        mvp: mats_v_p.proj * mats_v_p.view * transform_final,
+                        mvp: matrices.proj * matrices.view * transform_final,
                 };
 
                 unsafe {
@@ -1123,6 +1268,9 @@ impl VkRenderer {
                                 ),
                         );
                 }
+
+                matrices.normal = glm::inverse_transpose(transform_final);
+                // Self::update_matrices_buffer(matrices_buffer, matrices)?;
 
                 //let mut last_material = MaterialID::MAX;
                 if let Some(mesh) = model.mesh {
@@ -1146,11 +1294,14 @@ impl VkRenderer {
                                 pipeline_layout,
                                 asset_manager,
                                 vk_asset_manager,
-                                mats_v_p,
+                                matrices_buffer,
+                                matrices,
                                 child,
                                 model_instance_transform,
-                        );
+                        )?;
                 }
+
+                Ok(())
         }
 
         fn draw_mesh(
@@ -1190,6 +1341,7 @@ impl VkRenderer {
 
                 let material_dst_set = vk_asset_manager.material_dst_sets[primitive.material];
                 let positions = &vk_asset_manager.buffer_views[primitive.positions];
+                let normals = &vk_asset_manager.buffer_views[primitive.normals];
                 let tex_coords = &vk_asset_manager.buffer_views[primitive.tex_coords];
                 let indices = &vk_asset_manager.buffer_views[primitive.indices];
 
@@ -1205,8 +1357,8 @@ impl VkRenderer {
                         device.cmd_bind_vertex_buffers(
                                 draw_cmd_buffer,
                                 0,
-                                &[*positions.buffer, *tex_coords.buffer],
-                                &[0, 0],
+                                &[*positions.buffer, *normals.buffer, *tex_coords.buffer],
+                                &[0, 0, 0],
                         );
                         device.cmd_bind_index_buffer(draw_cmd_buffer, *indices.buffer, 0, indices.index_type);
 
@@ -1230,9 +1382,10 @@ enum BeginFrameResult {
 }
 
 #[allow(dead_code)]
-struct MatricesVP {
+struct MatricesVPN {
         view: Mat4,
         proj: Mat4,
+        normal: Mat4,
 }
 
 #[allow(dead_code)]
@@ -1243,35 +1396,6 @@ struct MatricesMMvp {
 
 #[allow(dead_code)]
 struct UniformLights {
+        light_pos: Vec4,
         light_color: Vec4,
-}
-
-fn create_shader_module(device: &Rc<VkDevice>, path: &'static str) -> VkResult<VkShaderModule> {
-        let compile_path = path.to_string() + ".spv";
-
-        let mut child = Command::new("res/misc/glslc.exe")
-                .arg(path)
-                .arg("-o")
-                .arg(&compile_path)
-                .spawn()
-                .expect("Failed to compile shaders!");
-
-        let exit_status = child.wait().expect("Error occurred while waiting for glslc.exe");
-
-        if !exit_status.success() {
-                error!(
-                        "glslc.exe did not exit successfully: {}",
-                        exit_status.code().unwrap_or(0)
-                );
-        }
-
-        let shader_code = std::fs::read(&compile_path).expect("Failed to read shader binary file!");
-
-        let mut shader_module_cinfo = vk::ShaderModuleCreateInfo::builder().build();
-        shader_module_cinfo.code_size = shader_code.len();
-        shader_module_cinfo.p_code = shader_code.as_ptr() as *const u32;
-
-        assert_eq!(shader_code.len() % 4, 0, "Shader code is invalid!");
-
-        unsafe { VkShaderModule::new(device, &shader_module_cinfo) }
 }

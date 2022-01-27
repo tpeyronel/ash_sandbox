@@ -144,6 +144,8 @@ impl Application {
                         asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
                 let _model_sphere =
                         asset_manager.import_gltf_file(std::path::Path::new("res/model/sphere/sphere.gltf"))?;
+                let _model_icosphere =
+                        asset_manager.import_gltf_file(std::path::Path::new("res/model/icosphere/icosphere.gltf"))?;
 
                 let _basic_shader = asset_manager.load_shader(PathBuf::from("res/shader/basic_shader"))?;
                 let _color_shader = asset_manager.load_shader(PathBuf::from("res/shader/color_shader"))?;
@@ -202,9 +204,8 @@ impl Application {
                 self.event_loop.take().unwrap().run(move |event, _, control_flow| {
                         *control_flow = ControlFlow::Poll;
 
-                        match self.on_winit_event(event, control_flow) {
-                                Ok(_) => (),
-                                Err(err) => error!("Error ocurred in render loop: {}", err),
+                        if let Err(err) = self.on_winit_event(event, control_flow) {
+                                error!("Error ocurred in render loop: {}", err);
                         }
                 });
         }
@@ -280,6 +281,7 @@ impl Application {
                         WindowEvent::Focused(focused) => {
                                 self.window_state.has_focus = focused;
                                 self.input_manager.on_window_focused(focused);
+                                self.window_state.on_window_focused(focused, &self.window);
                         },
                         WindowEvent::Resized(new_size) => {
                                 self.renderer.on_window_resize(new_size.width, new_size.height);
@@ -287,9 +289,6 @@ impl Application {
                         WindowEvent::CloseRequested => {
                                 *control_flow = ControlFlow::Exit;
                         },
-                        /* WindowEvent::KeyboardInput { input, .. } => {
-                                self.input_manager.on_keyboard_input(&input);
-                        } */
                         _ => {},
                 };
         }
@@ -423,6 +422,18 @@ impl WindowState {
                 }
         }
 
+        pub fn on_window_focused(&mut self, focused: bool, window: &Window) {
+                if self.window_mode == WindowMode::Fullscreen {
+                        let window_mode = if focused {
+                                WindowMode::Fullscreen
+                        } else {
+                                WindowMode::Windowed
+                        };
+
+                        self.set_window_mode_silently(&window, window_mode);
+                }
+        }
+
         pub fn set_cursor_state(&mut self, window: &Window, imgui_io: &mut imgui::Io, cursor_state: CursorState) {
                 self.cursor_state = cursor_state;
                 Self::set_cursor_state_inner(window, imgui_io, cursor_state);
@@ -430,6 +441,10 @@ impl WindowState {
 
         pub fn set_window_mode(&mut self, window: &Window, window_mode: WindowMode) {
                 self.window_mode = window_mode;
+                self.set_window_mode_silently(window, window_mode);
+        }
+
+        pub fn set_window_mode_silently(&mut self, window: &Window, window_mode: WindowMode) {
                 window.set_fullscreen(match window_mode {
                         WindowMode::Windowed => None,
                         WindowMode::Borderless => Some(Fullscreen::Borderless(None)),

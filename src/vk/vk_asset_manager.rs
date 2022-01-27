@@ -7,8 +7,8 @@ use log::{debug, error, info, trace};
 use crate::{
         asset_manager::{
                 AssetManager, Buffer, BufferId, BufferView, BufferViewId, ComponentType, DataType, Image, ImageFormat,
-                ImageId, MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, Sampler, SamplerId, Texture,
-                TextureId, WrappingMode,
+                ImageId, MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, Sampler, SamplerId, Shader,
+                ShaderId, Texture, TextureId, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         hashmap::HashMap,
@@ -20,6 +20,8 @@ use crate::{
                 vk_wrapper::{VkCommandPool, VkDevice, VkImageView, VkPhysicalDevice, VkSampler},
         },
 };
+
+use super::vk_wrapper::VkShaderModule;
 
 pub struct VkModelBufferView {
         pub buffer: VkBuffer,
@@ -33,11 +35,17 @@ pub struct VkModelImage {
         pub image_view: VkImageView,
 }
 
+pub struct VkShader {
+        pub vert_module: VkShaderModule,
+        pub frag_module: VkShaderModule,
+}
+
 pub struct VkAssetManager {
         pub buffer_views: VecMap<BufferViewId, VkModelBufferView>,
         pub images: VecMap<ImageId, VkModelImage>,
         pub samplers: VecMap<SamplerId, VkSampler>,
         pub material_dst_sets: VecMap<MaterialId, vk::DescriptorSet>,
+        pub shaders: VecMap<ShaderId, VkShader>,
 }
 
 impl VkAssetManager {
@@ -91,11 +99,15 @@ impl VkAssetManager {
                         &vk_samplers,
                 )?;
 
+                trace!("Creating VkShaders...");
+                let vk_shaders = Self::create_vk_shaders_from_shaders(&device, asset_manager.shaders())?;
+
                 Ok(Self {
                         buffer_views: vk_buffer_views,
                         images: vk_images,
                         samplers: vk_samplers,
                         material_dst_sets: vk_material_dst_sets,
+                        shaders: vk_shaders,
                 })
         }
 
@@ -318,6 +330,27 @@ impl VkAssetManager {
                 }
 
                 Ok(material_dst_sets_map)
+        }
+
+        fn create_vk_shaders_from_shaders(
+                device: &Rc<VkDevice>,
+                shaders: &VecMap<ShaderId, Shader>,
+        ) -> Result<VecMap<ShaderId, VkShader>, Box<dyn Error>> {
+                let mut vk_shaders = VecMap::<ShaderId, VkShader>::new();
+
+                for (shader_id, shader) in shaders {
+                        let vert_module = VkShaderModule::from_code(device, &shader.vert_module.bin)?;
+                        let frag_module = VkShaderModule::from_code(device, &shader.frag_module.bin)?;
+
+                        let vk_shader_id = vk_shaders.insert(VkShader {
+                                vert_module,
+                                frag_module,
+                        });
+
+                        assert_eq!(shader_id, vk_shader_id);
+                }
+
+                Ok(vk_shaders)
         }
 
         fn vk_format_from_component_and_data_type(comp_type: ComponentType, data_type: DataType) -> vk::Format {

@@ -415,22 +415,14 @@ impl AssetManager {
                 &self.root_models
         }
 
-        fn compile_shader_module(input_path: &str) -> Result<Vec<u8>, ShaderLoadError> {
-                let output_path = format!("{}.spv", input_path);
+        #[allow(dead_code)]
+        pub fn shaders(&self) -> &VecMap<ShaderId, Shader> {
+                &self.shaders
+        }
 
-                let mut child = Command::new("res/misc/glslc.exe")
-                        .arg(input_path)
-                        .arg("-o")
-                        .arg(&output_path)
-                        .spawn()?;
-
-                let exit_status = child.wait()?;
-
-                if !exit_status.success() {
-                        return Err(ShaderLoadError::CompileError(exit_status));
-                }
-
-                Ok(std::fs::read(&output_path)?)
+        #[allow(dead_code)]
+        pub fn shader_names(&self) -> &HashMap<String, ShaderId> {
+                &self.shader_names
         }
 
         fn load_buffers(

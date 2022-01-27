@@ -10,7 +10,7 @@ pub struct Vertex {
 }
 
 impl Vertex {
-        pub fn vk_binding_description() -> [vk::VertexInputBindingDescription; 2] {
+        pub fn vk_binding_description() -> [vk::VertexInputBindingDescription; 3] {
                 [
                         vk::VertexInputBindingDescription {
                                 binding: 0,
@@ -19,29 +19,65 @@ impl Vertex {
                         },
                         vk::VertexInputBindingDescription {
                                 binding: 1,
+                                stride: size_of::<Vec3>() as u32,
+                                input_rate: VertexInputRate::VERTEX,
+                        },
+                        vk::VertexInputBindingDescription {
+                                binding: 2,
                                 stride: size_of::<Vec2>() as u32,
                                 input_rate: VertexInputRate::VERTEX,
                         },
                 ]
+                // [
+                //         vk::VertexInputBindingDescription {
+                //                 binding: 0,
+                //                 stride: size_of::<Vertex>() as u32,
+                //                 input_rate: VertexInputRate::VERTEX,
+                //         },
+                // ]
         }
 
-        pub fn vk_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+        pub fn vk_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
                 [
                         vk::VertexInputAttributeDescription {
                                 location: 0,
                                 binding: 0,
                                 format: vk::Format::R32G32B32_SFLOAT,
                                 offset: 0,
-                                //offset: memoffset::offset_of!(Vertex, pos) as u32,
                         },
                         vk::VertexInputAttributeDescription {
                                 location: 1,
                                 binding: 1,
+                                format: vk::Format::R32G32B32_SFLOAT,
+                                offset: 0,
+                        },
+                        vk::VertexInputAttributeDescription {
+                                location: 2,
+                                binding: 2,
                                 format: vk::Format::R32G32_SFLOAT,
                                 offset: 0,
-                                //offset:   memoffset::offset_of!(Vertex, tex_coord) as u32,
                         },
                 ]
+                // [
+                //         vk::VertexInputAttributeDescription {
+                //                 location: 0,
+                //                 binding: 0,
+                //                 format: vk::Format::R32G32B32_SFLOAT,
+                //                 offset: memoffset::offset_of!(Vertex, pos) as u32,
+                //         },
+                //         vk::VertexInputAttributeDescription {
+                //                 location: 1,
+                //                 binding: 0,
+                //                 format: vk::Format::R32G32B32_SFLOAT,
+                //                 offset: memoffset::offset_of!(Vertex, normal) as u32,
+                //         },
+                //         vk::VertexInputAttributeDescription {
+                //                 location: 2,
+                //                 binding: 0,
+                //                 format: vk::Format::R32G32_SFLOAT,
+                //                 offset: memoffset::offset_of!(Vertex, tex_coord) as u32,
+                //         },
+                // ]
         }
 
         pub fn color_vk_binding_description() -> [vk::VertexInputBindingDescription; 2] {

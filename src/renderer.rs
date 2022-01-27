@@ -1,13 +1,18 @@
 use std::error::Error;
 
+use specs::Entity;
+
 use crate::{asset_manager::ModelId, hashmap::HashMap, logic_thread::ProjectionCameraComponent, my_glm::*};
 
 pub struct ModelInstance {
+        pub model_id: ModelId,
         pub pos: Vec3,
         pub orien: UnitQuat,
+        pub scale: Vec3,
 }
 
-struct ModelInstanceID(usize);
+#[derive(Clone, Copy, Debug, Hash, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ModelInstanceId(pub Entity);
 
 pub trait Renderer {
         // fn draw(&mut self, cam: &mut Camera, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>>;
@@ -24,7 +29,7 @@ pub trait Renderer {
 pub struct RenderState {
         pub camera_pos: Vec3,
         pub proj_camera: ProjectionCameraComponent,
-        pub model_instances: HashMap<ModelId, ModelInstance>,
+        pub model_instances: HashMap<ModelInstanceId, ModelInstance>,
 }
 
 impl RenderState {

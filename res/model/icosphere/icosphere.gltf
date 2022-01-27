@@ -6,7 +6,7 @@
     "scene" : 0,
     "scenes" : [
         {
-            "name" : "sphere",
+            "name" : "icosphere",
             "nodes" : [
                 0
             ]
@@ -15,7 +15,7 @@
     "nodes" : [
         {
             "mesh" : 0,
-            "name" : "Sphere"
+            "name" : "Icosphere"
         }
     ],
     "materials" : [
@@ -33,7 +33,7 @@
     ],
     "meshes" : [
         {
-            "name" : "Sphere",
+            "name" : "Icosphere.001",
             "primitives" : [
                 {
                     "attributes" : {
@@ -65,69 +65,69 @@
         {
             "bufferView" : 0,
             "componentType" : 5126,
-            "count" : 129024,
+            "count" : 61440,
             "max" : [
-                0.2491980791091919,
-                0.2499181181192398,
-                0.2491980493068695
+                0.25,
+                0.25,
+                0.2499999850988388
             ],
             "min" : [
-                -0.2491980493068695,
-                -0.2499181181192398,
-                -0.2491980791091919
+                -0.2499999850988388,
+                -0.25,
+                -0.2499999850988388
             ],
             "type" : "VEC3"
         },
         {
             "bufferView" : 1,
             "componentType" : 5126,
-            "count" : 129024,
+            "count" : 61440,
             "type" : "VEC3"
         },
         {
             "bufferView" : 2,
             "componentType" : 5126,
-            "count" : 129024,
+            "count" : 61440,
             "type" : "VEC4"
         },
         {
             "bufferView" : 3,
             "componentType" : 5126,
-            "count" : 129024,
+            "count" : 61440,
             "type" : "VEC2"
         },
         {
             "bufferView" : 4,
-            "componentType" : 5125,
-            "count" : 193536,
+            "componentType" : 5123,
+            "count" : 61440,
             "type" : "SCALAR"
         }
     ],
     "bufferViews" : [
         {
             "buffer" : 0,
-            "byteLength" : 1548288,
+            "byteLength" : 737280,
             "byteOffset" : 0
         },
         {
             "buffer" : 0,
-            "byteLength" : 1548288,
-            "byteOffset" : 1548288
+            "byteLength" : 737280,
+            "byteOffset" : 737280
         },
         {
             "buffer" : 0,
-            "byteLength" : 2064384,
-            "byteOffset" : 3096576
+            "byteLength" : 983040,
+            "byteOffset" : 1474560
         },
         {
             "buffer" : 0,
-            "byteLength" : 1032192,
-            "byteOffset" : 5160960
+            "byteLength" : 491520,
+            "byteOffset" : 2457600
         },
         {
             "buffer" : 0,
-            "byteLength" : 774144,
-            "byteOffset" : 6193152
+            "byteLength" : 122880,
+            "byteOffset" : 2949120
         }
     ],
     "samplers" : [
@@ -138,8 +138,8 @@
     ],
     "buffers" : [
         {
-            "byteLength" : 6967296,
-            "uri" : "sphere.bin"
+            "byteLength" : 3072000,
+            "uri" : "icosphere.bin"
         }
     ]
 }

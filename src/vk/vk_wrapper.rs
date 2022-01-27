@@ -667,6 +667,38 @@ impl Drop for VkFence {
         }
 }
 
+#[derive(Debug, Clone)]
+pub enum VkShaderModuleError {
+        VkResult(vk::Result),
+        CodeSizeNotMultipleOf4,
+}
+
+impl std::error::Error for VkShaderModuleError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                match self {
+                        VkShaderModuleError::VkResult(vk_result) => Some(vk_result),
+                        VkShaderModuleError::CodeSizeNotMultipleOf4 => None,
+                }
+        }
+}
+
+impl std::fmt::Display for VkShaderModuleError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                        VkShaderModuleError::VkResult(vk_result) => vk_result.fmt(f),
+                        VkShaderModuleError::CodeSizeNotMultipleOf4 => {
+                                write!(f, "Code size for shader must be a multiple of 4")
+                        },
+                }
+        }
+}
+
+impl From<vk::Result> for VkShaderModuleError {
+        fn from(r: vk::Result) -> Self {
+                Self::VkResult(r)
+        }
+}
+
 pub struct VkShaderModule {
         device: Rc<VkDevice>,
         handle: vk::ShaderModule,
@@ -678,6 +710,18 @@ impl VkShaderModule {
                         device: Rc::clone(device),
                         handle: device.create_shader_module(create_info, None)?,
                 })
+        }
+
+        pub fn from_code(device: &Rc<VkDevice>, code: &Vec<u8>) -> Result<Self, VkShaderModuleError> {
+                if code.len() % 4 != 0 {
+                        return Err(VkShaderModuleError::CodeSizeNotMultipleOf4);
+                }
+
+                let mut shader_module_cinfo = vk::ShaderModuleCreateInfo::builder().build();
+                shader_module_cinfo.code_size = code.len();
+                shader_module_cinfo.p_code = code.as_ptr() as *const u32;
+
+                Ok(unsafe { Self::new(device, &shader_module_cinfo)? })
         }
 }
 
