@@ -14,6 +14,9 @@ pub struct ModelInstance {
 #[derive(Clone, Copy, Debug, Hash, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ModelInstanceId(pub Entity);
 
+pub struct LightPos(pub Vec3);
+pub struct LightColor(pub Vec3);
+
 pub trait Renderer {
         // fn draw(&mut self, cam: &mut Camera, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>>;
         fn draw(&mut self, player_orien: &UnitQuat, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>>;
@@ -30,6 +33,7 @@ pub struct RenderState {
         pub camera_pos: Vec3,
         pub proj_camera: ProjectionCameraComponent,
         pub model_instances: HashMap<ModelInstanceId, ModelInstance>,
+        pub lights: HashMap<Entity, (LightPos, LightColor)>,
 }
 
 impl RenderState {
@@ -38,6 +42,7 @@ impl RenderState {
                         camera_pos: Default::default(),
                         proj_camera: Default::default(),
                         model_instances: HashMap::new(),
+                        lights: HashMap::new(),
                 }
         }
 }

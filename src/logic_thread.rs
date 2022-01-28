@@ -18,10 +18,11 @@ use crate::{
         application::{CursorState, WindowMode, WindowThreadCommand, WindowThreadMessage},
         asset_manager::{AssetManager, ModelId},
         constants::PLAYER_MOVEMENT_SPEED,
+        hashmap::GetOrInsert,
         input_manager::ActionReceiver,
         my_glm::{Mat4, Quat, UnitQuat, Vec3},
         render_state_switcher::RenderStateSwitcher,
-        renderer::{ModelInstance, RenderState, ModelInstanceId}, hashmap::GetOrInsert,
+        renderer::{ModelInstance, ModelInstanceId, RenderState, LightPos, LightColor},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -135,20 +136,15 @@ impl LogicThread {
 
                 let player = world
                         .create_entity()
-                        .with(PositionComponent(Vec3::new(0.0, 0.0, 2.0)))
-                        .with(OrientationComponent(UnitQuat::from_axis_angle(
-                                &Vec3::x_axis(),
-                                0.0f32.to_radians(),
-                        )))
+                        .with(TransformComponent::from_pos(Vec3::new(0.0, 0.0, 2.0)))
                         .build();
                 world.insert(PlayerResource(player));
 
                 let camera = world
                         .create_entity()
                         .with(ParentComponent(player))
-                        .with(PositionComponent::default())
+                        .with(TransformComponent::default())
                         .with(RelativePositionComponent(Vec3::new(0.0, 1.0, 0.0)))
-                        .with(OrientationComponent::default())
                         .with(RelativeOrientationComponent::default())
                         .with(ProjectionCameraComponent::new(90.0f32.to_radians(), 1.0, 0.1, 100.0))
                         .build();
@@ -156,27 +152,26 @@ impl LogicThread {
 
                 let _colt = world
                         .create_entity()
-                        .with(PositionComponent(Vec3::new(2.5, 0.0, 0.0)))
-                        .with(OrientationComponent(UnitQuat::identity()))
+                        .with(TransformComponent::from_pos(Vec3::new(2.5, 0.0, 0.0)))
                         .with(ModelComponent(params.asset_manager.get_model_by_name("colt")))
-                        .with(ModelRotateComponent)
+                        .with(ModelRotateComponent(-22.5f32.to_radians()))
                         .build();
 
                 let _icosphere = world
                         .create_entity()
-                        .with(PositionComponent(Vec3::new(0.0, 0.0, 0.0)))
-                        .with(OrientationComponent(UnitQuat::identity()))
-                        .with(ScaleComponent(Vec3::new(4.0, 4.0, 4.0)))
+                        .with(TransformComponent::from_scale(Vec3::new(4.0, 4.0, 4.0)))
                         .with(ModelComponent(params.asset_manager.get_model_by_name("icosphere")))
-                        .with(ModelRotateComponent)
+                        .with(ModelRotateComponent(0f32.to_radians()))
                         .build();
 
                 let _light = world
                         .create_entity()
-                        .with(PositionComponent(Vec3::new(1.0, 2.5, 0.0)))
-                        .with(OrientationComponent(UnitQuat::identity()))
+                        .with(TransformComponent::from_pos(Vec3::new(1.0, 2.0, 0.0)))
                         .with(ModelComponent(params.asset_manager.get_model_by_name("icosphere")))
-                        // .with(LightEmitterComponent { color: Vec3::new(1.0, 8.5, 8.5) })
+                        .with(LightEmitterComponent {
+                                color: Vec3::new(1.0, 0.8, 0.8),
+                        })
+                        .with(ModelRotateComponent(45f32.to_radians()))
                         .build();
 
                 'main: loop {
@@ -188,10 +183,10 @@ impl LogicThread {
                                                 LogicThreadCommand::Exit => break 'main,
                                         },
                                         LogicThreadMessage::SetPlayerOrien(new_player_orien) => {
-                                                world.write_storage::<OrientationComponent>()
+                                                world.write_storage::<TransformComponent>()
                                                         .get_mut(player)
                                                         .unwrap()
-                                                        .0 = new_player_orien;
+                                                        .orien = new_player_orien;
                                         },
                                 }
                         }
@@ -223,13 +218,12 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
                 ReadExpect<'a, TargetTicktimeF32Resource>,
                 ReadExpect<'a, PlayerResource>,
                 WriteExpect<'a, QueuedWindowThreadMessagesResource>,
-                WriteStorage<'a, OrientationComponent>,
-                WriteStorage<'a, PositionComponent>,
+                WriteStorage<'a, TransformComponent>,
         );
 
         fn run(
                 &mut self,
-                (target_ticktime, player, mut queued_window_thread_messages, mut orien_strg, mut pos_strg): Self::SystemData,
+                (target_ticktime, player, mut queued_window_thread_messages, mut transforms): Self::SystemData,
         ) {
                 let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
 
@@ -277,7 +271,7 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
                 }
 
                 if desired_dir.norm_squared() > f32::EPSILON {
-                        let player_orien = &orien_strg.get(player.0).unwrap().0;
+                        let player_orien = &transforms.get(player.0).unwrap().orien;
                         let player_hor_orien = UnitQuat::new_normalize(Quat::new(
                                 player_orien.as_vector().w,
                                 0.0,
@@ -288,7 +282,7 @@ impl<'a> specs::System<'a> for InputHandlerSystem {
                         let move_amount = PLAYER_MOVEMENT_SPEED * target_ticktime.0;
                         let move_dir = player_hor_orien * desired_dir.normalize() * move_amount;
 
-                        let player_pos = &mut pos_strg.get_mut(player.0).unwrap().0;
+                        let player_pos = &mut transforms.get_mut(player.0).unwrap().pos;
                         *player_pos += move_dir;
                 }
         }
@@ -348,18 +342,48 @@ impl<'a> specs::System<'a> for WindowThreadMessageDispatcherSystem {
         }
 }
 
-#[derive(Debug, Default)]
-struct PositionComponent(Vec3);
+#[derive(Debug)]
+struct TransformComponent {
+        pub pos: Vec3,
+        pub orien: UnitQuat,
+        pub scale: Vec3,
+}
 
-impl Component for PositionComponent {
+impl Component for TransformComponent {
         type Storage = FlaggedStorage<Self, VecStorage<Self>>;
 }
 
-#[derive(Debug, Default)]
-struct ScaleComponent(Vec3);
+impl Default for TransformComponent {
+        fn default() -> Self {
+                Self {
+                        pos: Vec3::from_element(0.0),
+                        orien: UnitQuat::identity(),
+                        scale: Vec3::from_element(1.0),
+                }
+        }
+}
 
-impl Component for ScaleComponent {
-        type Storage = FlaggedStorage<Self, VecStorage<Self>>;
+impl TransformComponent {
+        pub fn from_pos(pos: Vec3) -> Self {
+                Self {
+                        pos,
+                        ..Default::default()
+                }
+        }
+
+        pub fn from_orien(orien: UnitQuat) -> Self {
+                Self {
+                        orien,
+                        ..Default::default()
+                }
+        }
+
+        pub fn from_scale(scale: Vec3) -> Self {
+                Self {
+                        scale,
+                        ..Default::default()
+                }
+        }
 }
 
 #[derive(Debug)]
@@ -397,20 +421,13 @@ impl Component for ChildrenComponent {
         type Storage = FlaggedStorage<Self, VecStorage<Self>>;
 }
 
-#[derive(Debug, Clone, Default)]
-struct OrientationComponent(UnitQuat);
-
-impl Component for OrientationComponent {
-        type Storage = FlaggedStorage<Self, VecStorage<Self>>;
-}
-
 #[derive(Debug, Component)]
 #[storage(DenseVecStorage)]
 struct ModelComponent(ModelId);
 
 #[derive(Debug, Component)]
 #[storage(VecStorage)]
-struct ModelRotateComponent;
+struct ModelRotateComponent(f32);
 
 #[derive(Debug, Component)]
 #[storage(VecStorage)]
@@ -427,12 +444,12 @@ impl<'a> specs::System<'a> for RelativePositionUpdaterSystem {
         type SystemData = (
                 Entities<'a>,
                 ReadStorage<'a, ParentComponent>,
-                ReadStorage<'a, PositionComponent>,
+                ReadStorage<'a, TransformComponent>,
                 ReadStorage<'a, RelativePositionComponent>,
                 WriteStorage<'a, PendingMovementComponent>,
         );
 
-        fn run(&mut self, (entities, parent_strg, pos_strg, rel_pos_strg, mut pending_mov_strg): Self::SystemData) {
+        fn run(&mut self, (entities, parent_strg, transforms, rel_pos_strg, mut pending_mov_strg): Self::SystemData) {
                 /* let moved_entities = BitSet::new();
 
                 let events = pos_strg.channel().read(self.reader_id.as_mut().unwrap());
@@ -452,13 +469,13 @@ impl<'a> specs::System<'a> for RelativePositionUpdaterSystem {
                 } */
 
                 for (e, parent, rel_pos) in (&entities, &parent_strg, &rel_pos_strg).join() {
-                        let parent_pos = match pos_strg.get(parent.0) {
-                                Some(parent_pos) => parent_pos,
+                        let parent_pos = match transforms.get(parent.0) {
+                                Some(parent_transform) => parent_transform.pos,
                                 None => continue,
                         };
 
                         pending_mov_strg
-                                .insert(e, PendingMovementComponent(parent_pos.0 + rel_pos.0))
+                                .insert(e, PendingMovementComponent(parent_pos + rel_pos.0))
                                 .unwrap();
                 }
 
@@ -475,7 +492,7 @@ impl<'a> specs::System<'a> for RelativePositionUpdaterSystem {
         fn setup(&mut self, world: &mut World) {
                 Self::SystemData::setup(world);
 
-                self.reader_id = Some(WriteStorage::<PositionComponent>::fetch(world).register_reader());
+                self.reader_id = Some(WriteStorage::<TransformComponent>::fetch(world).register_reader());
         }
 }
 
@@ -489,10 +506,10 @@ impl<'a> specs::System<'a> for RelativeOrientationUpdaterSystem {
                 Entities<'a>,
                 ReadStorage<'a, ParentComponent>,
                 ReadStorage<'a, RelativeOrientationComponent>,
-                WriteStorage<'a, OrientationComponent>,
+                WriteStorage<'a, TransformComponent>,
         );
 
-        fn run(&mut self, (entities, parent_strg, rel_orien_strg, mut orien_strg): Self::SystemData) {
+        fn run(&mut self, (entities, parent_strg, rel_orien_strg, mut transforms): Self::SystemData) {
                 /* let moved_entities = BitSet::new();
 
                 let events = pos_strg.channel().read(self.reader_id.as_mut().unwrap());
@@ -512,12 +529,12 @@ impl<'a> specs::System<'a> for RelativeOrientationUpdaterSystem {
                 } */
 
                 for (e, parent, rel_orien) in (&entities, &parent_strg, &rel_orien_strg).join() {
-                        let parent_orien = match orien_strg.get(parent.0) {
-                                Some(parent_pos) => parent_pos.0,
+                        let parent_orien = match transforms.get(parent.0) {
+                                Some(parent_transform) => parent_transform.orien,
                                 None => continue,
                         };
 
-                        orien_strg.get_mut(e).unwrap().0 = parent_orien * rel_orien.0;
+                        transforms.get_mut(e).unwrap().orien = parent_orien * rel_orien.0;
                 }
 
                 /* let parent_positions: Vec<Vec3> = (&parent_strg, &pos_strg)
@@ -533,7 +550,7 @@ impl<'a> specs::System<'a> for RelativeOrientationUpdaterSystem {
         fn setup(&mut self, world: &mut World) {
                 Self::SystemData::setup(world);
 
-                self.reader_id = Some(WriteStorage::<OrientationComponent>::fetch(world).register_reader());
+                self.reader_id = Some(WriteStorage::<TransformComponent>::fetch(world).register_reader());
         }
 }
 
@@ -544,17 +561,16 @@ impl<'a> specs::System<'a> for ModelRotationSystem {
                 ReadExpect<'a, TargetTicktimeF32Resource>,
                 ReadStorage<'a, ModelComponent>,
                 ReadStorage<'a, ModelRotateComponent>,
-                WriteStorage<'a, PositionComponent>,
-                WriteStorage<'a, OrientationComponent>,
+                WriteStorage<'a, TransformComponent>,
         );
 
-        fn run(&mut self, (ticktime, mdl_strg, mdl_rotate_strg, mut pos_strg, mut orien_strg): Self::SystemData) {
-                for (_, _, pos, orien) in (&mdl_strg, &mdl_rotate_strg, &mut pos_strg, &mut orien_strg).join() {
-                        let mov = UnitQuat::from_axis_angle(&Vec3::y_axis(), -22.5f32.to_radians() * ticktime.0);
-                        pos.0 = mov * pos.0;
+        fn run(&mut self, (ticktime, mdl_strg, mdl_rotate_strg, mut transforms): Self::SystemData) {
+                for (_, rotate, transform) in (&mdl_strg, &mdl_rotate_strg, &mut transforms).join() {
+                        let mov = UnitQuat::from_axis_angle(&Vec3::y_axis(), -rotate.0 * ticktime.0);
+                        transform.pos = mov * transform.pos;
 
-                        let rot = UnitQuat::from_axis_angle(&Vec3::y_axis(), 45.0f32.to_radians() * ticktime.0);
-                        orien.0 = rot * orien.0;
+                        let rot = UnitQuat::from_axis_angle(&Vec3::y_axis(), rotate.0 * 2.0 * ticktime.0);
+                        transform.orien = rot * transform.orien;
                 }
         }
 }
@@ -583,12 +599,12 @@ struct PendingMovementResolverSystem;
 impl<'a> specs::System<'a> for PendingMovementResolverSystem {
         type SystemData = (
                 WriteStorage<'a, PendingMovementComponent>,
-                WriteStorage<'a, PositionComponent>,
+                WriteStorage<'a, TransformComponent>,
         );
 
-        fn run(&mut self, (mut pending_mov_strg, mut pos_strg): Self::SystemData) {
-                for (pending_mov, pos) in (pending_mov_strg.drain(), &mut pos_strg).join() {
-                        pos.0 = pending_mov.0;
+        fn run(&mut self, (mut pending_mov_strg, mut transforms): Self::SystemData) {
+                for (pending_mov, transform) in (pending_mov_strg.drain(), &mut transforms).join() {
+                        transform.pos = pending_mov.0;
                 }
         }
 }
@@ -596,11 +612,11 @@ impl<'a> specs::System<'a> for PendingMovementResolverSystem {
 struct QuaternionRenormalizationSystem;
 
 impl<'a> specs::System<'a> for QuaternionRenormalizationSystem {
-        type SystemData = WriteStorage<'a, OrientationComponent>;
+        type SystemData = WriteStorage<'a, TransformComponent>;
 
-        fn run(&mut self, mut orien_strg: Self::SystemData) {
-                for orien in (&mut orien_strg).join() {
-                        orien.0 = UnitQuat::new_unchecked(orien.0.normalize());
+        fn run(&mut self, mut transforms: Self::SystemData) {
+                for transform in (&mut transforms).join() {
+                        transform.orien = UnitQuat::new_unchecked(transform.orien.normalize());
                 }
         }
 }
@@ -616,27 +632,32 @@ impl<'a> specs::System<'a> for RenderStateGeneratorSystem {
                 Entities<'a>,
                 ReadStorage<'a, ProjectionCameraComponent>,
                 ReadStorage<'a, ModelComponent>,
-                ReadStorage<'a, PositionComponent>,
-                ReadStorage<'a, OrientationComponent>,
-                ReadStorage<'a, ScaleComponent>,
+                ReadStorage<'a, TransformComponent>,
+                ReadStorage<'a, LightEmitterComponent>,
         );
 
-        fn run(&mut self, (active_cam, entities, proj_cams, mdl_strg, pos_strg, orien_strg, scale_strg): Self::SystemData) {
+        fn run(&mut self, (active_cam, entities, proj_cams, mdl_strg, transforms, light_strg): Self::SystemData) {
                 let mut render_state = self.render_state.take().unwrap_or_else(|| Box::new(RenderState::new()));
 
-                render_state.camera_pos = pos_strg.get(active_cam.0).unwrap().0;
+                render_state.camera_pos = transforms.get(active_cam.0).unwrap().pos;
                 render_state.proj_camera = proj_cams.get(active_cam.0).unwrap().clone();
 
                 render_state.model_instances.clear();
-                for (e, model, pos, orien, scale) in (&entities, &mdl_strg, &pos_strg, &orien_strg, (&scale_strg).maybe()).join() {
-                        render_state.model_instances.insert(ModelInstanceId(e),
+                for (e, model, transform) in (&entities, &mdl_strg, &transforms).join() {
+                        render_state.model_instances.insert(
+                                ModelInstanceId(e),
                                 ModelInstance {
                                         model_id: model.0,
-                                        pos: pos.0,
-                                        orien: orien.0,
-                                        scale: scale.unwrap_or(&ScaleComponent(Vec3::new(1.0, 1.0, 1.0))).0,
-                                }
+                                        pos: transform.pos,
+                                        orien: transform.orien,
+                                        scale: transform.scale,
+                                },
                         );
+                }
+
+                render_state.lights.clear();
+                for (e, transform, light) in (&entities, &transforms, &light_strg).join() {
+                        render_state.lights.insert(e, (LightPos(transform.pos), LightColor(light.color)));
                 }
 
                 let mut render_state_switcher = match self.render_state_switcher.lock() {

@@ -322,9 +322,14 @@ impl Renderer for VkRenderer {
 
                 Self::update_matrices_buffer(&self.matrices_buffers[self.framei], &matrices)?;
 
+                let (light_id, new_light) = self.new_render_state.as_ref().unwrap().lights.iter().next().unwrap();
+                let old_light = self.old_render_state.as_ref().unwrap().lights.get(light_id).unwrap_or(new_light);
+
+                let light_pos = Vec3::lerp(&old_light.0.0, &new_light.0.0, tick_scalar);
+
                 let lights = UniformLights {
-                        light_pos: view_mat * Vec4::new(1.0, 2.5, 0.0, 1.0),
-                        light_color: Vec4::new(0.9, 1.0, 0.9, 1.0),
+                        light_pos: view_mat * Vec4::new_position(light_pos),
+                        light_color: Vec4::new_position(new_light.1.0),
                 };
 
                 Self::update_lights_buffer(&self.lights_buffers[self.framei], &lights).unwrap();

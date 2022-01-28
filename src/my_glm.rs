@@ -1,3 +1,6 @@
+use glm::{TVec3, TVec4};
+use nalgebra::Scalar;
+
 extern crate nalgebra_glm as glm;
 
 #[allow(dead_code)]
@@ -38,3 +41,34 @@ pub type Mat2 = glm::Mat2;
 pub type Mat3 = glm::Mat3;
 #[allow(dead_code)]
 pub type Mat4 = glm::Mat4;
+
+pub trait VectorUtil<T: Scalar> {
+        fn new_position(pos: TVec3<T>) -> Self;
+        fn new_direction(dir: TVec3<T>) -> Self;
+}
+
+// impl <T: Scalar> VectorUtil<T> for TVec4<T> {
+//     fn new_position(pos: TVec3<T>) -> Self {
+//             Self::new(pos.x, pos.y, pos.z, nalgebra::convert(1.0f64))
+//     }
+// }
+
+impl VectorUtil<f32> for TVec4<f32> {
+        fn new_position(pos: TVec3<f32>) -> Self {
+                Self::new(pos.x, pos.y, pos.z, 1.0)
+        }
+
+        fn new_direction(dir: TVec3<f32>) -> Self {
+                Self::new(dir.x, dir.y, dir.z, 0.0)
+        }
+}
+
+impl VectorUtil<f64> for TVec4<f64> {
+        fn new_position(pos: TVec3<f64>) -> Self {
+                Self::new(pos.x, pos.y, pos.z, 1.0)
+        }
+
+        fn new_direction(dir: TVec3<f64>) -> Self {
+                Self::new(dir.x, dir.y, dir.z, 0.0)
+        }
+}
