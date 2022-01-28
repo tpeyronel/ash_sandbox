@@ -22,7 +22,7 @@ use crate::{
         input_manager::ActionReceiver,
         my_glm::{Mat4, Quat, UnitQuat, Vec3},
         render_state_switcher::RenderStateSwitcher,
-        renderer::{ModelInstance, ModelInstanceId, RenderState, LightPos, LightColor},
+        renderer::{LightColor, LightPos, ModelInstance, ModelInstanceId, RenderState},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -103,19 +103,14 @@ impl LogicThread {
                                 &[],
                         )
                         .with(
-                                RelativePositionUpdaterSystem::default(),
-                                "relative-position-updater",
-                                &[],
-                        )
-                        .with(
-                                RelativeOrientationUpdaterSystem::default(),
-                                "relative-orientation-updater",
+                                RelativeTransformUpdaterSystem::default(),
+                                "relative-transform-updater",
                                 &[],
                         )
                         .with(
                                 PendingMovementResolverSystem,
                                 "pending-movement-resolver-system",
-                                &["relative-position-updater"],
+                                &["relative-transform-updater"],
                         )
                         .with(
                                 ModelRotationSystem,
@@ -142,10 +137,9 @@ impl LogicThread {
 
                 let camera = world
                         .create_entity()
-                        .with(ParentComponent(player))
                         .with(TransformComponent::default())
-                        .with(RelativePositionComponent(Vec3::new(0.0, 1.0, 0.0)))
-                        .with(RelativeOrientationComponent::default())
+                        .with(ParentComponent(player))
+                        .with(RelativeTransformComponent(TransformComponent::from_pos(Vec3::new(0.0, 1.0, 0.0))))
                         .with(ProjectionCameraComponent::new(90.0f32.to_radians(), 1.0, 0.1, 100.0))
                         .build();
                 world.insert(ActiveCameraResource(camera));
@@ -203,6 +197,7 @@ pub enum LogicThreadMessage {
         Command(LogicThreadCommand),
         SetPlayerOrien(UnitQuat),
 }
+
 pub enum LogicThreadCommand {
         Exit,
 }
@@ -394,17 +389,10 @@ impl Component for PendingMovementComponent {
 }
 
 #[derive(Debug, Default)]
-struct RelativePositionComponent(Vec3);
+struct RelativeTransformComponent(TransformComponent);
 
-impl Component for RelativePositionComponent {
+impl Component for RelativeTransformComponent {
         type Storage = DenseVecStorage<Self>;
-}
-
-#[derive(Debug, Default)]
-struct RelativeOrientationComponent(UnitQuat);
-
-impl Component for RelativeOrientationComponent {
-        type Storage = VecStorage<Self>;
 }
 
 #[derive(Debug)]
@@ -436,20 +424,20 @@ struct LightEmitterComponent {
 }
 
 #[derive(Default)]
-struct RelativePositionUpdaterSystem {
+struct RelativeTransformUpdaterSystem {
         reader_id: Option<ReaderId<ComponentEvent>>,
 }
 
-impl<'a> specs::System<'a> for RelativePositionUpdaterSystem {
+impl<'a> specs::System<'a> for RelativeTransformUpdaterSystem {
         type SystemData = (
                 Entities<'a>,
                 ReadStorage<'a, ParentComponent>,
-                ReadStorage<'a, TransformComponent>,
-                ReadStorage<'a, RelativePositionComponent>,
+                WriteStorage<'a, TransformComponent>,
+                ReadStorage<'a, RelativeTransformComponent>,
                 WriteStorage<'a, PendingMovementComponent>,
         );
 
-        fn run(&mut self, (entities, parent_strg, transforms, rel_pos_strg, mut pending_mov_strg): Self::SystemData) {
+        fn run(&mut self, (entities, parent_strg, mut transforms, rel_transforms, mut pending_mov_strg): Self::SystemData) {
                 /* let moved_entities = BitSet::new();
 
                 let events = pos_strg.channel().read(self.reader_id.as_mut().unwrap());
@@ -468,73 +456,17 @@ impl<'a> specs::System<'a> for RelativePositionUpdaterSystem {
                         child_pos.0 = child_rel_pos.0 +
                 } */
 
-                for (e, parent, rel_pos) in (&entities, &parent_strg, &rel_pos_strg).join() {
-                        let parent_pos = match transforms.get(parent.0) {
-                                Some(parent_transform) => parent_transform.pos,
+                for (e, parent, rel_transform) in (&entities, &parent_strg, &rel_transforms).join() {
+                        let parent_transform = match transforms.get(parent.0) {
+                                Some(parent_transform) => parent_transform,
                                 None => continue,
                         };
 
                         pending_mov_strg
-                                .insert(e, PendingMovementComponent(parent_pos + rel_pos.0))
+                                .insert(e, PendingMovementComponent(parent_transform.pos + rel_transform.0.pos))
                                 .unwrap();
-                }
 
-                /* let parent_positions: Vec<Vec3> = (&parent_strg, &pos_strg)
-                        .join()
-                        .map(|(_, parent_pos)| parent_pos.0)
-                        .collect();
-
-                for ((rel_pos, pos), parent_pos) in (&rel_pos_strg, &mut pos_strg).join().zip(parent_positions.iter()) {
-                        pos.0 = parent_pos + rel_pos.value;
-                } */
-        }
-
-        fn setup(&mut self, world: &mut World) {
-                Self::SystemData::setup(world);
-
-                self.reader_id = Some(WriteStorage::<TransformComponent>::fetch(world).register_reader());
-        }
-}
-
-#[derive(Default)]
-struct RelativeOrientationUpdaterSystem {
-        reader_id: Option<ReaderId<ComponentEvent>>,
-}
-
-impl<'a> specs::System<'a> for RelativeOrientationUpdaterSystem {
-        type SystemData = (
-                Entities<'a>,
-                ReadStorage<'a, ParentComponent>,
-                ReadStorage<'a, RelativeOrientationComponent>,
-                WriteStorage<'a, TransformComponent>,
-        );
-
-        fn run(&mut self, (entities, parent_strg, rel_orien_strg, mut transforms): Self::SystemData) {
-                /* let moved_entities = BitSet::new();
-
-                let events = pos_strg.channel().read(self.reader_id.as_mut().unwrap());
-                for event in events {
-                        match event {
-                                ComponentEvent::Modified(id) => {
-                                        moved_entities.add(*id);
-                                }
-                                _ => (),
-                        }
-                }
-
-                for (child_rel_pos, child_pos, _) in (&rel_pos_strg, &mut pos_strg, &moved_entities).join() {
-                        let parent_pos = pos_strg.get(e)
-
-                        child_pos.0 = child_rel_pos.0 +
-                } */
-
-                for (e, parent, rel_orien) in (&entities, &parent_strg, &rel_orien_strg).join() {
-                        let parent_orien = match transforms.get(parent.0) {
-                                Some(parent_transform) => parent_transform.orien,
-                                None => continue,
-                        };
-
-                        transforms.get_mut(e).unwrap().orien = parent_orien * rel_orien.0;
+                        transforms.get_mut(e).unwrap().orien = parent_transform.orien * rel_transform.0.orien;
                 }
 
                 /* let parent_positions: Vec<Vec3> = (&parent_strg, &pos_strg)
@@ -657,7 +589,9 @@ impl<'a> specs::System<'a> for RenderStateGeneratorSystem {
 
                 render_state.lights.clear();
                 for (e, transform, light) in (&entities, &transforms, &light_strg).join() {
-                        render_state.lights.insert(e, (LightPos(transform.pos), LightColor(light.color)));
+                        render_state
+                                .lights
+                                .insert(e, (LightPos(transform.pos), LightColor(light.color)));
                 }
 
                 let mut render_state_switcher = match self.render_state_switcher.lock() {
