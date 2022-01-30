@@ -6,6 +6,7 @@ use std::{
         time::Instant,
 };
 
+use specs::{DispatcherBuilder, ReadExpect, ReadStorage, WriteStorage};
 use tps_counter::TPSCounter;
 
 use crate::{
@@ -17,7 +18,10 @@ use crate::{
         input_manager::{
                 ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType,
         },
-        logic_thread::{LogicThread, LogicThreadCommand, LogicThreadMessage, LogicThreadSpawnParams},
+        logic_thread::{
+                LogicThread, LogicThreadCommand, LogicThreadMessage, LogicThreadSpawnParams, PlayerResource,
+                TransformComponent,
+        },
         my_glm::*,
         render_state_switcher::RenderStateSwitcher,
         renderer::Renderer,
@@ -52,6 +56,8 @@ pub struct Application {
 
         tps_counter: TPSCounter,
         frame_begin: Instant,
+
+        player_transform: SharedValueSlave<TransformComponent>,
 }
 
 impl Application {
@@ -165,6 +171,20 @@ impl Application {
                 let (logic_thread_tx, logic_thread_rx) = std::sync::mpsc::channel();
                 let (window_thread_tx, window_thread_rx) = std::sync::mpsc::channel();
 
+                let (player_transform_master, player_transform_slave) =
+                        SharedValueMaster::new(TransformComponent::default());
+
+                let systems: Vec<Box<dyn FnOnce(&mut DispatcherBuilder) + Send + Sync>> =
+                        vec![Box::new(|builder: &mut DispatcherBuilder| {
+                                builder.add(
+                                        LoggerSystem {
+                                                player_transform: player_transform_master,
+                                        },
+                                        "logger-system",
+                                        &[],
+                                )
+                        })];
+
                 let logic_thread_params = LogicThreadSpawnParams {
                         target_tps: config.tps,
                         logic_thread_rx,
@@ -172,6 +192,7 @@ impl Application {
                         action_receiver: input_manager.create_action_receiver(),
                         asset_manager: Arc::clone(&asset_manager),
                         render_state_switcher,
+                        systems,
                 };
 
                 let logic_thread = LogicThread::spawn(logic_thread_params);
@@ -195,6 +216,8 @@ impl Application {
 
                         tps_counter: TPSCounter::new(5),
                         frame_begin: Instant::now(),
+
+                        player_transform: player_transform_slave,
                 })
         }
 
@@ -296,6 +319,13 @@ impl Application {
         fn update(&mut self, control_flow: &mut ControlFlow) -> Result<(), Box<dyn Error>> {
                 self.process_logic_thread_messages(control_flow);
 
+                let imgui_ui = Self::build_imgui_ui(
+                        &mut self.imgui_context,
+                        &self.window,
+                        &mut self.player_orien,
+                        &mut self.player_transform,
+                );
+
                 for (action_id, strength) in self.action_receiver.receive() {
                         if !self.player_camera_enabled {
                                 continue;
@@ -310,15 +340,13 @@ impl Application {
                                 ROLL_NEGATIVE => self.player_orien.roll_by(-strength.0 / PIXELS_PER_TURN),
                                 _ => continue,
                         }
-
-                        self.logic_thread_tx
-                                .send(LogicThreadMessage::SetPlayerOrien(self.player_orien.to_quat()))
-                                .expect("Failed to send command to logic thread!");
                 }
 
                 // self.tps_counter.tick_and_map(|tps| info!("FPS: {:.2}", tps));
 
-                let imgui_ui = Self::build_imgui_ui(&mut self.imgui_context, &self.window, self.player_orien.clone());
+                self.logic_thread_tx
+                        .send(LogicThreadMessage::SetPlayerOrien(self.player_orien.to_quat()))
+                        .expect("Failed to send command to logic thread!");
 
                 self.renderer.draw(&self.player_orien.to_quat(), imgui_ui?.render())
         }
@@ -326,7 +354,8 @@ impl Application {
         fn build_imgui_ui<'a>(
                 imgui_state: &'a mut ImguiContext,
                 window: &winit::window::Window,
-                player_orien: EulerAngles,
+                player_orien: &mut EulerAngles,
+                player_transform: &mut SharedValueSlave<TransformComponent>,
         ) -> Result<imgui::Ui<'a>, winit::error::ExternalError> {
                 imgui_state
                         .platform
@@ -338,7 +367,7 @@ impl Application {
                         .size([300.0, 100.0], imgui::Condition::FirstUseEver)
                         .build(&ui, || {
                                 let mouse_pos = ui.io().mouse_pos;
-                                ui.text(format!("Mouse Position: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
+                                ui.text(format!("Mouse pos: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
                                 ui.separator();
                                 ui.text(format!(
                                         "Pitch: {:.1}, Yaw: {:.1}, Roll: {:.1}",
@@ -346,6 +375,36 @@ impl Application {
                                         player_orien.yaw().to_degrees(),
                                         player_orien.roll().to_degrees(),
                                 ));
+
+                                if imgui::Slider::new("position", -2.5, 2.5)
+                                        .build_array(&ui, (&mut player_transform.get_mut().pos).into())
+                                {
+                                        player_transform.reemit();
+                                }
+
+                                let mut pitch = player_orien.pitch();
+                                if imgui::AngleSlider::new("pitch")
+                                .range_degrees(-90.0, 90.0)
+                                .build(&ui, &mut pitch)
+                                {
+                                        player_orien.set_pitch(pitch);
+                                }
+
+                                let mut yaw = player_orien.yaw();
+                                if imgui::AngleSlider::new("yaw")
+                                .range_degrees(-180.0, 180.0)
+                                .build(&ui, &mut yaw)
+                                {
+                                        player_orien.set_yaw(yaw);
+                                }
+
+                                let mut roll = player_orien.roll();
+                                if imgui::AngleSlider::new("roll")
+                                        .range_degrees(-180.0, 180.0)
+                                        .build(&ui, &mut roll)
+                                {
+                                        player_orien.set_roll(roll);
+                                }
                         });
 
                 ui.show_demo_window(&mut false);
@@ -487,4 +546,66 @@ pub enum WindowThreadCommand {
         SetCursorState(CursorState),
         SetWindowMode(WindowMode),
         SetPlayerCameraEnabled(bool),
+}
+
+struct LoggerSystem {
+        player_transform: SharedValueMaster<TransformComponent>,
+}
+
+impl<'a> specs::System<'a> for LoggerSystem {
+        type SystemData = (ReadExpect<'a, PlayerResource>, WriteStorage<'a, TransformComponent>);
+
+        fn run(&mut self, (player, mut transforms): Self::SystemData) {
+                if let Some(transform) = self.player_transform.receive() {
+                        *transforms.get_mut(player.0).unwrap() = transform;
+                } else {
+                        self.player_transform.emit(*transforms.get(player.0).unwrap());
+                }
+        }
+}
+
+struct SharedValueMaster<T> {
+        tx: single_value_channel::Updater<T>,
+        rx: single_value_channel::Receiver<Option<T>>,
+}
+
+impl<T> SharedValueMaster<T> {
+        pub fn new(value: T) -> (Self, SharedValueSlave<T>) {
+                let (rx0, tx0) = single_value_channel::channel_starting_with(value);
+                let (rx1, tx1) = single_value_channel::channel();
+
+                (Self { tx: tx0, rx: rx1 }, SharedValueSlave { tx: tx1, rx: rx0 })
+        }
+
+        pub fn emit(&mut self, value: T) {
+                self.tx.update(value).unwrap();
+        }
+
+        pub fn receive(&mut self) -> Option<T> {
+                self.rx.latest_mut().take()
+        }
+}
+
+struct SharedValueSlave<T> {
+        rx: single_value_channel::Receiver<T>,
+        tx: single_value_channel::Updater<Option<T>>,
+}
+
+impl<T: Copy> SharedValueSlave<T> {
+        pub fn emit(&mut self, value: T) {
+                *self.get_mut() = value;
+                self.tx.update(Some(value)).unwrap();
+        }
+
+        pub fn reemit(&mut self) {
+                self.tx.update(Some(*self.rx.latest())).unwrap();
+        }
+
+        pub fn get(&mut self) -> &T {
+                self.rx.latest()
+        }
+
+        pub fn get_mut(&mut self) -> &mut T {
+                self.rx.latest_mut()
+        }
 }

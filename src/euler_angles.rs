@@ -5,14 +5,12 @@ const PITCH_MIN: f32 = -PITCH_MAX;
 
 #[derive(Debug, Clone)]
 pub struct EulerAngles {
-        pitch: f32,
-        yaw: f32,
-        roll: f32,
+        angles: [f32; 3],
 }
 
 impl EulerAngles {
         pub fn new(pitch: f32, yaw: f32, roll: f32) -> Self {
-                Self { pitch, yaw, roll }
+                Self { angles: [pitch, yaw, roll] }
         }
 
         pub fn to_quat(&self) -> UnitQuat {
@@ -32,58 +30,74 @@ impl EulerAngles {
                 //         sr * cp * cy - cr * sp * sy,
                 // ))
 
-                UnitQuat::from_axis_angle(&Vec3::y_axis(), self.yaw)
-                        * UnitQuat::from_axis_angle(&Vec3::x_axis(), self.pitch)
-                        * UnitQuat::from_axis_angle(&Vec3::z_axis(), self.roll)
+                UnitQuat::from_axis_angle(&Vec3::y_axis(), self.yaw())
+                        * UnitQuat::from_axis_angle(&Vec3::x_axis(), self.pitch())
+                        * UnitQuat::from_axis_angle(&Vec3::z_axis(), self.roll())
         }
 
         pub fn pitch(&self) -> f32 {
-                self.pitch
+                self.angles[0]
         }
 
         pub fn yaw(&self) -> f32 {
-                self.yaw
+                self.angles[1]
         }
 
         pub fn roll(&self) -> f32 {
-                self.roll
+                self.angles[2]
         }
 
-        pub fn set_roll(&mut self, angle: f32) {
-                self.roll = angle;
+        pub fn as_slice(&self) -> &[f32] {
+                &self.angles
         }
 
-        pub fn set_pitch(&mut self, angle: f32) {
-                self.pitch = angle;
+        pub fn as_slice_mut(&mut self) -> &mut [f32] {
+                &mut self.angles
         }
 
-        pub fn set_yaw(&mut self, angle: f32) {
-                self.yaw = angle;
+        pub fn as_array(&self) -> &[f32; 3] {
+                &self.angles
         }
 
-        pub fn roll_by(&mut self, angle: f32) {
-                self.roll += angle;
+        pub fn as_array_mut(&mut self) -> &mut [f32; 3] {
+                &mut self.angles
+        }
 
-                if self.roll > 180.0f32.to_radians() {
-                        self.roll -= 360.0f32.to_radians();
-                } else if self.roll < -180.0f32.to_radians() {
-                        self.roll += 360.0f32.to_radians();
+        pub fn set_pitch(&mut self, pitch: f32) {
+                self.angles[0] = pitch;
+        }
+
+        pub fn set_yaw(&mut self, yaw: f32) {
+                self.angles[1] = yaw;
+        }
+
+        pub fn set_roll(&mut self, roll: f32) {
+                self.angles[2] = roll;
+        }
+
+        pub fn pitch_by(&mut self, pitch: f32) {
+                self.angles[0] += pitch;
+
+                self.angles[0] = f32::clamp(self.angles[0], PITCH_MIN, PITCH_MAX);
+        }
+
+        pub fn yaw_by(&mut self, yaw: f32) {
+                self.angles[1] += yaw;
+
+                if self.angles[1] > 180.0f32.to_radians() {
+                        self.angles[1] -= 360.0f32.to_radians();
+                } else if self.angles[1] < -180.0f32.to_radians() {
+                        self.angles[1] += 360.0f32.to_radians();
                 }
         }
 
-        pub fn pitch_by(&mut self, angle: f32) {
-                self.pitch += angle;
+        pub fn roll_by(&mut self, roll: f32) {
+                self.angles[2] += roll;
 
-                self.pitch = f32::clamp(self.pitch, PITCH_MIN, PITCH_MAX);
-        }
-
-        pub fn yaw_by(&mut self, angle: f32) {
-                self.yaw += angle;
-
-                if self.yaw > 180.0f32.to_radians() {
-                        self.yaw -= 360.0f32.to_radians();
-                } else if self.yaw < -180.0f32.to_radians() {
-                        self.yaw += 360.0f32.to_radians();
+                if self.angles[2] > 180.0f32.to_radians() {
+                        self.angles[2] -= 360.0f32.to_radians();
+                } else if self.angles[2] < -180.0f32.to_radians() {
+                        self.angles[2] += 360.0f32.to_radians();
                 }
         }
 }

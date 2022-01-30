@@ -38,7 +38,7 @@ struct TargetTicktimeF32Resource(f32);
 struct ActiveCameraResource(Entity);
 
 #[derive(Debug, Clone, Copy)]
-struct PlayerResource(Entity);
+pub struct PlayerResource(pub Entity);
 
 #[derive(Default)]
 struct QueuedWindowThreadMessagesResource(VecDeque<WindowThreadMessage>);
@@ -50,6 +50,7 @@ pub struct LogicThreadSpawnParams {
         pub action_receiver: ActionReceiver,
         pub asset_manager: Arc<AssetManager>,
         pub render_state_switcher: Arc<Mutex<RenderStateSwitcher>>,
+        pub systems: Vec<Box<dyn FnOnce(&mut DispatcherBuilder) + Send + Sync>>,
 }
 
 pub struct LogicThread {
@@ -70,7 +71,7 @@ impl LogicThread {
                 self.handle.join()
         }
 
-        fn run(params: LogicThreadSpawnParams) {
+        fn run(mut params: LogicThreadSpawnParams) {
                 let mut world = World::new();
 
                 let target_ticktime = Duration::from_secs_f64(1.0 / params.target_tps as f64);
@@ -80,7 +81,7 @@ impl LogicThread {
 
                 world.insert(QueuedWindowThreadMessagesResource::default());
 
-                let mut dispatcher = DispatcherBuilder::new()
+                let mut dispatcher_builder = DispatcherBuilder::new()
                         .with(
                                 InputHandlerSystem {
                                         action_receiver: params.action_receiver,
@@ -121,12 +122,16 @@ impl LogicThread {
                                 QuaternionRenormalizationSystem,
                                 "quaternion-renormalization-system",
                                 &[],
-                        )
-                        .with_thread_local(RenderStateGeneratorSystem {
-                                render_state: None,
-                                render_state_switcher: params.render_state_switcher,
-                        })
-                        .build();
+                        );
+
+                params.systems.drain(..).for_each(|s| s(&mut dispatcher_builder));
+
+                dispatcher_builder.add_thread_local(RenderStateGeneratorSystem {
+                        render_state: None,
+                        render_state_switcher: params.render_state_switcher,
+                });
+
+                let mut dispatcher = dispatcher_builder.build();
                 dispatcher.setup(&mut world);
 
                 let player = world
@@ -139,7 +144,9 @@ impl LogicThread {
                         .create_entity()
                         .with(TransformComponent::default())
                         .with(ParentComponent(player))
-                        .with(RelativeTransformComponent(TransformComponent::from_pos(Vec3::new(0.0, 1.0, 0.0))))
+                        .with(RelativeTransformComponent(TransformComponent::from_pos(Vec3::new(
+                                0.0, 1.0, 0.0,
+                        ))))
                         .with(ProjectionCameraComponent::new(90.0f32.to_radians(), 1.0, 0.1, 100.0))
                         .build();
                 world.insert(ActiveCameraResource(camera));
@@ -337,8 +344,8 @@ impl<'a> specs::System<'a> for WindowThreadMessageDispatcherSystem {
         }
 }
 
-#[derive(Debug)]
-struct TransformComponent {
+#[derive(Debug, Clone, Copy)]
+pub struct TransformComponent {
         pub pos: Vec3,
         pub orien: UnitQuat,
         pub scale: Vec3,
@@ -437,7 +444,10 @@ impl<'a> specs::System<'a> for RelativeTransformUpdaterSystem {
                 WriteStorage<'a, PendingMovementComponent>,
         );
 
-        fn run(&mut self, (entities, parent_strg, mut transforms, rel_transforms, mut pending_mov_strg): Self::SystemData) {
+        fn run(
+                &mut self,
+                (entities, parent_strg, mut transforms, rel_transforms, mut pending_mov_strg): Self::SystemData,
+        ) {
                 /* let moved_entities = BitSet::new();
 
                 let events = pos_strg.channel().read(self.reader_id.as_mut().unwrap());
