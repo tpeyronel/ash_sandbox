@@ -65,25 +65,45 @@ impl EulerAngles {
 
         pub fn set_pitch(&mut self, pitch: f32) {
                 self.angles[0] = pitch;
+
+                self.clamp_pitch();
         }
 
         pub fn set_yaw(&mut self, yaw: f32) {
                 self.angles[1] = yaw;
+
+                self.normalize_yaw();
         }
 
         pub fn set_roll(&mut self, roll: f32) {
                 self.angles[2] = roll;
+
+                self.normalize_roll();
         }
 
         pub fn pitch_by(&mut self, pitch: f32) {
                 self.angles[0] += pitch;
 
-                self.angles[0] = f32::clamp(self.angles[0], PITCH_MIN, PITCH_MAX);
+                self.clamp_pitch();
         }
 
         pub fn yaw_by(&mut self, yaw: f32) {
                 self.angles[1] += yaw;
 
+                self.normalize_yaw();
+        }
+
+        pub fn roll_by(&mut self, roll: f32) {
+                self.angles[2] += roll;
+
+                self.normalize_roll();
+        }
+
+        fn clamp_pitch(&mut self) {
+                self.angles[0] = f32::clamp(self.angles[0], PITCH_MIN, PITCH_MAX);
+        }
+
+        fn normalize_yaw(&mut self) {
                 if self.angles[1] > 180.0f32.to_radians() {
                         self.angles[1] -= 360.0f32.to_radians();
                 } else if self.angles[1] < -180.0f32.to_radians() {
@@ -91,9 +111,7 @@ impl EulerAngles {
                 }
         }
 
-        pub fn roll_by(&mut self, roll: f32) {
-                self.angles[2] += roll;
-
+        fn normalize_roll(&mut self) {
                 if self.angles[2] > 180.0f32.to_radians() {
                         self.angles[2] -= 360.0f32.to_radians();
                 } else if self.angles[2] < -180.0f32.to_radians() {

@@ -6,14 +6,14 @@ use std::{
         time::Instant,
 };
 
-use specs::{DispatcherBuilder, ReadExpect, ReadStorage, WriteStorage};
+use specs::{DispatcherBuilder, ReadExpect, WriteStorage};
 use tps_counter::TPSCounter;
 
 use crate::{
         actions::*,
         application_config::ApplicationConfig,
         asset_manager::*,
-        constants::{FONT_SIZE, PIXELS_PER_TURN},
+        constants::{FONT_SIZE, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
         input_manager::{
                 ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType,
@@ -46,6 +46,7 @@ pub struct Application {
         logic_thread_tx: std::sync::mpsc::Sender<LogicThreadMessage>,
         imgui_context: ImguiContext,
         input_manager: InputManager,
+        dispatch_actions: bool,
         action_receiver: ActionReceiver,
         asset_manager: Arc<AssetManager>,
 
@@ -56,6 +57,7 @@ pub struct Application {
 
         tps_counter: TPSCounter,
         frame_begin: Instant,
+        delta_time: f32,
 
         player_transform: SharedValueSlave<TransformComponent>,
 }
@@ -93,7 +95,8 @@ impl Application {
 
                 trace!("Initialized ImGui");
 
-                let mut input_manager = InputManager::new();
+                let dispatch_actions = true;
+                let mut input_manager = InputManager::new(dispatch_actions);
 
                 let mut input_map = InputBindingMap::new();
 
@@ -112,12 +115,17 @@ impl Application {
                 input_map.bind_key(MOVE_UPWARD, KeyCode::Space, KeyBindingType::Continuous);
                 input_map.bind_key(MOVE_DOWNARD, KeyCode::LShift, KeyBindingType::Continuous);
 
+                input_map.bind_key(YAW_NEGATIVE, KeyCode::Numpad6, KeyBindingType::Continuous);
+                input_map.bind_key(YAW_POSITIVE, KeyCode::Numpad4, KeyBindingType::Continuous);
+                input_map.bind_key(PITCH_POSITIVE, KeyCode::Numpad8, KeyBindingType::Continuous);
+                input_map.bind_key(PITCH_NEGATIVE, KeyCode::Numpad5, KeyBindingType::Continuous);
+                input_map.bind_key(ROLL_NEGATIVE, KeyCode::Numpad9, KeyBindingType::Continuous);
+                input_map.bind_key(ROLL_POSITIVE, KeyCode::Numpad7, KeyBindingType::Continuous);
+
                 input_map.bind_mouse_motion(YAW_NEGATIVE, MouseMotionType::PositiveX, None);
                 input_map.bind_mouse_motion(YAW_POSITIVE, MouseMotionType::NegativeX, None);
                 input_map.bind_mouse_motion(PITCH_POSITIVE, MouseMotionType::PositiveY, None);
                 input_map.bind_mouse_motion(PITCH_NEGATIVE, MouseMotionType::NegativeY, None);
-                input_map.bind_key(ROLL_NEGATIVE, KeyCode::Right, KeyBindingType::Continuous);
-                input_map.bind_key(ROLL_POSITIVE, KeyCode::Left, KeyBindingType::Continuous);
 
                 input_manager.push_input_binding_map(input_map);
 
@@ -207,6 +215,7 @@ impl Application {
                         logic_thread_tx,
                         imgui_context: imgui_state,
                         input_manager,
+                        dispatch_actions,
                         action_receiver,
                         asset_manager,
                         renderer,
@@ -216,6 +225,7 @@ impl Application {
 
                         tps_counter: TPSCounter::new(5),
                         frame_begin: Instant::now(),
+                        delta_time: 0.0,
 
                         player_transform: player_transform_slave,
                 })
@@ -293,6 +303,7 @@ impl Application {
                 let previous_frame_begin = std::mem::replace(&mut self.frame_begin, Instant::now());
                 let delta_time = self.frame_begin - previous_frame_begin;
 
+                self.delta_time = delta_time.as_secs_f32();
                 self.imgui_context.context.io_mut().update_delta_time(delta_time);
         }
 
@@ -303,6 +314,8 @@ impl Application {
                         } */
                         WindowEvent::Focused(focused) => {
                                 self.window_state.has_focus = focused;
+                                self.input_manager
+                                        .set_dispatch_actions(focused && self.dispatch_actions);
                                 self.input_manager.on_window_focused(focused);
                                 self.window_state.on_window_focused(focused, &self.window);
                         },
@@ -320,24 +333,28 @@ impl Application {
                 self.process_logic_thread_messages(control_flow);
 
                 let imgui_ui = Self::build_imgui_ui(
+                        &mut self.dispatch_actions,
                         &mut self.imgui_context,
                         &self.window,
                         &mut self.player_orien,
                         &mut self.player_transform,
-                );
+                )?;
 
-                for (action_id, strength) in self.action_receiver.receive() {
+                self.input_manager
+                        .set_dispatch_actions(self.window_state.has_focus && self.dispatch_actions);
+
+                for (action_id, strength) in self.action_receiver.receive_adjusted(self.delta_time) {
                         if !self.player_camera_enabled {
                                 continue;
                         }
 
                         match action_id {
-                                YAW_POSITIVE => self.player_orien.yaw_by(strength.0 / PIXELS_PER_TURN),
-                                YAW_NEGATIVE => self.player_orien.yaw_by(-strength.0 / PIXELS_PER_TURN),
-                                PITCH_POSITIVE => self.player_orien.pitch_by(strength.0 / PIXELS_PER_TURN),
-                                PITCH_NEGATIVE => self.player_orien.pitch_by(-strength.0 / PIXELS_PER_TURN),
-                                ROLL_POSITIVE => self.player_orien.roll_by(strength.0 / PIXELS_PER_TURN),
-                                ROLL_NEGATIVE => self.player_orien.roll_by(-strength.0 / PIXELS_PER_TURN),
+                                YAW_POSITIVE => self.player_orien.yaw_by(strength.0 * ROTATION_PER_SECOND),
+                                YAW_NEGATIVE => self.player_orien.yaw_by(-strength.0 * ROTATION_PER_SECOND),
+                                PITCH_POSITIVE => self.player_orien.pitch_by(strength.0 * ROTATION_PER_SECOND),
+                                PITCH_NEGATIVE => self.player_orien.pitch_by(-strength.0 * ROTATION_PER_SECOND),
+                                ROLL_POSITIVE => self.player_orien.roll_by(strength.0 * ROTATION_PER_SECOND),
+                                ROLL_NEGATIVE => self.player_orien.roll_by(-strength.0 * ROTATION_PER_SECOND),
                                 _ => continue,
                         }
                 }
@@ -348,10 +365,11 @@ impl Application {
                         .send(LogicThreadMessage::SetPlayerOrien(self.player_orien.to_quat()))
                         .expect("Failed to send command to logic thread!");
 
-                self.renderer.draw(&self.player_orien.to_quat(), imgui_ui?.render())
+                self.renderer.draw(&self.player_orien.to_quat(), imgui_ui.render())
         }
 
         fn build_imgui_ui<'a>(
+                dispatch_actions: &mut bool,
                 imgui_state: &'a mut ImguiContext,
                 window: &winit::window::Window,
                 player_orien: &mut EulerAngles,
@@ -367,6 +385,7 @@ impl Application {
                         .size([300.0, 100.0], imgui::Condition::FirstUseEver)
                         .build(&ui, || {
                                 let mouse_pos = ui.io().mouse_pos;
+
                                 ui.text(format!("Mouse pos: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
                                 ui.separator();
                                 ui.text(format!(
@@ -384,16 +403,16 @@ impl Application {
 
                                 let mut pitch = player_orien.pitch();
                                 if imgui::AngleSlider::new("pitch")
-                                .range_degrees(-90.0, 90.0)
-                                .build(&ui, &mut pitch)
+                                        .range_degrees(-90.0, 90.0)
+                                        .build(&ui, &mut pitch)
                                 {
                                         player_orien.set_pitch(pitch);
                                 }
 
                                 let mut yaw = player_orien.yaw();
                                 if imgui::AngleSlider::new("yaw")
-                                .range_degrees(-180.0, 180.0)
-                                .build(&ui, &mut yaw)
+                                        .range_degrees(-180.0, 180.0)
+                                        .build(&ui, &mut yaw)
                                 {
                                         player_orien.set_yaw(yaw);
                                 }
@@ -408,6 +427,8 @@ impl Application {
                         });
 
                 ui.show_demo_window(&mut false);
+
+                *dispatch_actions = !ui.io().want_capture_mouse;
 
                 Ok(ui)
         }
