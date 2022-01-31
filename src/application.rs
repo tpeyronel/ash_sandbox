@@ -128,7 +128,6 @@ impl Application {
                 input_map.bind_mouse_motion(PITCH_NEGATIVE, MouseMotionType::NegativeY, None);
 
                 input_manager.push_input_binding_map(input_map);
-
                 trace!("Initialized InputManager");
 
                 let dsampler = Sampler {
@@ -313,11 +312,9 @@ impl Application {
                                 self.input_manager.on_modifiers_changed(modifiers_state)
                         } */
                         WindowEvent::Focused(focused) => {
-                                self.window_state.has_focus = focused;
+                                self.window_state.on_window_focused(focused, &self.window);
                                 self.input_manager
                                         .set_dispatch_actions(focused && self.dispatch_actions);
-                                self.input_manager.on_window_focused(focused);
-                                self.window_state.on_window_focused(focused, &self.window);
                         },
                         WindowEvent::Resized(new_size) => {
                                 self.renderer.on_window_resize(new_size.width, new_size.height);
@@ -503,6 +500,8 @@ impl WindowState {
         }
 
         pub fn on_window_focused(&mut self, focused: bool, window: &Window) {
+                self.has_focus = focused;
+
                 if self.window_mode == WindowMode::Fullscreen {
                         let window_mode = if focused {
                                 WindowMode::Fullscreen

@@ -6,7 +6,8 @@ use std::sync::{
 
 use crate::{
         actions::ActionId,
-        hashmap::{GetOrInsert, GetOrInsertDefault, HashMap}, constants::PIXELS_PER_UNIT, scoped_timer::TimePrefix,
+        constants::PIXELS_PER_UNIT,
+        hashmap::{GetOrInsert, HashMap},
 };
 use enum_map::EnumMap;
 use log::error;
@@ -38,7 +39,7 @@ pub struct InputManager {
         keyboard_input_processor: KeyboardInputProcessor,
 
         should_dispatch_actions: bool,
-        should_discard_actions: Arc<AtomicBool>,
+        should_poll_actions: Arc<AtomicBool>,
 }
 
 impl InputManager {
@@ -53,14 +54,13 @@ impl InputManager {
                         keyboard_input_processor: KeyboardInputProcessor::new(),
 
                         should_dispatch_actions,
-                        should_discard_actions: Arc::new(AtomicBool::new(should_dispatch_actions)),
+                        should_poll_actions: Arc::new(AtomicBool::new(should_dispatch_actions)),
                 }
         }
 
         pub fn set_dispatch_actions(&mut self, dispatch_actions: bool) {
                 self.should_dispatch_actions = dispatch_actions;
-                self.should_discard_actions
-                        .store(!self.should_dispatch_actions, Ordering::Relaxed);
+                self.should_poll_actions.store(dispatch_actions, Ordering::Relaxed);
         }
 
         pub fn create_action_receiver(&mut self) -> ActionReceiver {
@@ -69,7 +69,7 @@ impl InputManager {
                 self.action_event_senders.push(action_events_tx);
 
                 ActionReceiver::new(
-                        Arc::clone(&self.should_discard_actions),
+                        Arc::clone(&self.should_poll_actions),
                         self.pollable_actions.clone(),
                         action_events_rx,
                 )
@@ -79,19 +79,11 @@ impl InputManager {
                 self.binding_map = map;
         }
 
-        pub fn on_window_focused(&mut self, focused: bool) {
-                self.keyboard_input_processor.on_window_focused(
-                        &self.binding_map.key_bindings,
-                        &self.pollable_actions,
-                        focused,
-                );
-        }
-
         pub fn on_device_event(&mut self, device_event: &DeviceEvent) {
                 let action_events_senders = &self.action_event_senders;
                 let should_dispatch_actions = self.should_dispatch_actions;
 
-                let mut for_each_action = |action_event: ActionEvent| {
+                let mut dispatch_action = |action_event: ActionEvent| {
                         if !should_dispatch_actions {
                                 return;
                         }
@@ -109,7 +101,7 @@ impl InputManager {
                                         &self.binding_map.mouse_bindings,
                                         *dx as f32,
                                         -*dy as f32,
-                                        &mut for_each_action,
+                                        &mut dispatch_action,
                                 );
                         },
                         DeviceEvent::MouseWheel { .. } => (),
@@ -120,7 +112,7 @@ impl InputManager {
                                         &self.binding_map.key_bindings,
                                         &self.pollable_actions,
                                         input,
-                                        &mut for_each_action,
+                                        &mut dispatch_action,
                                 );
                         },
                         _ => (),
@@ -153,26 +145,6 @@ impl KeyboardState {
                 &mut self.key_states[key_code as usize]
         }
 
-        /* fn iter_presed(
-                &self,
-        ) -> std::iter::FilterMap<
-                std::iter::Enumerate<std::slice::Iter<'_, KeyState>>,
-                for<'r> fn((usize, &'r KeyState)) -> Option<KeyCode>,
-        > {
-                fn f((kc, ks): (usize, &KeyState)) -> Option<KeyCode> {
-                        if *ks == KeyState::Pressed {
-                                Some(unsafe { std::mem::transmute::<u32, KeyCode>(kc as u32) })
-                        } else {
-                                None
-                        }
-                }
-
-                self.key_states
-                        .iter()
-                        .enumerate()
-                        .filter_map(f as fn((usize, &KeyState)) -> Option<KeyCode>)
-        } */
-
         fn pressed_keys(&self) -> impl Iterator<Item = KeyCode> + '_ {
                 self.key_states.iter().enumerate().filter_map(|(kc, ks)| match ks {
                         KeyState::Pressed => Some(unsafe { std::mem::transmute::<u32, KeyCode>(kc as u32) }),
@@ -202,19 +174,19 @@ impl<'a> IntoIterator for &'a KeyboardState {
 }
 
 pub struct ActionReceiver {
-        should_discard_actions: Arc<AtomicBool>,
+        should_poll_actions: Arc<AtomicBool>,
         pollable_actions: Arc<Mutex<HashMap<ActionId, ActionStrength>>>,
         action_events: mpsc::Receiver<ActionEvent>,
 }
 
 impl ActionReceiver {
         pub fn new(
-                should_discard_actions: Arc<AtomicBool>,
+                should_poll_actions: Arc<AtomicBool>,
                 pollable_actions: Arc<Mutex<HashMap<ActionId, ActionStrength>>>,
                 action_events: mpsc::Receiver<ActionEvent>,
         ) -> Self {
                 Self {
-                        should_discard_actions,
+                        should_poll_actions,
                         pollable_actions,
                         action_events,
                 }
@@ -223,36 +195,27 @@ impl ActionReceiver {
         pub fn receive(&self) -> Vec<(ActionId, ActionStrength)> {
                 let action_events = self.action_events.try_iter().map(|e| (e.action_id, e.strength));
 
-                if !self.should_discard_actions.load(Ordering::Relaxed) {
-                        let polled_actions = self
-                                .pollable_actions
-                                .lock()
-                                .expect("Failed to lock pollable actions!")
-                                .clone();
-
-                        polled_actions.into_iter().chain(action_events).collect()
-                } else {
-                        action_events.collect()
-                }
+                self.poll_actions().into_iter().chain(action_events).collect()
         }
 
         pub fn receive_adjusted(&self, delta_time: f32) -> Vec<(ActionId, ActionStrength)> {
                 let action_events = self.action_events.try_iter().map(|e| (e.action_id, e.strength));
 
-                if !self.should_discard_actions.load(Ordering::Relaxed) {
-                        let polled_actions = self
-                                .pollable_actions
+                self.poll_actions()
+                        .into_iter()
+                        .map(|(id, s)| (id, ActionStrength(s.0 * delta_time)))
+                        .chain(action_events)
+                        .collect()
+        }
+
+        fn poll_actions(&self) -> HashMap<ActionId, ActionStrength> {
+                if self.should_poll_actions.load(Ordering::Relaxed) {
+                        self.pollable_actions
                                 .lock()
                                 .expect("Failed to lock pollable actions!")
-                                .clone();
-
-                        polled_actions
-                                .into_iter()
-                                .map(|(id, s)| (id, ActionStrength(s.0 * delta_time)))
-                                .chain(action_events)
-                                .collect()
+                                .clone()
                 } else {
-                        action_events.collect()
+                        HashMap::new()
                 }
         }
 }
@@ -333,7 +296,7 @@ impl KeyboardInputProcessor {
                 key_bindings: &KeyBindings,
                 pollable_actions: &Mutex<HashMap<ActionId, ActionStrength>>,
                 input: &KeyboardInput,
-                for_each_action: &mut impl FnMut(ActionEvent),
+                dispatch_action: &mut impl FnMut(ActionEvent),
         ) {
                 let key_code = match input.virtual_keycode {
                         Some(kc) => kc,
@@ -353,7 +316,7 @@ impl KeyboardInputProcessor {
                 match binding.key_binding_type {
                         KeyBindingType::Simple(activator_state) => {
                                 if activator_state == input.state {
-                                        for_each_action(ActionEvent {
+                                        dispatch_action(ActionEvent {
                                                 action_id: binding.action_id.clone(),
                                                 strength: KEY_ACTION_STRENGTH,
                                         });
@@ -376,42 +339,6 @@ impl KeyboardInputProcessor {
                                         },
                                 }
                         },
-                }
-        }
-
-        fn on_window_focused(
-                &self,
-                key_bindings: &KeyBindings,
-                pollable_actions: &Mutex<HashMap<ActionId, ActionStrength>>,
-                is_window_focused: bool,
-        ) {
-                if !is_window_focused {
-                        pollable_actions
-                                .lock()
-                                .expect("Error ocurred locking pollable actions!")
-                                .clear();
-
-                        return;
-                }
-
-                for key_code in self.keyboard_state.pressed_keys() {
-                        let &KeyBinding {
-                                action_id,
-                                key_binding_type,
-                        } = match key_bindings.get(key_code) {
-                                Some(binding) => binding,
-                                None => continue,
-                        };
-
-                        if key_binding_type != KeyBindingType::Continuous {
-                                continue;
-                        }
-
-                        let mut pollable_actions = pollable_actions
-                                .lock()
-                                .expect("Error ocurred locking pollable actions!");
-
-                        *pollable_actions.get_mut_or_insert_default(&action_id) = KEY_ACTION_STRENGTH;
                 }
         }
 }
@@ -471,14 +398,14 @@ impl MouseInputProcessor {
                 mouse_bindings: &MouseBindings,
                 dx: f32,
                 dy: f32,
-                for_each_action: &mut impl FnMut(ActionEvent),
+                dispatch_action: &mut impl FnMut(ActionEvent),
         ) {
                 if let Some(motion_type) = Self::resolve_motion_type(MouseMotionAxis::X, dx) {
-                        self.process_directional_motion(mouse_bindings, motion_type, dx.abs(), for_each_action)
+                        self.process_directional_motion(mouse_bindings, motion_type, dx.abs(), dispatch_action)
                 }
 
                 if let Some(motion_type) = Self::resolve_motion_type(MouseMotionAxis::Y, dy) {
-                        self.process_directional_motion(mouse_bindings, motion_type, dy.abs(), for_each_action)
+                        self.process_directional_motion(mouse_bindings, motion_type, dy.abs(), dispatch_action)
                 }
         }
 
@@ -500,7 +427,7 @@ impl MouseInputProcessor {
                 mouse_bindings: &MouseBindings,
                 motion_type: MouseMotionType,
                 delta: f32,
-                for_each_action: &mut impl FnMut(ActionEvent),
+                dispatch_action: &mut impl FnMut(ActionEvent),
         ) {
                 let binding = match mouse_bindings.get_motion_binding(motion_type) {
                         Some(binding) => binding,
@@ -517,14 +444,14 @@ impl MouseInputProcessor {
                                 let quotient = (*accumulator / threshold).trunc();
                                 *accumulator -= quotient;
 
-                                (0..quotient as u32).for_each(|_| {
-                                        for_each_action(ActionEvent {
+                                for _ in 0..quotient as u32 {
+                                        dispatch_action(ActionEvent {
                                                 action_id: binding.action_id.clone(),
                                                 strength,
                                         })
-                                })
+                                }
                         },
-                        None => for_each_action(ActionEvent {
+                        None => dispatch_action(ActionEvent {
                                 action_id: binding.action_id.clone(),
                                 strength,
                         }),
