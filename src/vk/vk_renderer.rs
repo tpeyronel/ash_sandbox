@@ -170,7 +170,7 @@ impl VkRenderer {
                 )?;
                 trace!("Created VkAssetManager");
 
-                let basic_shader_id  = asset_manager.shader_names()["basic_shader"];
+                let basic_shader_id  = asset_manager.shader_names()["basic-shader"];
 
                 let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
                         &vk_context.device,

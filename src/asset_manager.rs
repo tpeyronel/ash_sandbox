@@ -122,6 +122,22 @@ pub struct Sampler {
         pub wrap_t: WrappingMode,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ShaderDeclaration {
+        pub name: String,
+
+        #[serde(rename = "vertex-shader")]
+        pub vert_shader: PathBuf,
+
+        #[serde(rename = "fragment-shader")]
+        pub frag_shader: PathBuf,
+
+        pub uniforms: Vec<String>,
+
+        #[serde(rename = "vertex-inputs")]
+        pub vertex_inputs: Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct Shader {
         pub name: String,
@@ -135,8 +151,8 @@ pub struct ShaderModule {
 }
 
 impl ShaderModule {
-        fn from_directory_and_suffix(directory: &str, suffix: &str) -> Result<Self, ShaderLoadError> {
-                let input_path = directory.to_owned() + suffix;
+        fn from_glsl_file(path: PathBuf) -> Result<Self, ShaderLoadError> {
+                let input_path = path.into_os_string().into_string()?;
                 let output_path = format!("{}.spv", input_path);
 
                 let mut child = Command::new("res/misc/glslc.exe")
@@ -220,7 +236,8 @@ impl std::error::Error for GLTFImportError {
 
 #[derive(Debug)]
 pub enum ShaderLoadError {
-        InvalidPath,
+        InvalidPath(String),
+        YamlError(serde_yaml::Error),
         InvalidUnicode(OsString),
         ShaderNameRepeated(String),
         IoError(std::io::Error),
@@ -245,6 +262,12 @@ impl std::error::Error for ShaderLoadError {
 impl From<std::io::Error> for ShaderLoadError {
         fn from(e: std::io::Error) -> Self {
                 Self::IoError(e)
+        }
+}
+
+impl From<serde_yaml::Error> for ShaderLoadError {
+        fn from(e: serde_yaml::Error) -> Self {
+                Self::YamlError(e)
         }
 }
 
@@ -311,33 +334,28 @@ impl AssetManager {
                 }
         }
 
-        pub fn load_shader(&mut self, path: PathBuf) -> Result<ShaderId, ShaderLoadError> {
-                if !path.is_dir() {
-                        return Err(ShaderLoadError::InvalidPath);
+        pub fn load_shader_from_yaml(&mut self, path: &Path) -> Result<ShaderId, ShaderLoadError> {
+                let yaml = std::fs::read_to_string(path)?;
+                let declaration: ShaderDeclaration = serde_yaml::from_str(&yaml)?;
+
+                if self.shader_names.contains_key(&declaration.name) {
+                        return Err(ShaderLoadError::ShaderNameRepeated(declaration.name));
                 }
 
-                let shader_name = path
-                        .file_name()
-                        .ok_or(ShaderLoadError::InvalidPath)?
-                        .to_owned()
-                        .into_string()?;
-
-                if self.shader_names.contains_key(&shader_name) {
-                        return Err(ShaderLoadError::ShaderNameRepeated(shader_name));
-                }
-
-                let directory = path.into_os_string().into_string()?;
-                let base_path = directory + "/" + &shader_name;
+                let directory = path.parent().ok_or_else(|| {
+                        ShaderLoadError::InvalidPath(format!("Path {:?} does not have parent", path))
+                })?;
 
                 let shader = Shader {
-                        name: shader_name.clone(),
-                        vert_module: ShaderModule::from_directory_and_suffix(&base_path, ".vert")?,
-                        frag_module: ShaderModule::from_directory_and_suffix(&base_path, ".frag")?,
+                        name: declaration.name.clone(),
+                        vert_module: ShaderModule::from_glsl_file(directory.join(&declaration.vert_shader))?,
+                        frag_module: ShaderModule::from_glsl_file(directory.join(&declaration.frag_shader))?,
                 };
 
-                let shader_id = self.shaders.insert(shader);
-                self.shader_names.insert(shader_name, shader_id);
+                debug!("Loaded shader with name: {}", declaration.name);
 
+                let shader_id = self.shaders.insert(shader);
+                self.shader_names.insert(declaration.name, shader_id);
                 Ok(shader_id)
         }
 

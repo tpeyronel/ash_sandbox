@@ -1,0 +1,9 @@
+---
+name: "color-shader"
+vertex-shader: "color_shader.vert"
+fragment-shader: "color_shader.frag"
+uniforms:
+  - "matrices"
+vertex-inputs:
+  - "positions"
+  - "normals"

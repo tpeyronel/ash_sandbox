@@ -1,0 +1,10 @@
+---
+name: "basic-shader"
+vertex-shader: "basic_shader.vert"
+fragment-shader: "basic_shader.frag"
+uniforms:
+  - "matrices"
+vertex-inputs:
+  - "positions"
+  - "normals"
+  - "texture-coordinates"
