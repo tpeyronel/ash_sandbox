@@ -461,10 +461,16 @@ impl Renderer for VkRenderer {
                                 slice::from_ref(&self.swapchain.scissor),
                         );
 
-                        // let matrices_dst_set = self.matrices_dst_sets[imagei as usize];
-                        // let lights_dst_set = self.lights_dst_sets[imagei as usize];
-
                         let world_dst_set = self.world_dst_sets[imagei as usize];
+                        self.vk_context.device.cmd_bind_descriptor_sets(
+                                draw_cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                *self.graphics_pipeline_layout,
+                                0,
+                                &[world_dst_set],
+                                &[],
+                        );
+
                         let object_dst_set = self.object_dst_sets[imagei as usize];
 
                         for (model, new_instance) in &self.new_render_state.as_ref().unwrap().model_instances {
@@ -491,7 +497,6 @@ impl Renderer for VkRenderer {
                                 Self::draw_model(
                                         &self.vk_context.device,
                                         draw_cmd_buffer,
-                                        world_dst_set,
                                         object_dst_set,
                                         *self.graphics_pipeline_layout,
                                         &self.asset_manager,
@@ -1692,7 +1697,6 @@ impl VkRenderer {
         fn draw_model(
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
-                world_dst_set: vk::DescriptorSet,
                 object_dst_set: vk::DescriptorSet,
                 pipeline_layout: vk::PipelineLayout,
                 asset_manager: &AssetManager,
@@ -1732,7 +1736,6 @@ impl VkRenderer {
                         Self::draw_mesh(
                                 device,
                                 draw_cmd_buffer,
-                                world_dst_set,
                                 object_dst_set,
                                 pipeline_layout,
                                 vk_asset_manager,
@@ -1744,7 +1747,6 @@ impl VkRenderer {
                         Self::draw_model(
                                 device,
                                 draw_cmd_buffer,
-                                world_dst_set,
                                 object_dst_set,
                                 pipeline_layout,
                                 asset_manager,
@@ -1762,7 +1764,6 @@ impl VkRenderer {
         fn draw_mesh(
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
-                world_dst_set: vk::DescriptorSet,
                 object_dst_set: vk::DescriptorSet,
                 pipeline_layout: vk::PipelineLayout,
                 vk_asset_manager: &VkAssetManager,
@@ -1772,7 +1773,6 @@ impl VkRenderer {
                         Self::draw_primitive(
                                 device,
                                 draw_cmd_buffer,
-                                world_dst_set,
                                 object_dst_set,
                                 pipeline_layout,
                                 vk_asset_manager,
@@ -1784,7 +1784,6 @@ impl VkRenderer {
         fn draw_primitive(
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
-                world_dst_set: vk::DescriptorSet,
                 object_dst_set: vk::DescriptorSet,
                 pipeline_layout: vk::PipelineLayout,
                 vk_asset_manager: &VkAssetManager,
@@ -1805,8 +1804,8 @@ impl VkRenderer {
                                 draw_cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
                                 pipeline_layout,
-                                0,
-                                &[world_dst_set, material_dst_set, object_dst_set],
+                                1,
+                                &[material_dst_set, object_dst_set],
                                 &[0],
                         );
                         device.cmd_bind_vertex_buffers(

@@ -159,8 +159,10 @@ impl ShaderModule {
                 let input_path = path.into_os_string().into_string()?;
                 let output_path = format!("{}.spv", input_path);
 
-                let mut child = Command::new("res/misc/glslc.exe")
+                let mut child = Command::new("res/misc/glslangValidator.exe")
                         .arg(input_path)
+                        .arg("--target-env")
+                        .arg("vulkan1.2")
                         .arg("-o")
                         .arg(&output_path)
                         .spawn()?;

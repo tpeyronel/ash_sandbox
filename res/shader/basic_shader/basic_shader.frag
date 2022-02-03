@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_debug_printf : enable
 
 layout (set = 0, binding = 1) uniform WorldLight {
         vec4 pos;
@@ -12,11 +13,13 @@ layout (set = 1, binding = 2) uniform MaterialData {
         vec4 diffuse_color;
 } u_material;
 
+
 layout (location = 0) in vec3 i_frag_pos;
 layout (location = 1) in vec3 i_normal;
 layout (location = 2) in vec2 i_tex_coord;
 
 layout (location = 0) out vec4 o_out_color;
+
 
 void main() {
         float ambient_strength = 0.01;

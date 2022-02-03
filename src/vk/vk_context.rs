@@ -149,7 +149,7 @@ impl VkContext {
                                 .application_version(vk::make_api_version(0, 1, 0, 0))
                                 .engine_name(&app_name)
                                 .engine_version(vk::make_api_version(0, 1, 0, 0))
-                                .api_version(vk::make_api_version(0, 1, 1, 0));
+                                .api_version(vk::make_api_version(0, 1, 2, 0));
 
                         let mut instance_cinfo = vk::InstanceCreateInfo::builder()
                                 .application_info(&app_info)
@@ -189,8 +189,9 @@ impl VkContext {
                 q_family_i: &VkQueueFamilyIndices,
         ) -> Result<(Rc<VkDevice>, VkQueues), Box<dyn Error>> {
                 let memory_budget_ext = CStr::from_bytes_with_nul(b"VK_EXT_memory_budget\0").unwrap();
+                let shader_non_semantic_info_ext = CStr::from_bytes_with_nul(b"VK_KHR_shader_non_semantic_info\0").unwrap();
 
-                let req_device_extensions_raw = vec![Swapchain::name().as_ptr(), memory_budget_ext.as_ptr()];
+                let req_device_extensions_raw = vec![Swapchain::name().as_ptr(), memory_budget_ext.as_ptr(), shader_non_semantic_info_ext.as_ptr()];
                 let req_device_features = vk::PhysicalDeviceFeatures::builder()
                         .sampler_anisotropy(true)
                         .shader_clip_distance(true);
