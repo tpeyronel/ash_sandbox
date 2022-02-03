@@ -138,11 +138,15 @@ pub struct ShaderDeclaration {
         pub vertex_inputs: Vec<String>,
 }
 
+pub type ShaderResourceId = String;
+
 #[derive(Debug)]
 pub struct Shader {
         pub name: String,
         pub vert_module: ShaderModule,
         pub frag_module: ShaderModule,
+        pub resources: Vec<ShaderResourceId>,
+        pub vertex_inputs: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -170,6 +174,38 @@ impl ShaderModule {
                 let bin = std::fs::read(&output_path)?;
 
                 Ok(Self { bin })
+        }
+}
+
+pub struct ShaderResource {
+        pub elements: Vec<ShaderResourceElement>,
+}
+
+pub struct ShaderResourceElement {
+        pub element_type: ShaderResourceElementType,
+        pub shader_stage_flags: ash::vk::ShaderStageFlags,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ShaderResourceElementType {
+        Sampler,
+        SampledImage,
+        UniformBuffer,
+        StorageBuffer,
+        UniformBufferDynamic,
+        StorageBufferDynamic,
+}
+
+impl From<ShaderResourceElementType> for ash::vk::DescriptorType {
+        fn from(t: ShaderResourceElementType) -> Self {
+                match t {
+                        ShaderResourceElementType::Sampler => ash::vk::DescriptorType::SAMPLER,
+                        ShaderResourceElementType::SampledImage => ash::vk::DescriptorType::SAMPLED_IMAGE,
+                        ShaderResourceElementType::UniformBuffer => ash::vk::DescriptorType::UNIFORM_BUFFER,
+                        ShaderResourceElementType::StorageBuffer => ash::vk::DescriptorType::STORAGE_BUFFER,
+                        ShaderResourceElementType::UniformBufferDynamic => ash::vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
+                        ShaderResourceElementType::StorageBufferDynamic => ash::vk::DescriptorType::STORAGE_BUFFER_DYNAMIC,
+                }
         }
 }
 
@@ -299,6 +335,7 @@ pub struct AssetManager {
         models: VecMap<ModelId, Model>,
         root_models: HashMap<String, ModelId>,
 
+        shader_resources: HashMap<ShaderResourceId, ShaderResource>,
         shaders: VecMap<ShaderId, Shader>,
         shader_names: HashMap<String, ShaderId>,
 
@@ -326,12 +363,21 @@ impl AssetManager {
                         models: VecMap::new(),
                         root_models: HashMap::new(),
 
+                        shader_resources: HashMap::new(),
                         shaders: VecMap::new(),
                         shader_names: HashMap::new(),
 
                         default_sampler,
                         default_material,
                 }
+        }
+
+        pub fn register_shader_resource(
+                &mut self,
+                shader_resource_id: ShaderResourceId,
+                shader_resource: ShaderResource,
+        ) {
+                self.shader_resources.insert(shader_resource_id, shader_resource);
         }
 
         pub fn load_shader_from_yaml(&mut self, path: &Path) -> Result<ShaderId, ShaderLoadError> {
@@ -342,14 +388,16 @@ impl AssetManager {
                         return Err(ShaderLoadError::ShaderNameRepeated(declaration.name));
                 }
 
-                let directory = path.parent().ok_or_else(|| {
-                        ShaderLoadError::InvalidPath(format!("Path {:?} does not have parent", path))
-                })?;
+                let directory = path
+                        .parent()
+                        .ok_or_else(|| ShaderLoadError::InvalidPath(format!("Path {:?} does not have parent", path)))?;
 
                 let shader = Shader {
                         name: declaration.name.clone(),
                         vert_module: ShaderModule::from_glsl_file(directory.join(&declaration.vert_shader))?,
                         frag_module: ShaderModule::from_glsl_file(directory.join(&declaration.frag_shader))?,
+                        resources: declaration.uniforms,
+                        vertex_inputs: declaration.vertex_inputs,
                 };
 
                 debug!("Loaded shader with name: {}", declaration.name);
@@ -441,6 +489,11 @@ impl AssetManager {
         #[allow(dead_code)]
         pub fn shader_names(&self) -> &HashMap<String, ShaderId> {
                 &self.shader_names
+        }
+
+        #[allow(dead_code)]
+        pub fn shader_resources(&self) -> &HashMap<ShaderResourceId, ShaderResource> {
+                &self.shader_resources
         }
 
         fn load_buffers(

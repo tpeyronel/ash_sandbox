@@ -4,6 +4,8 @@ vertex-shader: "basic_shader.vert"
 fragment-shader: "basic_shader.frag"
 uniforms:
   - "matrices"
+  - "material-texture-sampler"
+  - "lights"
 vertex-inputs:
   - "positions"
   - "normals"

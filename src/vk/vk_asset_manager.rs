@@ -1,6 +1,6 @@
 use std::{error::Error, rc::Rc};
 
-use ash::vk;
+use ash::vk::{self};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 
@@ -8,7 +8,7 @@ use crate::{
         asset_manager::{
                 AssetManager, Buffer, BufferId, BufferView, BufferViewId, ComponentType, DataType, Image, ImageFormat,
                 ImageId, MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, Sampler, SamplerId, Shader,
-                ShaderId, Texture, TextureId, WrappingMode,
+                ShaderId, ShaderResource, ShaderResourceId, Texture, TextureId, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         hashmap::HashMap,
@@ -21,7 +21,7 @@ use crate::{
         },
 };
 
-use super::vk_wrapper::VkShaderModule;
+use super::vk_wrapper::{VkDescriptorSetLayout, VkShaderModule};
 
 pub struct VkModelBufferView {
         pub buffer: VkBuffer,
@@ -40,11 +40,17 @@ pub struct VkShader {
         pub frag_module: VkShaderModule,
 }
 
+pub struct VkShaderResource {
+        pub dst_set_layout: VkDescriptorSetLayout,
+        pub descriptor_sets: Vec<vk::DescriptorSet>,
+}
+
 pub struct VkAssetManager {
         pub buffer_views: VecMap<BufferViewId, VkModelBufferView>,
         pub images: VecMap<ImageId, VkModelImage>,
         pub samplers: VecMap<SamplerId, VkSampler>,
         pub material_dst_sets: VecMap<MaterialId, vk::DescriptorSet>,
+        pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
         pub shaders: VecMap<ShaderId, VkShader>,
 }
 
@@ -59,7 +65,10 @@ impl VkAssetManager {
                 dst_pool: vk::DescriptorPool,
                 material_dst_set_layout: vk::DescriptorSetLayout,
                 asset_manager: &AssetManager,
+                frames_in_flight: usize,
         ) -> Result<Self, Box<dyn Error>> {
+                assert!(frames_in_flight > 0, "Frames in flight must be greater to zero");
+
                 let cmd_buffer = VkReusableCommandBuffer::new(Rc::clone(&device), cmd_pool)?;
 
                 trace!("Creating VkBuffers...");
@@ -99,6 +108,14 @@ impl VkAssetManager {
                         &vk_samplers,
                 )?;
 
+                trace!("Creating VkShaderResources...");
+                let vk_shader_resources = Self::create_vk_shaders_resources_from_shader_resources(
+                        &device,
+                        dst_pool,
+                        asset_manager.shader_resources(),
+                        frames_in_flight,
+                )?;
+
                 trace!("Creating VkShaders...");
                 let vk_shaders = Self::create_vk_shaders_from_shaders(&device, asset_manager.shaders())?;
 
@@ -107,6 +124,7 @@ impl VkAssetManager {
                         images: vk_images,
                         samplers: vk_samplers,
                         material_dst_sets: vk_material_dst_sets,
+                        shader_resources: vk_shader_resources,
                         shaders: vk_shaders,
                 })
         }
@@ -330,6 +348,53 @@ impl VkAssetManager {
                 }
 
                 Ok(material_dst_sets_map)
+        }
+
+        fn create_vk_shaders_resources_from_shader_resources(
+                device: &Rc<VkDevice>,
+                dst_pool: vk::DescriptorPool,
+                shader_resources: &HashMap<ShaderResourceId, ShaderResource>,
+                frames_in_flight: usize,
+        ) -> Result<HashMap<ShaderResourceId, VkShaderResource>, Box<dyn Error>> {
+                let mut vk_shader_resources = HashMap::<ShaderResourceId, VkShaderResource>::new();
+
+                for (resource_id, shader_resource) in shader_resources {
+                        let bindings: Vec<vk::DescriptorSetLayoutBinding> = shader_resource
+                                .elements
+                                .iter()
+                                .enumerate()
+                                .map(|(i, e)| vk::DescriptorSetLayoutBinding {
+                                        binding: i as u32,
+                                        descriptor_type: vk::DescriptorType::from(e.element_type),
+                                        descriptor_count: 1,
+                                        stage_flags: e.shader_stage_flags,
+                                        p_immutable_samplers: std::ptr::null(),
+                                })
+                                .collect();
+
+                        let matrices_dst_set_layout_cinfo =
+                                vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings);
+
+                        let dst_set_layout =
+                                unsafe { VkDescriptorSetLayout::new(device, &matrices_dst_set_layout_cinfo)? };
+
+                        let dst_set_layouts = vec![*dst_set_layout; frames_in_flight];
+
+                        let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
+                                .descriptor_pool(dst_pool)
+                                .set_layouts(&dst_set_layouts);
+
+                        let descriptor_sets = unsafe { device.allocate_descriptor_sets(&dst_set_ainfo)? };
+
+                        let vk_shader_resource = VkShaderResource {
+                                dst_set_layout,
+                                descriptor_sets,
+                        };
+
+                        vk_shader_resources.insert(resource_id.clone(), vk_shader_resource);
+                }
+
+                Ok(vk_shader_resources)
         }
 
         fn create_vk_shaders_from_shaders(

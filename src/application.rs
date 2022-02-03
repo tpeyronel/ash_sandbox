@@ -160,8 +160,42 @@ impl Application {
                 let _model_icosphere =
                         asset_manager.import_gltf_file(std::path::Path::new("res/model/icosphere/icosphere.gltf"))?;
 
-                let _basic_shader = asset_manager.load_shader_from_yaml(Path::new("res/shader/basic_shader/basic_shader.yaml"))?;
-                let _color_shader = asset_manager.load_shader_from_yaml(Path::new("res/shader/color_shader/color_shader.yaml"))?;
+                asset_manager.register_shader_resource(
+                        "matrices".to_string(),
+                        ShaderResource {
+                                elements: vec![
+                                        ShaderResourceElement {
+                                                element_type: ShaderResourceElementType::UniformBuffer,
+                                                shader_stage_flags: ash::vk::ShaderStageFlags::VERTEX,
+                                        },
+                                        ShaderResourceElement {
+                                                element_type: ShaderResourceElementType::UniformBufferDynamic,
+                                                shader_stage_flags: ash::vk::ShaderStageFlags::VERTEX,
+                                        },
+                                ],
+                        },
+                );
+
+                asset_manager.register_shader_resource(
+                        "material-texture-sampler".to_string(),
+                        ShaderResource {
+                                elements: vec![
+                                        ShaderResourceElement {
+                                                element_type: ShaderResourceElementType::SampledImage,
+                                                shader_stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+                                        },
+                                        ShaderResourceElement {
+                                                element_type: ShaderResourceElementType::Sampler,
+                                                shader_stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+                                        },
+                                ],
+                        },
+                );
+
+                let _basic_shader =
+                        asset_manager.load_shader_from_yaml(Path::new("res/shader/basic_shader/basic_shader.yaml"))?;
+                let _color_shader =
+                        asset_manager.load_shader_from_yaml(Path::new("res/shader/color_shader/color_shader.yaml"))?;
 
                 let asset_manager = Arc::new(asset_manager);
                 trace!("Initialized AssetManager");

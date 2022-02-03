@@ -1,12 +1,17 @@
 #version 450
 
-layout (set = 0, binding = 0) uniform Matrices {
-        // mat4 model;
+layout (set = 0, binding = 0) uniform WorldMatrices {
         mat4 view;
         mat4 proj;
-        // mat4 mvp;
+} u_world_matrices;
+
+layout (set = 2, binding = 0) uniform ObjectMatrices {
+        mat4 model;
+        mat4 mvp;
         mat4 normal;
-} u_matrices;
+} u_object_matrices;
+
+
 
 layout (push_constant) uniform Matrices_M_MVP {
         mat4 model;
@@ -23,10 +28,10 @@ layout (location = 1) out vec3 o_normal;
 layout (location = 2) out vec2 o_tex_coord;
 
 void main() {
-        o_frag_pos = vec3(u_matrices.view * u_mats_m_mvp.model * vec4(i_pos, 1.0));
-        // o_normal = mat3(u_matrices.normal) * i_normal;
-        // o_normal = vec3(u_matrices.normal * vec4(i_normal, 1.0));
-        o_normal = mat3(transpose(inverse(u_matrices.view * u_mats_m_mvp.model))) * i_normal;
+        o_frag_pos = vec3(u_world_matrices.view * u_mats_m_mvp.model * vec4(i_pos, 1.0));
+        // o_normal = mat3(u_object_matrices.normal) * i_normal;
+        o_normal = mat3(transpose(inverse(u_world_matrices.view * u_mats_m_mvp.model))) * i_normal;
+
         o_tex_coord = i_tex_coord;
 
         gl_Position = u_mats_m_mvp.mvp * vec4(i_pos, 1.0);
