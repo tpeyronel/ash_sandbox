@@ -4,17 +4,12 @@ use ash::vk;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 
-use super::{
-        vk_buffer::{VkBuffer, VkBufferCreateInfo},
-        vk_command_buffer::VkReusableCommandBuffer,
-        vkma_error::VkmaResult,
-};
+use super::{vk_buffer::VkBuffer, vk_command_buffer::VkReusableCommandBuffer, vkma_error::VkmaResult};
 
 #[allow(dead_code)]
 pub enum MipLevels {
         Log2,
-        One,
-        Number(u32),
+        N(u32),
 }
 
 pub struct VkImageCreateInfo {
@@ -119,12 +114,10 @@ impl VkImage {
         ) -> Result<Self, Box<dyn Error>> {
                 let mip_levels = match cinfo.mip_levels {
                         MipLevels::Log2 => (u32::max(cinfo.width, cinfo.height) as f32).log2().floor() as u32 + 1,
-                        MipLevels::One => 1,
-                        MipLevels::Number(n) => n,
+                        MipLevels::N(n) => n,
                 };
 
-                let staging_buffer =
-                        Self::create_staging_buffer(device, Rc::clone(&allocator), &cinfo.data, cinfo.data.len())?;
+                let staging_buffer = VkBuffer::new_transfer_src(device, Rc::clone(&allocator), &cinfo.data)?;
 
                 let vk_img_cinfo = VkImageCreateInfo {
                         image_type: vk::ImageType::TYPE_2D,
@@ -204,40 +197,6 @@ impl VkImage {
                 Ok(vk_img)
         }
 
-        fn create_staging_buffer(
-                device: &ash::Device,
-                allocator: Rc<vma::Allocator>,
-                data: &[u8],
-                data_bsize: usize,
-        ) -> VkmaResult<VkBuffer> {
-                let staging_buffer = {
-                        let buffer_cinfo = VkBufferCreateInfo {
-                                device,
-                                allocator,
-
-                                buffer_size: data_bsize as vk::DeviceSize,
-                                buffer_usage: vk::BufferUsageFlags::TRANSFER_SRC,
-                                mem_usage: vma::MemoryUsage::CpuOnly,
-                                alloc_flags: vma::AllocationCreateFlags::NONE,
-                                req_mem_flags: vk::MemoryPropertyFlags::HOST_VISIBLE
-                                        | vk::MemoryPropertyFlags::HOST_COHERENT,
-                                pref_mem_flags: Default::default(),
-                                mem_type_bits: 0,
-                                q_family_indices: None,
-                        };
-
-                        VkBuffer::new(buffer_cinfo)?
-                };
-
-                let buffer_data = staging_buffer.map_memory()?;
-                unsafe {
-                        std::ptr::copy_nonoverlapping(data.as_ptr(), buffer_data, data_bsize);
-                }
-                staging_buffer.unmap_memory()?;
-
-                Ok(staging_buffer)
-        }
-
         fn cmd_transition_img_layout(tinfo: &TransitionImageLayoutInfo) {
                 let barrier = vk::ImageMemoryBarrier {
                         src_access_mask: tinfo.src_access_mask,
@@ -266,8 +225,8 @@ impl VkImage {
                                 &[],
                                 &[],
                                 std::slice::from_ref(&barrier),
-                        )
-                };
+                        );
+                }
         }
 
         fn cmd_copy_buffer_to_image(
@@ -304,8 +263,8 @@ impl VkImage {
                                 dst_image,
                                 dst_image_layout,
                                 std::slice::from_ref(&region),
-                        )
-                };
+                        );
+                }
         }
 
         fn cmd_gen_mipmaps(minfo: &GenerateMipmapsInfo) {

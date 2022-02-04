@@ -29,11 +29,11 @@ layout (location = 2) out vec2 o_tex_coord;
 
 
 void main() {
-        o_frag_pos = vec3(u_world_matrices.view * u_mats_m_mvp.model * vec4(i_pos, 1.0));
+        o_frag_pos = vec3(u_world_matrices.view * u_object_matrices.model * vec4(i_pos, 1.0));
         // o_normal = mat3(u_object_matrices.normal) * i_normal;
-        o_normal = mat3(transpose(inverse(u_world_matrices.view * u_mats_m_mvp.model))) * i_normal;
+        o_normal = mat3(transpose(inverse(u_world_matrices.view * u_object_matrices.model))) * i_normal;
 
         o_tex_coord = i_tex_coord;
 
-        gl_Position = u_mats_m_mvp.mvp * vec4(i_pos, 1.0);
+        gl_Position = u_world_matrices.proj * u_world_matrices.view * u_object_matrices.model * vec4(i_pos, 1.0);
 }

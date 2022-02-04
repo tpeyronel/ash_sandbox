@@ -3,7 +3,7 @@ use std::{error::Error, ops::Deref, rc::Rc};
 use ash::vk;
 use log::trace;
 
-use super::vk_command_buffer::VkReusableCommandBuffer;
+use super::{vk_command_buffer::VkReusableCommandBuffer, vkma_error::VkmaResult};
 
 #[derive(Clone)]
 pub struct VkBufferCreateInfo<'a> {
@@ -46,6 +46,8 @@ pub struct VkBuffer {
         handle: vk::Buffer,
         alloc: vma::Allocation,
         ainfo: vma::AllocationInfo,
+
+        memory: *mut u8,
 }
 
 impl VkBuffer {
@@ -80,6 +82,7 @@ impl VkBuffer {
                         handle,
                         alloc,
                         ainfo,
+                        memory: std::ptr::null_mut(),
                 })
         }
 
@@ -108,7 +111,7 @@ impl VkBuffer {
                         q_family_indices: None,
                 };
 
-                let staging_buffer = VkBuffer::new(staging_buffer_cinfo)?;
+                let mut staging_buffer = VkBuffer::new(staging_buffer_cinfo)?;
 
                 let map = staging_buffer.map_memory()?;
                 unsafe {
@@ -155,11 +158,62 @@ impl VkBuffer {
                 Ok(buffer)
         }
 
-        pub fn map_memory(&self) -> vma::Result<*mut u8> {
-                self.allocator.map_memory(&self.alloc)
+        pub fn new_transfer_src(
+                device: &ash::Device,
+                allocator: Rc<vma::Allocator>,
+                data: &[u8],
+        ) -> VkmaResult<VkBuffer> {
+                let mut staging_buffer = {
+                        let buffer_cinfo = VkBufferCreateInfo {
+                                device,
+                                allocator,
+                                buffer_size: data.len() as vk::DeviceSize,
+                                buffer_usage: vk::BufferUsageFlags::TRANSFER_SRC,
+                                mem_usage: vma::MemoryUsage::CpuOnly,
+                                alloc_flags: vma::AllocationCreateFlags::NONE,
+                                req_mem_flags: vk::MemoryPropertyFlags::HOST_VISIBLE
+                                        | vk::MemoryPropertyFlags::HOST_COHERENT,
+                                pref_mem_flags: Default::default(),
+                                mem_type_bits: 0,
+                                q_family_indices: None,
+                        };
+
+                        VkBuffer::new(buffer_cinfo)?
+                };
+
+                let buffer_data = staging_buffer.map_memory()?;
+                unsafe {
+                        std::ptr::copy_nonoverlapping(data.as_ptr(), buffer_data, data.len());
+                }
+                staging_buffer.unmap_memory()?;
+
+                Ok(staging_buffer)
         }
 
-        pub fn unmap_memory(&self) -> vma::Result<()> {
+        pub fn write<T: 'static>(&mut self, value: &T) -> vma::Result<()> {
+                self.write_offsetted(value, 0)
+        }
+
+        pub fn write_offsetted<T: 'static>(&mut self, value: &T, offset: usize) -> vma::Result<()> {
+                let map = self.map_memory()?;
+                unsafe {
+                        let src = value as *const _ as *const u8;
+                        let dst = map.offset(offset as isize);
+                        std::ptr::copy_nonoverlapping(src, dst, std::mem::size_of::<T>());
+                }
+                Ok(())
+        }
+
+        pub fn map_memory(&mut self) -> vma::Result<*mut u8> {
+                if self.memory.is_null() {
+                        self.memory = self.allocator.map_memory(&self.alloc)?;
+                }
+
+                Ok(self.memory)
+        }
+
+        pub fn unmap_memory(&mut self) -> vma::Result<()> {
+                self.memory = std::ptr::null_mut();
                 self.allocator.unmap_memory(&self.alloc)
         }
 
@@ -180,8 +234,11 @@ impl Deref for VkBuffer {
 impl Drop for VkBuffer {
         fn drop(&mut self) {
                 trace!("Destroying VkBuffer...");
-
                 assert_ne!(self.handle, vk::Buffer::null());
+
+                if !self.memory.is_null() {
+                        let _ = self.unmap_memory();
+                }
 
                 let _ = self.allocator.destroy_buffer(self.handle, &self.alloc);
 
