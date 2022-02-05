@@ -645,19 +645,23 @@ struct SharedValueSlave<T> {
 }
 
 impl<T: Copy> SharedValueSlave<T> {
+        #[allow(dead_code)]
         pub fn emit(&mut self, value: T) {
                 *self.get_mut() = value;
                 self.tx.update(Some(value)).unwrap();
         }
 
+        #[allow(dead_code)]
         pub fn reemit(&mut self) {
                 self.tx.update(Some(*self.rx.latest())).unwrap();
         }
 
+        #[allow(dead_code)]
         pub fn get(&mut self) -> &T {
                 self.rx.latest()
         }
 
+        #[allow(dead_code)]
         pub fn get_mut(&mut self) -> &mut T {
                 self.rx.latest_mut()
         }

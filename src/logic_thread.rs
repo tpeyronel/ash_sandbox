@@ -18,7 +18,6 @@ use crate::{
         application::{CursorState, WindowMode, WindowThreadCommand, WindowThreadMessage},
         asset_manager::{AssetManager, ModelId},
         constants::PLAYER_MOVEMENT_SPEED,
-        hashmap::GetOrInsert,
         input_manager::ActionReceiver,
         my_glm::{Mat4, Quat, UnitQuat, Vec3},
         render_state_switcher::RenderStateSwitcher,

@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use ash::vk::{self};
+use ash::vk;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 

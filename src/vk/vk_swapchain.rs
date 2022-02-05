@@ -562,7 +562,7 @@ impl Drop for VkSwapchain {
 }
 
 bitflags! {
-        pub struct VkSwapchainOutdatedCauses: u32 {
+        pub struct VkSwapchainOutdatedCauseFlags: u32 {
                 const NONE = 0b00000000;
                 const WINDOW_RESIZE = 0b00000001;
                 const SUBOPTIMAL = 0b00000010;

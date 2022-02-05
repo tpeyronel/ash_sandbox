@@ -18,7 +18,7 @@ use super::{
         vk_buffer::{VkBuffer, VkBufferCreateInfo},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
-        vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauses},
+        vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
         vk_wrapper::{
                 VkDescriptorSetLayout, VkDevice, VkPhysicalDevice, VkPipeline, VkPipelineLayout, VkRenderPass,
                 VkSemaphore,
@@ -44,7 +44,7 @@ pub struct VkRenderer {
         basic_shader_id: ShaderId,
 
         swapchain: VkSwapchain,
-        swapchain_outdated_causes: VkSwapchainOutdatedCauses,
+        swapchain_outdated_causes: VkSwapchainOutdatedCauseFlags,
 
         render_pass: VkRenderPass,
 
@@ -285,7 +285,7 @@ impl VkRenderer {
                         basic_shader_id,
 
                         swapchain,
-                        swapchain_outdated_causes: VkSwapchainOutdatedCauses::NONE,
+                        swapchain_outdated_causes: VkSwapchainOutdatedCauseFlags::NONE,
 
                         render_pass,
 
@@ -493,21 +493,21 @@ impl Renderer for VkRenderer {
 
         fn on_window_resize(&mut self, _width: u32, _height: u32) {
                 self.swapchain_outdated_causes
-                        .insert(VkSwapchainOutdatedCauses::WINDOW_RESIZE);
+                        .insert(VkSwapchainOutdatedCauseFlags::WINDOW_RESIZE);
         }
 }
 
 impl VkRenderer {
         fn recreate_swapchain_maybe(&mut self) -> AnyResult<()> {
                 match self.swapchain_outdated_causes {
-                        VkSwapchainOutdatedCauses::NONE => return Ok(()),
-                        VkSwapchainOutdatedCauses::WINDOW_RESIZE => {
-                                // If resize is the only cause, then check that we actually need to resize
+                        VkSwapchainOutdatedCauseFlags::NONE => return Ok(()),
+                        // If resize is the only cause, then check that we actually need to resize
+                        VkSwapchainOutdatedCauseFlags::WINDOW_RESIZE => {
                                 let wsize = &self.window.inner_size();
                                 let ssize = &self.swapchain.extent;
 
                                 if (wsize.width == ssize.width) && (wsize.height == ssize.height) {
-                                        self.swapchain_outdated_causes = VkSwapchainOutdatedCauses::NONE;
+                                        self.swapchain_outdated_causes = VkSwapchainOutdatedCauseFlags::NONE;
 
                                         return Ok(());
                                 }
@@ -521,7 +521,7 @@ impl VkRenderer {
                 let mut recreate_render_pass: bool = false;
                 let mut recreate_pipeline: bool = self
                         .swapchain_outdated_causes
-                        .contains(VkSwapchainOutdatedCauses::OUT_OF_DATE);
+                        .contains(VkSwapchainOutdatedCauseFlags::OUT_OF_DATE);
 
                 unsafe { self.vk_context.device.device_wait_idle()? };
 
@@ -615,7 +615,7 @@ impl VkRenderer {
                         )?;
                 }
 
-                self.swapchain_outdated_causes = VkSwapchainOutdatedCauses::NONE;
+                self.swapchain_outdated_causes = VkSwapchainOutdatedCauseFlags::NONE;
 
                 Ok(())
         }
@@ -1387,7 +1387,7 @@ impl VkRenderer {
 
                         if suboptimal {
                                 self.swapchain_outdated_causes
-                                        .insert(VkSwapchainOutdatedCauses::SUBOPTIMAL);
+                                        .insert(VkSwapchainOutdatedCauseFlags::SUBOPTIMAL);
                         }
 
                         imagei
@@ -1479,11 +1479,11 @@ impl VkRenderer {
                 ) {
                         Ok(suboptimal) if suboptimal => {
                                 self.swapchain_outdated_causes
-                                        .insert(VkSwapchainOutdatedCauses::SUBOPTIMAL);
+                                        .insert(VkSwapchainOutdatedCauseFlags::SUBOPTIMAL);
                         },
                         Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                                 self.swapchain_outdated_causes
-                                        .insert(VkSwapchainOutdatedCauses::OUT_OF_DATE);
+                                        .insert(VkSwapchainOutdatedCauseFlags::OUT_OF_DATE);
                         },
                         Err(err) => return Err(err.into()),
                         _ => (),
