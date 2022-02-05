@@ -1,4 +1,4 @@
-use std::{error::Error, rc::Rc};
+use std::rc::Rc;
 
 use ash::vk::{self};
 #[allow(unused_imports)]
@@ -19,6 +19,7 @@ use crate::{
                 vk_image::{MipLevels, VkImage, VkImageCreateFromDataInfo},
                 vk_wrapper::{VkCommandPool, VkDevice, VkImageView, VkPhysicalDevice, VkSampler},
         },
+        AnyResult,
 };
 
 use super::vk_wrapper::{VkDescriptorSetLayout, VkShaderModule};
@@ -66,7 +67,7 @@ impl VkAssetManager {
                 material_dst_set_layout: vk::DescriptorSetLayout,
                 asset_manager: &AssetManager,
                 frames_in_flight: usize,
-        ) -> Result<Self, Box<dyn Error>> {
+        ) -> AnyResult<Self> {
                 assert!(frames_in_flight > 0, "Frames in flight must be greater to zero");
 
                 let cmd_buffer = VkReusableCommandBuffer::new(Rc::clone(&device), cmd_pool)?;
@@ -157,7 +158,7 @@ impl VkAssetManager {
                 buffers: &VecMap<BufferId, Buffer>,
                 buffer_views: &VecMap<BufferViewId, BufferView>,
                 buffer_usages: &HashMap<BufferViewId, vk::BufferUsageFlags>,
-        ) -> Result<VecMap<BufferViewId, VkModelBufferView>, Box<dyn Error>> {
+        ) -> AnyResult<VecMap<BufferViewId, VkModelBufferView>> {
                 let mut vk_buffer_views: VecMap<BufferViewId, VkModelBufferView> = VecMap::new();
 
                 for (bview_id, bview) in buffer_views {
@@ -211,7 +212,7 @@ impl VkAssetManager {
                 transfer_queue: vk::Queue,
                 cmd_buffer: &VkReusableCommandBuffer,
                 images: &VecMap<ImageId, Image>,
-        ) -> Result<VecMap<ImageId, VkModelImage>, Box<dyn Error>> {
+        ) -> AnyResult<VecMap<ImageId, VkModelImage>> {
                 let mut vk_images: VecMap<ImageId, VkModelImage> = VecMap::new();
 
                 for (image_id, image) in images {
@@ -262,7 +263,7 @@ impl VkAssetManager {
                 pdevice: &VkPhysicalDevice,
                 device: Rc<VkDevice>,
                 samplers: &VecMap<SamplerId, Sampler>,
-        ) -> Result<VecMap<SamplerId, VkSampler>, Box<dyn Error>> {
+        ) -> AnyResult<VecMap<SamplerId, VkSampler>> {
                 let mut vk_samplers = VecMap::<SamplerId, VkSampler>::new();
 
                 for (sampler_id, sampler) in samplers {
@@ -302,7 +303,7 @@ impl VkAssetManager {
                 materials: &VecMap<MaterialId, Material>,
                 vk_images: &VecMap<ImageId, VkModelImage>,
                 vk_samplers: &VecMap<SamplerId, VkSampler>,
-        ) -> Result<VecMap<MaterialId, vk::DescriptorSet>, Box<dyn Error>> {
+        ) -> AnyResult<VecMap<MaterialId, vk::DescriptorSet>> {
                 let material_dst_set_layouts = vec![material_dst_set_layout; materials.len()];
                 let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
                         .descriptor_pool(dst_pool)
@@ -355,7 +356,7 @@ impl VkAssetManager {
                 dst_pool: vk::DescriptorPool,
                 shader_resources: &HashMap<ShaderResourceId, ShaderResource>,
                 frames_in_flight: usize,
-        ) -> Result<HashMap<ShaderResourceId, VkShaderResource>, Box<dyn Error>> {
+        ) -> AnyResult<HashMap<ShaderResourceId, VkShaderResource>> {
                 let mut vk_shader_resources = HashMap::<ShaderResourceId, VkShaderResource>::new();
 
                 for (resource_id, shader_resource) in shader_resources {
@@ -400,7 +401,7 @@ impl VkAssetManager {
         fn create_vk_shaders_from_shaders(
                 device: &Rc<VkDevice>,
                 shaders: &VecMap<ShaderId, Shader>,
-        ) -> Result<VecMap<ShaderId, VkShader>, Box<dyn Error>> {
+        ) -> AnyResult<VecMap<ShaderId, VkShader>> {
                 let mut vk_shaders = VecMap::<ShaderId, VkShader>::new();
 
                 for (shader_id, shader) in shaders {

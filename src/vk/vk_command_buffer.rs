@@ -1,6 +1,8 @@
-use std::{error::Error, ops::Deref, rc::Rc};
+use std::{ops::Deref, rc::Rc};
 
 use ash::{prelude::VkResult, vk};
+
+use crate::AnyResult;
 
 use super::vk_wrapper::{VkCommandPool, VkDevice, VkFence};
 
@@ -65,9 +67,9 @@ impl VkReusableCommandBuffer {
                 wait_stages: &[vk::PipelineStageFlags],
                 signal_semaphores: &[vk::Semaphore],
                 f: F,
-        ) -> Result<(), Box<dyn Error>>
+        ) -> AnyResult<()>
         where
-                F: FnOnce(&ash::Device, vk::CommandBuffer) -> Result<(), Box<dyn Error>>,
+                F: FnOnce(&ash::Device, vk::CommandBuffer) -> AnyResult<()>,
         {
                 unsafe {
                         self.device.wait_for_fences(&[*self.fence], true, u64::MAX)?;

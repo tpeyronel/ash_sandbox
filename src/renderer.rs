@@ -1,8 +1,6 @@
-use std::error::Error;
-
 use specs::Entity;
 
-use crate::{asset_manager::ModelId, hashmap::HashMap, logic_thread::ProjectionCameraComponent, my_glm::*};
+use crate::{asset_manager::ModelId, hashmap::HashMap, logic_thread::ProjectionCameraComponent, my_glm::*, AnyResult};
 
 pub struct ModelInstance {
         pub model_id: ModelId,
@@ -18,8 +16,8 @@ pub struct LightPos(pub Vec3);
 pub struct LightColor(pub Vec3);
 
 pub trait Renderer {
-        // fn draw(&mut self, cam: &mut Camera, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>>;
-        fn draw(&mut self, player_orien: &UnitQuat, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>>;
+        // fn draw(&mut self, cam: &mut Camera, imgui_draw_data: &imgui::DrawData) -> AnyResult<()>;
+        fn draw(&mut self, player_orien: &UnitQuat, imgui_draw_data: &imgui::DrawData) -> AnyResult<()>;
         fn on_window_resize(&mut self, width: u32, height: u32);
 
         /*

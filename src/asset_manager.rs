@@ -6,6 +6,7 @@ use std::{
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
+use thiserror::Error;
 
 use crate::{
         hashmap::{GetOrInsert, HashMap},
@@ -205,8 +206,12 @@ impl From<ShaderResourceElementType> for ash::vk::DescriptorType {
                         ShaderResourceElementType::SampledImage => ash::vk::DescriptorType::SAMPLED_IMAGE,
                         ShaderResourceElementType::UniformBuffer => ash::vk::DescriptorType::UNIFORM_BUFFER,
                         ShaderResourceElementType::StorageBuffer => ash::vk::DescriptorType::STORAGE_BUFFER,
-                        ShaderResourceElementType::UniformBufferDynamic => ash::vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
-                        ShaderResourceElementType::StorageBufferDynamic => ash::vk::DescriptorType::STORAGE_BUFFER_DYNAMIC,
+                        ShaderResourceElementType::UniformBufferDynamic => {
+                                ash::vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC
+                        },
+                        ShaderResourceElementType::StorageBufferDynamic => {
+                                ash::vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
+                        },
                 }
         }
 }
@@ -238,75 +243,53 @@ impl From<&gltf::mesh::BoundingBox> for BoundingBox {
         }
 }
 
-#[derive(Debug)]
 #[allow(dead_code)]
+#[derive(Error, Debug)]
 pub enum GLTFImportError {
+        #[error("image source is not a uri")]
         ImageSourceNotUri,
+        #[error("image source uri is not relative")]
         ImageSourceUriNotRelative,
+        #[error("image format not supported")]
         ImageFormatNotSupported,
+        #[error("accessor missing buffer view")]
         AccessorMissingBufferView,
+        #[error("mesh missing primitives")]
         MeshMissingPrimitives,
+        #[error("mesh missing positions")]
         MeshMissingPositions,
+        #[error("mesh missing tex coords")]
         MeshMissingTexCoords,
+        #[error("mesh missing normals")]
         MeshMissingNormals,
+        #[error("mesh missing tangents")]
         MeshMissingTangents,
+        #[error("mesh missing indices")]
         MeshMissingIndices,
+        #[error("root model missing")]
         RootModelMissing,
+        #[error("scene name missing")]
         SceneNameMissing,
+        #[error("scene name alredy registered")]
         SceneNameAlreadyRegistered,
-        GLTFCrateError(gltf::Error),
+        #[error(transparent)]
+        GLTFCrateError(#[from] gltf::Error),
 }
 
-impl std::fmt::Display for GLTFImportError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{:?}", self)
-        }
-}
-
-impl std::error::Error for GLTFImportError {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-                match self {
-                        GLTFImportError::GLTFCrateError(e) => Some(e),
-                        _ => None,
-                }
-        }
-}
-
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum ShaderLoadError {
+        #[error("invalid path: {0}")]
         InvalidPath(String),
-        YamlError(serde_yaml::Error),
+        #[error(transparent)]
+        YamlError(#[from] serde_yaml::Error),
+        #[error("path has invalid unicode: {}", PathBuf::from(.0).display())]
         InvalidUnicode(OsString),
-        ShaderNameRepeated(String),
-        IoError(std::io::Error),
+        #[error("shader already registered: {0}")]
+        ShaderNameAlreadyRegistered(String),
+        #[error(transparent)]
+        IoError(#[from] std::io::Error),
+        #[error("error ocurred compiling shaders: {0}")]
         CompileError(std::process::ExitStatus),
-}
-
-impl std::fmt::Display for ShaderLoadError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{:?}", self)
-        }
-}
-
-impl std::error::Error for ShaderLoadError {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-                match self {
-                        ShaderLoadError::IoError(e) => Some(e),
-                        _ => None,
-                }
-        }
-}
-
-impl From<std::io::Error> for ShaderLoadError {
-        fn from(e: std::io::Error) -> Self {
-                Self::IoError(e)
-        }
-}
-
-impl From<serde_yaml::Error> for ShaderLoadError {
-        fn from(e: serde_yaml::Error) -> Self {
-                Self::YamlError(e)
-        }
 }
 
 impl From<OsString> for ShaderLoadError {
@@ -387,7 +370,7 @@ impl AssetManager {
                 let declaration: ShaderDeclaration = serde_yaml::from_str(&yaml)?;
 
                 if self.shader_names.contains_key(&declaration.name) {
-                        return Err(ShaderLoadError::ShaderNameRepeated(declaration.name));
+                        return Err(ShaderLoadError::ShaderNameAlreadyRegistered(declaration.name));
                 }
 
                 let directory = path

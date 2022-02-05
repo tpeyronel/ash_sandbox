@@ -1,9 +1,11 @@
-use std::{error::Error, ops::Deref, rc::Rc};
+use std::{ops::Deref, rc::Rc};
 
 use ash::vk;
 use log::trace;
 
-use super::{vk_command_buffer::VkReusableCommandBuffer, vkma_error::VkmaResult};
+use crate::AnyResult;
+
+use super::vk_command_buffer::VkReusableCommandBuffer;
 
 #[derive(Clone)]
 pub struct VkBufferCreateInfo<'a> {
@@ -51,7 +53,7 @@ pub struct VkBuffer {
 }
 
 impl VkBuffer {
-        pub fn new(create_info: VkBufferCreateInfo) -> vma::Result<Self> {
+        pub fn new(create_info: VkBufferCreateInfo) -> AnyResult<Self> {
                 let mut handle_cinfo = vk::BufferCreateInfo::builder()
                         .size(create_info.buffer_size)
                         .usage(create_info.buffer_usage);
@@ -86,7 +88,7 @@ impl VkBuffer {
                 })
         }
 
-        pub fn new_immutable<T>(create_info: VkImmutableBufferCreateInfo<T>) -> Result<Self, Box<dyn Error>> {
+        pub fn new_immutable<T>(create_info: VkImmutableBufferCreateInfo<T>) -> AnyResult<Self> {
                 let (buffer_data, buffer_size) = match create_info.data {
                         BufferData::FullSlice(s) => (
                                 s.as_ptr() as *const u8,
@@ -162,7 +164,7 @@ impl VkBuffer {
                 device: &ash::Device,
                 allocator: Rc<vma::Allocator>,
                 data: &[u8],
-        ) -> VkmaResult<VkBuffer> {
+        ) -> AnyResult<VkBuffer> {
                 let mut staging_buffer = {
                         let buffer_cinfo = VkBufferCreateInfo {
                                 device,

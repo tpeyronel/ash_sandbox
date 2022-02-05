@@ -39,6 +39,8 @@ use env_logger::Env;
 #[allow(unused_imports)]
 use log::{info, trace, warn};
 
+pub type AnyResult<T> = anyhow::Result<T>;
+
 fn main() -> Result<(), Box<dyn Error>> {
         env_logger::Builder::from_env(Env::default().default_filter_or("trace"))
                 .format(|buf, record| {

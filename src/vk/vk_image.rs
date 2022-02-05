@@ -1,8 +1,10 @@
-use std::{error::Error, ops::Deref, rc::Rc};
+use std::{ops::Deref, rc::Rc};
 
 use ash::vk;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
+
+use crate::AnyResult;
 
 use super::{vk_buffer::VkBuffer, vk_command_buffer::VkReusableCommandBuffer, vkma_error::VkmaResult};
 
@@ -111,7 +113,7 @@ impl VkImage {
                 device: &ash::Device,
                 allocator: Rc<vma::Allocator>,
                 cinfo: &VkImageCreateFromDataInfo,
-        ) -> Result<Self, Box<dyn Error>> {
+        ) -> AnyResult<Self> {
                 let mip_levels = match cinfo.mip_levels {
                         MipLevels::Log2 => (u32::max(cinfo.width, cinfo.height) as f32).log2().floor() as u32 + 1,
                         MipLevels::N(n) => n,

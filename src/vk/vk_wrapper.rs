@@ -2,6 +2,7 @@ use std::{ffi::CStr, ops::Deref, rc::Rc};
 
 use ash::{extensions::ext::DebugUtils, prelude::VkResult, vk};
 use log::trace;
+use thiserror::Error;
 
 pub struct VkInstance {
         _entry: Rc<ash::Entry>,
@@ -70,16 +71,13 @@ impl VkPhysicalDevice {
                 Ok(pdevices
                         .iter()
                         .filter_map(|&pd| Self::is_device_suitable(instance, surface, pd))
-                        .find(|&(pd, _)| {
-                                let name = unsafe {
-                                        CStr::from_ptr(instance.get_physical_device_properties(pd).device_name.as_ptr())
-                                                .to_str()
-                                                .unwrap()
-                                };
+                        .find(|&(pd, _)| unsafe {
+                                let props = instance.get_physical_device_properties(pd);
+                                let name = CStr::from_ptr(props.device_name.as_ptr()).to_str().unwrap();
 
                                 name == "NVIDIA GeForce GTX 970"
                         })
-                        .unwrap())
+                        .expect("Couldn't find suitable VkPhysicalDevice"))
         }
 
         fn is_device_suitable(
@@ -667,36 +665,12 @@ impl Drop for VkFence {
         }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Error, Debug, Clone)]
 pub enum VkShaderModuleError {
-        VkResult(vk::Result),
-        CodeSizeNotMultipleOf4,
-}
-
-impl std::error::Error for VkShaderModuleError {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-                match self {
-                        VkShaderModuleError::VkResult(vk_result) => Some(vk_result),
-                        VkShaderModuleError::CodeSizeNotMultipleOf4 => None,
-                }
-        }
-}
-
-impl std::fmt::Display for VkShaderModuleError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                match self {
-                        VkShaderModuleError::VkResult(vk_result) => vk_result.fmt(f),
-                        VkShaderModuleError::CodeSizeNotMultipleOf4 => {
-                                write!(f, "Code size for shader must be a multiple of 4")
-                        },
-                }
-        }
-}
-
-impl From<vk::Result> for VkShaderModuleError {
-        fn from(r: vk::Result) -> Self {
-                Self::VkResult(r)
-        }
+        #[error(transparent)]
+        VkResult(#[from] vk::Result),
+        #[error("shader code size is not a multiple of 4: {0}")]
+        CodeSizeNotMultipleOf4(usize),
 }
 
 pub struct VkShaderModule {
@@ -714,7 +688,7 @@ impl VkShaderModule {
 
         pub fn from_code(device: &Rc<VkDevice>, code: &Vec<u8>) -> Result<Self, VkShaderModuleError> {
                 if code.len() % 4 != 0 {
-                        return Err(VkShaderModuleError::CodeSizeNotMultipleOf4);
+                        return Err(VkShaderModuleError::CodeSizeNotMultipleOf4(code.len()));
                 }
 
                 let mut shader_module_cinfo = vk::ShaderModuleCreateInfo::builder().build();

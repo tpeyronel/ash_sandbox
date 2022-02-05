@@ -1,5 +1,4 @@
 use std::{
-        error::Error,
         ffi::CString,
         mem::size_of,
         rc::Rc,
@@ -25,7 +24,7 @@ use super::{
                 VkSemaphore,
         },
 };
-use crate::{asset_manager::ShaderId, renderer::ModelInstance, scoped_timer::TimePrefix};
+use crate::{asset_manager::ShaderId, renderer::ModelInstance, scoped_timer::TimePrefix, AnyResult};
 use crate::{
         asset_manager::{AssetManager, Mesh, ModelId, Primitive},
         my_glm::*,
@@ -94,7 +93,7 @@ impl VkRenderer {
                 imguic: &mut imgui::Context,
                 asset_manager: Arc<AssetManager>,
                 render_state_switcher: Arc<Mutex<RenderStateSwitcher>>,
-        ) -> Result<Self, Box<dyn Error>> {
+        ) -> AnyResult<Self> {
                 let vk_context = VkContext::new(Rc::clone(&window))?;
 
                 let mut swapchain = VkSwapchain::new(
@@ -170,7 +169,7 @@ impl VkRenderer {
                                         object_matrices_buffer_size as vk::DeviceSize,
                                 )
                         })
-                        .collect::<vma::Result<Vec<VkBuffer>>>()?;
+                        .collect::<anyhow::Result<Vec<VkBuffer>>>()?;
 
                 for b in &mut object_matrices_buffers {
                         let object_matrices = ObjectMatrices {
@@ -332,11 +331,7 @@ impl VkRenderer {
 }
 
 impl Renderer for VkRenderer {
-        fn draw(
-                &'_ mut self,
-                player_orien: &UnitQuat,
-                imgui_draw_data: &imgui::DrawData,
-        ) -> Result<(), Box<dyn Error>> {
+        fn draw(&'_ mut self, player_orien: &UnitQuat, imgui_draw_data: &imgui::DrawData) -> AnyResult<()> {
                 {
                         let mut render_state_switcher = match self.render_state_switcher.lock() {
                                 Ok(v) => v,
@@ -503,7 +498,7 @@ impl Renderer for VkRenderer {
 }
 
 impl VkRenderer {
-        fn recreate_swapchain_maybe(&mut self) -> Result<(), Box<dyn Error>> {
+        fn recreate_swapchain_maybe(&mut self) -> AnyResult<()> {
                 match self.swapchain_outdated_causes {
                         VkSwapchainOutdatedCauses::NONE => return Ok(()),
                         VkSwapchainOutdatedCauses::WINDOW_RESIZE => {
@@ -742,7 +737,7 @@ impl VkRenderer {
                 device: &ash::Device,
                 allocator: Rc<vma::Allocator>,
                 buffer_size: vk::DeviceSize,
-        ) -> vma::Result<VkBuffer> {
+        ) -> AnyResult<VkBuffer> {
                 let cinfo = VkBufferCreateInfo {
                         device,
                         allocator,
@@ -919,8 +914,10 @@ impl VkRenderer {
         ) -> VkResult<Vec<vk::DescriptorSet>> {
                 let dst_sets = Self::allocate_identical_descriptor_sets(device, dst_pool, dst_set_layout, amount)?;
 
-                let world_matrices_padded_size = Self::calculate_padded_size_for_type::<WorldMatrices>(pdevice) as vk::DeviceSize;
-                let world_light_padded_size = Self::calculate_padded_size_for_type::<WorldLight>(pdevice) as vk::DeviceSize;
+                let world_matrices_padded_size =
+                        Self::calculate_padded_size_for_type::<WorldMatrices>(pdevice) as vk::DeviceSize;
+                let world_light_padded_size =
+                        Self::calculate_padded_size_for_type::<WorldLight>(pdevice) as vk::DeviceSize;
 
                 info!(
                         "WorldMatrices padded size: {}  ---  WorldLight padded size: {}",
@@ -976,7 +973,8 @@ impl VkRenderer {
         ) -> VkResult<Vec<vk::DescriptorSet>> {
                 let dst_sets = Self::allocate_identical_descriptor_sets(device, dst_pool, dst_set_layout, amount)?;
 
-                let material_data_padded_size = Self::calculate_padded_size_for_type::<MaterialData>(pdevice) as vk::DeviceSize;
+                let material_data_padded_size =
+                        Self::calculate_padded_size_for_type::<MaterialData>(pdevice) as vk::DeviceSize;
 
                 info!("MaterialData padded size: {}", material_data_padded_size);
 
@@ -1370,7 +1368,7 @@ impl VkRenderer {
         //         unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
         // }
 
-        unsafe fn begin_frame(&mut self) -> Result<BeginFrameResult, Box<dyn Error>> {
+        unsafe fn begin_frame(&mut self) -> AnyResult<BeginFrameResult> {
                 let wsize = self.window.inner_size();
                 if (wsize.width == 0) || (wsize.height == 0) {
                         return Ok(BeginFrameResult::Skip);
@@ -1447,7 +1445,7 @@ impl VkRenderer {
                 })
         }
 
-        unsafe fn end_frame(&mut self, imagei: u32) -> Result<(), Box<dyn Error>> {
+        unsafe fn end_frame(&mut self, imagei: u32) -> AnyResult<()> {
                 let frame_img_avail_semaphore = &self.img_avail_semaphores[self.framei];
                 let frame_present_complete_semaphore = &self.present_complete_semaphores[self.framei];
                 let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.framei];
@@ -1488,7 +1486,7 @@ impl VkRenderer {
                                         .insert(VkSwapchainOutdatedCauses::OUT_OF_DATE);
                         },
                         Err(err) => return Err(err.into()),
-                        _ => {},
+                        _ => (),
                 };
 
                 self.framei = (self.framei + 1) % (self.swapchain.img_count as usize);

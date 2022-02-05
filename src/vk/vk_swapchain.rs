@@ -1,9 +1,11 @@
-use std::{error::Error, ops::Deref, rc::Rc};
+use std::{ops::Deref, rc::Rc};
 
 use ash::{extensions::khr::Swapchain, prelude::VkResult, vk};
 use bitflags::bitflags;
 #[allow(unused_imports)]
 use log::{debug, trace};
+
+use crate::AnyResult;
 
 use super::{
         vk_image::{VkImage, VkImageCreateInfo},
@@ -51,7 +53,7 @@ impl VkSwapchain {
                 physical_device: vk::PhysicalDevice,
                 device: Rc<VkDevice>,
                 allocator: Rc<vma::Allocator>,
-        ) -> Result<Self, Box<dyn Error>> {
+        ) -> AnyResult<Self> {
                 let color_format = Self::choose_color_format(&surface, physical_device)?;
                 debug!("VkSwapchain color format ({:?})", color_format);
                 let depth_format = vk::Format::D24_UNORM_S8_UINT;

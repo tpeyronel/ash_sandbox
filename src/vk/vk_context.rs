@@ -1,6 +1,5 @@
 use std::{
         borrow::Cow,
-        error::Error,
         ffi::{c_void, CStr, CString},
         os::raw::c_char,
 };
@@ -18,6 +17,7 @@ use super::vk_wrapper::{VkCommandPool, VkDebugUtilsMessenger, VkDescriptorPool, 
 use crate::{
         scoped_timer::{ScopedTimer, TimePrefix},
         vk::vk_wrapper::{VkPhysicalDevice, VkQueueFamilyIndices, VkQueues},
+        AnyResult,
 };
 
 macro_rules! cstring {
@@ -51,7 +51,7 @@ const ENABLE_VALIDATION_LAYERS: bool = true;
 const ENABLE_VALIDATION_LAYERS: bool = false;
 
 impl VkContext {
-        pub fn new(window: Rc<Window>) -> Result<Self, Box<dyn Error>> {
+        pub fn new(window: Rc<Window>) -> AnyResult<Self> {
                 let _t = ScopedTimer::new("Initialized VkContext in: ", TimePrefix::Base);
 
                 let entry = Rc::new(unsafe { ash::Entry::load()? });
@@ -119,7 +119,7 @@ impl VkContext {
                 })
         }
 
-        fn create_instance(window: &Window, entry: &Rc<ash::Entry>) -> Result<Rc<VkInstance>, Box<dyn Error>> {
+        fn create_instance(window: &Window, entry: &Rc<ash::Entry>) -> AnyResult<Rc<VkInstance>> {
                 unsafe {
                         let mut req_layers = Vec::new();
                         if ENABLE_VALIDATION_LAYERS {
@@ -187,11 +187,16 @@ impl VkContext {
                 instance: &Rc<VkInstance>,
                 physical_device: vk::PhysicalDevice,
                 q_family_i: &VkQueueFamilyIndices,
-        ) -> Result<(Rc<VkDevice>, VkQueues), Box<dyn Error>> {
+        ) -> AnyResult<(Rc<VkDevice>, VkQueues)> {
                 let memory_budget_ext = CStr::from_bytes_with_nul(b"VK_EXT_memory_budget\0").unwrap();
-                let shader_non_semantic_info_ext = CStr::from_bytes_with_nul(b"VK_KHR_shader_non_semantic_info\0").unwrap();
+                let shader_non_semantic_info_ext =
+                        CStr::from_bytes_with_nul(b"VK_KHR_shader_non_semantic_info\0").unwrap();
 
-                let req_device_extensions_raw = vec![Swapchain::name().as_ptr(), memory_budget_ext.as_ptr(), shader_non_semantic_info_ext.as_ptr()];
+                let req_device_extensions_raw = vec![
+                        Swapchain::name().as_ptr(),
+                        memory_budget_ext.as_ptr(),
+                        shader_non_semantic_info_ext.as_ptr(),
+                ];
                 let req_device_features = vk::PhysicalDeviceFeatures::builder()
                         .sampler_anisotropy(true)
                         .shader_clip_distance(true);
@@ -286,7 +291,7 @@ impl VkContext {
 }
 
 /*impl Renderer for VkContext {
-        fn draw(&mut self, imgui_draw_data: &imgui::DrawData) -> Result<(), Box<dyn Error>> {
+        fn draw(&mut self, imgui_draw_data: &imgui::DrawData) -> AnyResult<()> {
                 let window_size = self.window.inner_size();
                 if window_size.width == 0 || window_size.height == 0 {
                         return Ok(());

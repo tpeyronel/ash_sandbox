@@ -1,6 +1,5 @@
 use std::{
-        error::Error,
-        path::{Path, PathBuf},
+        path::Path,
         rc::Rc,
         sync::{Arc, Mutex},
         time::Instant,
@@ -26,6 +25,7 @@ use crate::{
         render_state_switcher::RenderStateSwitcher,
         renderer::Renderer,
         vk::vk_renderer::VkRenderer,
+        AnyResult,
 };
 #[allow(unused_imports)]
 use log::{error, info, trace};
@@ -63,7 +63,7 @@ pub struct Application {
 }
 
 impl Application {
-        pub fn new() -> Result<Self, Box<dyn Error>> {
+        pub fn new() -> AnyResult<Self> {
                 let config = ApplicationConfig::from_file(Path::new("config.json"))?;
 
                 let event_loop = EventLoop::new();
@@ -270,9 +270,8 @@ impl Application {
                 self.event_loop.take().unwrap().run(move |event, _, control_flow| {
                         *control_flow = ControlFlow::Poll;
 
-                        if let Err(err) = self.on_winit_event(event, control_flow) {
-                                error!("Error ocurred in render loop: {}", err);
-                        }
+                        self.on_winit_event(event, control_flow)
+                                .expect("Error ocurred in render loop");
                 });
         }
 
@@ -309,7 +308,7 @@ impl Application {
                 &mut self,
                 event: winit::event::Event<'_, ()>,
                 control_flow: &mut ControlFlow,
-        ) -> Result<(), Box<dyn Error>> {
+        ) -> AnyResult<()> {
                 self.imgui_context
                         .platform
                         .handle_event(self.imgui_context.context.io_mut(), &self.window, &event);
@@ -360,7 +359,7 @@ impl Application {
                 };
         }
 
-        fn update(&mut self, control_flow: &mut ControlFlow) -> Result<(), Box<dyn Error>> {
+        fn update(&mut self, control_flow: &mut ControlFlow) -> AnyResult<()> {
                 self.process_logic_thread_messages(control_flow);
 
                 let imgui_ui = Self::build_imgui_ui(
