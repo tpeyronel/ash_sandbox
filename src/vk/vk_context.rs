@@ -56,7 +56,8 @@ impl VkContext {
 
                 let entry = Rc::new(unsafe { ash::Entry::load()? });
 
-                let instance = Self::create_instance(&window, &entry)?;
+                let vulkan_api_version = vk::make_api_version(0, 1, 2, 0);
+                let instance = Self::create_instance(&window, &entry, vulkan_api_version)?;
                 trace!("Created VkInstance");
 
                 let debug_utils_messenger = if !ENABLE_VALIDATION_LAYERS {
@@ -88,7 +89,7 @@ impl VkContext {
                 let (device, queues) = Self::create_device(&instance, *pdevice, &qfamilyi)?;
                 trace!("Created VkDevice");
 
-                let allocator = Self::create_allocator(&instance, *pdevice, &device)?;
+                let allocator = Self::create_allocator(&instance, *pdevice, &device, vulkan_api_version)?;
                 trace!("Created VmaAllocator");
 
                 let cmd_pool = Self::create_command_pool(&device, &qfamilyi)?;
@@ -119,7 +120,11 @@ impl VkContext {
                 })
         }
 
-        fn create_instance(window: &Window, entry: &Rc<ash::Entry>) -> AnyResult<Rc<VkInstance>> {
+        fn create_instance(
+                window: &Window,
+                entry: &Rc<ash::Entry>,
+                vulkan_api_version: u32,
+        ) -> AnyResult<Rc<VkInstance>> {
                 unsafe {
                         let mut req_layers = Vec::new();
                         if ENABLE_VALIDATION_LAYERS {
@@ -149,7 +154,7 @@ impl VkContext {
                                 .application_version(vk::make_api_version(0, 1, 0, 0))
                                 .engine_name(&app_name)
                                 .engine_version(vk::make_api_version(0, 1, 0, 0))
-                                .api_version(vk::make_api_version(0, 1, 2, 0));
+                                .api_version(vulkan_api_version);
 
                         let mut instance_cinfo = vk::InstanceCreateInfo::builder()
                                 .application_info(&app_info)
@@ -244,7 +249,8 @@ impl VkContext {
                 instance: &ash::Instance,
                 physical_device: vk::PhysicalDevice,
                 device: &ash::Device,
-        ) -> vma::Result<Rc<vma::Allocator>> {
+                vulkan_api_version: u32,
+        ) -> VkResult<Rc<vma::Allocator>> {
                 let allocator_cinfo = vma::AllocatorCreateInfo {
                         physical_device,
                         device: device.clone(),
@@ -253,9 +259,11 @@ impl VkContext {
                         preferred_large_heap_block_size: 0,
                         frame_in_use_count: 0,
                         heap_size_limits: None,
+                        allocation_callbacks: None,
+                        vulkan_api_version,
                 };
 
-                Ok(Rc::new(vma::Allocator::new(&allocator_cinfo)?))
+                Ok(Rc::new(unsafe { vma::Allocator::new(&allocator_cinfo)? }))
         }
 
         fn create_descriptor_pool(device: &Rc<VkDevice>) -> VkResult<VkDescriptorPool> {

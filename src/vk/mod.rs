@@ -6,4 +6,3 @@ mod vk_image;
 pub mod vk_renderer;
 mod vk_swapchain;
 mod vk_wrapper;
-mod vkma_error;

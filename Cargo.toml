@@ -36,7 +36,7 @@ specs = {version = "0.17.0", features = ["specs-derive"]}
 stb_image = "0.2.3"
 thiserror = "1.0.30"
 tps_counter = {path = "../tps_counter"}
-vk-mem = {path = "../rust/vk-mem"}
+vk-mem = {path = "../rust/vk-mem-rs"}
 winit = "0.25.0"
 
 [profile.dev.package."*"]

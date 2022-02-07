@@ -1500,7 +1500,7 @@ impl VkRenderer {
                 world_matrices_buffer: &mut VkBuffer,
                 matrices: &WorldMatrices,
                 index: usize,
-        ) -> vma::Result<()> {
+        ) -> VkResult<()> {
                 let offset = index * Self::calculate_padded_size_for_type::<WorldMatrices>(pdevice);
                 world_matrices_buffer.write_offsetted(matrices, offset)
         }
@@ -1510,7 +1510,7 @@ impl VkRenderer {
                 world_light_buffer: &mut VkBuffer,
                 light: &WorldLight,
                 index: usize,
-        ) -> vma::Result<()> {
+        ) -> VkResult<()> {
                 let offset = index * Self::calculate_padded_size_for_type::<WorldLight>(pdevice);
                 world_light_buffer.write_offsetted(light, offset)
                 // let copy_size = std::mem::size_of::<WorldLight>() as vk::DeviceSize;
@@ -1555,7 +1555,7 @@ impl VkRenderer {
                 model_id: ModelId,
                 model_instance_transform: &Mat4,
                 offset: u32,
-        ) -> vma::Result<()> {
+        ) -> VkResult<()> {
                 let model = &asset_manager.models()[model_id];
 
                 let transform_final = model_instance_transform * model.base_transform;

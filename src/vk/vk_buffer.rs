@@ -1,6 +1,6 @@
 use std::{ops::Deref, rc::Rc};
 
-use ash::vk;
+use ash::{prelude::VkResult, vk};
 use log::trace;
 
 use crate::AnyResult;
@@ -75,9 +75,11 @@ impl VkBuffer {
                         memory_type_bits: create_info.mem_type_bits,
                         pool: None,
                         user_data: None,
+                        priority: 0.0,
                 };
 
-                let (handle, alloc, ainfo) = create_info.allocator.create_buffer(&handle_cinfo, &alloc_cinfo)?;
+                let (handle, alloc, ainfo) =
+                        unsafe { create_info.allocator.create_buffer(&handle_cinfo, &alloc_cinfo)? };
 
                 Ok(Self {
                         allocator: create_info.allocator,
@@ -119,7 +121,7 @@ impl VkBuffer {
                 unsafe {
                         std::ptr::copy_nonoverlapping(buffer_data, map, buffer_size as usize);
                 }
-                staging_buffer.unmap_memory()?;
+                staging_buffer.unmap_memory();
 
                 let buffer_cinfo = VkBufferCreateInfo {
                         device: create_info.device,
@@ -187,16 +189,16 @@ impl VkBuffer {
                 unsafe {
                         std::ptr::copy_nonoverlapping(data.as_ptr(), buffer_data, data.len());
                 }
-                staging_buffer.unmap_memory()?;
+                staging_buffer.unmap_memory();
 
                 Ok(staging_buffer)
         }
 
-        pub fn write<T: 'static>(&mut self, value: &T) -> vma::Result<()> {
+        pub fn write<T: 'static>(&mut self, value: &T) -> VkResult<()> {
                 self.write_offsetted(value, 0)
         }
 
-        pub fn write_offsetted<T: 'static>(&mut self, value: &T, offset: usize) -> vma::Result<()> {
+        pub fn write_offsetted<T: 'static>(&mut self, value: &T, offset: usize) -> VkResult<()> {
                 let map = self.map_memory()?;
                 unsafe {
                         let src = value as *const _ as *const u8;
@@ -206,22 +208,24 @@ impl VkBuffer {
                 Ok(())
         }
 
-        pub fn map_memory(&mut self) -> vma::Result<*mut u8> {
+        pub fn map_memory(&mut self) -> VkResult<*mut u8> {
                 if self.memory.is_null() {
-                        self.memory = self.allocator.map_memory(&self.alloc)?;
+                        self.memory = unsafe { self.allocator.map_memory(self.alloc)? };
                 }
 
                 Ok(self.memory)
         }
 
-        pub fn unmap_memory(&mut self) -> vma::Result<()> {
+        pub fn unmap_memory(&mut self) {
                 self.memory = std::ptr::null_mut();
-                self.allocator.unmap_memory(&self.alloc)
+                unsafe {
+                        self.allocator.unmap_memory(self.alloc);
+                }
         }
 
         #[allow(dead_code)]
-        pub fn flush_all_memory(&self) -> vma::Result<()> {
-                self.allocator.flush_allocation(&self.alloc, 0, self.ainfo.get_size())
+        pub fn flush_all_memory(&self) -> VkResult<()> {
+                unsafe { self.allocator.flush_allocation(self.alloc, 0, self.ainfo.size()) }
         }
 }
 
@@ -239,10 +243,12 @@ impl Drop for VkBuffer {
                 assert_ne!(self.handle, vk::Buffer::null());
 
                 if !self.memory.is_null() {
-                        let _ = self.unmap_memory();
+                        self.unmap_memory();
                 }
 
-                let _ = self.allocator.destroy_buffer(self.handle, &self.alloc);
+                unsafe {
+                        self.allocator.destroy_buffer(self.handle, self.alloc);
+                }
 
                 self.handle = vk::Buffer::null();
         }

@@ -1,12 +1,12 @@
 use std::{ops::Deref, rc::Rc};
 
-use ash::vk;
+use ash::{prelude::VkResult, vk};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 
 use crate::AnyResult;
 
-use super::{vk_buffer::VkBuffer, vk_command_buffer::VkReusableCommandBuffer, vkma_error::VkmaResult};
+use super::{vk_buffer::VkBuffer, vk_command_buffer::VkReusableCommandBuffer};
 
 #[allow(dead_code)]
 pub enum MipLevels {
@@ -55,7 +55,7 @@ pub struct VkImage {
 }
 
 impl VkImage {
-        pub unsafe fn new(allocator: Rc<vma::Allocator>, create_info: &VkImageCreateInfo) -> VkmaResult<Self> {
+        pub unsafe fn new(allocator: Rc<vma::Allocator>, create_info: &VkImageCreateInfo) -> VkResult<Self> {
                 let (handle, alloc, ainfo) = {
                         let mut vk_img_cinfo = vk::ImageCreateInfo {
                                 image_type: create_info.image_type,
@@ -93,6 +93,7 @@ impl VkImage {
                                 memory_type_bits: 0,
                                 pool: None,
                                 user_data: None,
+                                priority: 0.0,
                         };
 
                         allocator.create_image(&vk_img_cinfo, &alloc_cinfo)?
@@ -392,7 +393,9 @@ impl Drop for VkImage {
 
                 assert_ne!(self.handle, vk::Image::null());
 
-                let _ = self.allocator.destroy_image(self.handle, &self.alloc);
+                unsafe {
+                        self.allocator.destroy_image(self.handle, self.alloc);
+                }
 
                 self.handle = vk::Image::null();
         }

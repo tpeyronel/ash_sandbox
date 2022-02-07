@@ -10,7 +10,6 @@ use crate::AnyResult;
 use super::{
         vk_image::{VkImage, VkImageCreateInfo},
         vk_wrapper::{VkDevice, VkFramebuffer, VkImageView, VkInstance, VkSurface},
-        vkma_error::VkmaResult,
 };
 
 pub struct VkSwapchain {
@@ -163,7 +162,7 @@ impl VkSwapchain {
                 })
         }
 
-        pub fn recreate(&mut self) -> VkmaResult<VkSwapchainRecreationInfo> {
+        pub fn recreate(&mut self) -> VkResult<VkSwapchainRecreationInfo> {
                 self.framebuffers.clear();
 
                 let mut recreation_info = VkSwapchainRecreationInfo {
@@ -413,7 +412,7 @@ impl VkSwapchain {
                 format: vk::Format,
                 extent: &vk::Extent2D,
                 samples: vk::SampleCountFlags,
-        ) -> VkmaResult<(VkImage, VkImageView)> {
+        ) -> VkResult<(VkImage, VkImageView)> {
                 let color_img = unsafe {
                         let depth_img_cinfo = VkImageCreateInfo {
                                 image_type: vk::ImageType::TYPE_2D,
@@ -469,7 +468,7 @@ impl VkSwapchain {
                 format: vk::Format,
                 extent: &vk::Extent2D,
                 samples: vk::SampleCountFlags,
-        ) -> VkmaResult<(VkImage, VkImageView)> {
+        ) -> VkResult<(VkImage, VkImageView)> {
                 let depth_img = unsafe {
                         let depth_img_cinfo = VkImageCreateInfo {
                                 image_type: vk::ImageType::TYPE_2D,

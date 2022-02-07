@@ -16,6 +16,7 @@ mod logic_thread;
 mod my_glm;
 mod render_state_switcher;
 mod renderer;
+mod util;
 mod vertex;
 mod vk;
 
