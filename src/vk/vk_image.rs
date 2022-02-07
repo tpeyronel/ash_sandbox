@@ -6,7 +6,7 @@ use log::{debug, error, info, trace, warn};
 
 use crate::AnyResult;
 
-use super::{vk_buffer::VkBuffer, vk_command_buffer::VkReusableCommandBuffer};
+use super::{vk_buffer::VkBuffer, vk_command_buffer::VkReusableCommandBuffer, vk_wrapper::VmaAllocator};
 
 #[allow(dead_code)]
 pub enum MipLevels {
@@ -45,7 +45,7 @@ pub struct VkImageCreateFromDataInfo<'a> {
 
 #[allow(dead_code)]
 pub struct VkImage {
-        allocator: Rc<vma::Allocator>,
+        allocator: Rc<VmaAllocator>,
 
         handle: vk::Image,
         alloc: vma::Allocation,
@@ -55,7 +55,7 @@ pub struct VkImage {
 }
 
 impl VkImage {
-        pub unsafe fn new(allocator: Rc<vma::Allocator>, create_info: &VkImageCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(allocator: Rc<VmaAllocator>, create_info: &VkImageCreateInfo) -> VkResult<Self> {
                 let (handle, alloc, ainfo) = {
                         let mut vk_img_cinfo = vk::ImageCreateInfo {
                                 image_type: create_info.image_type,
@@ -112,7 +112,7 @@ impl VkImage {
                 instance: &ash::Instance,
                 pdevice: &vk::PhysicalDevice,
                 device: &ash::Device,
-                allocator: Rc<vma::Allocator>,
+                allocator: Rc<VmaAllocator>,
                 cinfo: &VkImageCreateFromDataInfo,
         ) -> AnyResult<Self> {
                 let mip_levels = match cinfo.mip_levels {

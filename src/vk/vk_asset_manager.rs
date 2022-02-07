@@ -22,7 +22,7 @@ use crate::{
         AnyResult,
 };
 
-use super::vk_wrapper::{VkDescriptorSetLayout, VkShaderModule};
+use super::vk_wrapper::{VkDescriptorSetLayout, VkShaderModule, VmaAllocator};
 
 pub struct VkModelBufferView {
         pub buffer: VkBuffer,
@@ -60,7 +60,7 @@ impl VkAssetManager {
                 instance: &ash::Instance,
                 pdevice: &VkPhysicalDevice,
                 device: Rc<VkDevice>,
-                allocator: Rc<vma::Allocator>,
+                allocator: Rc<VmaAllocator>,
                 transfer_queue: vk::Queue,
                 cmd_pool: Rc<VkCommandPool>,
                 dst_pool: vk::DescriptorPool,
@@ -152,7 +152,7 @@ impl VkAssetManager {
 
         fn create_vk_buffers_from_buffers(
                 device: &ash::Device,
-                allocator: Rc<vma::Allocator>,
+                allocator: Rc<VmaAllocator>,
                 transfer_queue: vk::Queue,
                 cmd_buffer: &VkReusableCommandBuffer,
                 buffers: &VecMap<BufferId, Buffer>,
@@ -208,7 +208,7 @@ impl VkAssetManager {
                 instance: &ash::Instance,
                 pdevice: &VkPhysicalDevice,
                 device: Rc<VkDevice>,
-                allocator: Rc<vma::Allocator>,
+                allocator: Rc<VmaAllocator>,
                 transfer_queue: vk::Queue,
                 cmd_buffer: &VkReusableCommandBuffer,
                 images: &VecMap<ImageId, Image>,

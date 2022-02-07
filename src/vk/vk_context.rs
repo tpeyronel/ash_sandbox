@@ -13,7 +13,9 @@ use ash::{extensions::khr::Swapchain, prelude::VkResult, vk};
 use log::{debug, error, info, trace, warn};
 use winit::window::Window;
 
-use super::vk_wrapper::{VkCommandPool, VkDebugUtilsMessenger, VkDescriptorPool, VkDevice, VkInstance, VkSurface};
+use super::vk_wrapper::{
+        VkCommandPool, VkDebugUtilsMessenger, VkDescriptorPool, VkDevice, VkInstance, VkSurface, VmaAllocator,
+};
 use crate::{
         scoped_timer::{ScopedTimer, TimePrefix},
         vk::vk_wrapper::{VkPhysicalDevice, VkQueueFamilyIndices, VkQueues},
@@ -40,7 +42,7 @@ pub struct VkContext {
         _qfamilyi: VkQueueFamilyIndices,
         pub queues: VkQueues,
 
-        pub allocator: Rc<vma::Allocator>,
+        pub allocator: Rc<VmaAllocator>,
         pub cmd_pool: Rc<VkCommandPool>,
         pub dst_pool: VkDescriptorPool,
 }
@@ -250,7 +252,7 @@ impl VkContext {
                 physical_device: vk::PhysicalDevice,
                 device: &ash::Device,
                 vulkan_api_version: u32,
-        ) -> VkResult<Rc<vma::Allocator>> {
+        ) -> VkResult<Rc<VmaAllocator>> {
                 let allocator_cinfo = vma::AllocatorCreateInfo {
                         physical_device,
                         device: device.clone(),
@@ -263,7 +265,7 @@ impl VkContext {
                         vulkan_api_version,
                 };
 
-                Ok(Rc::new(unsafe { vma::Allocator::new(&allocator_cinfo)? }))
+                Ok(Rc::new(unsafe { VmaAllocator::new(&allocator_cinfo)? }))
         }
 
         fn create_descriptor_pool(device: &Rc<VkDevice>) -> VkResult<VkDescriptorPool> {
@@ -471,7 +473,7 @@ unsafe extern "system" fn vk_debug_callback(
         };
 
         println!(
-                "{:?}:\n{:?} [{} ({})] : {}\n",
+                "\n{:?}:\n{:?} [{} ({})] : {}\n",
                 message_severity,
                 message_type,
                 message_id_name,

@@ -38,6 +38,36 @@ impl Drop for VkInstance {
         }
 }
 
+pub struct VmaAllocator {
+        handle: vma::Allocator,
+}
+
+impl VmaAllocator {
+        pub unsafe fn new(create_info: &vma::AllocatorCreateInfo) -> VkResult<Self> {
+                Ok(Self {
+                        handle: vma::Allocator::new(&create_info)?,
+                })
+        }
+}
+
+impl Deref for VmaAllocator {
+        type Target = vma::Allocator;
+
+        fn deref(&self) -> &Self::Target {
+                &self.handle
+        }
+}
+
+impl Drop for VmaAllocator {
+        fn drop(&mut self) {
+                unsafe {
+                        trace!("Destroying VmaAllocator...");
+
+                        self.handle.destroy_allocator();
+                }
+        }
+}
+
 pub struct VkPhysicalDevice {
         handle: vk::PhysicalDevice,
 

@@ -21,7 +21,7 @@ use super::{
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
         vk_wrapper::{
                 VkDescriptorSetLayout, VkDevice, VkPhysicalDevice, VkPipeline, VkPipelineLayout, VkRenderPass,
-                VkSemaphore,
+                VkSemaphore, VmaAllocator,
         },
 };
 use crate::{asset_manager::ShaderId, renderer::ModelInstance, scoped_timer::TimePrefix, AnyResult};
@@ -735,7 +735,7 @@ impl VkRenderer {
 
         fn create_uniform_buffer(
                 device: &ash::Device,
-                allocator: Rc<vma::Allocator>,
+                allocator: Rc<VmaAllocator>,
                 buffer_size: vk::DeviceSize,
         ) -> AnyResult<VkBuffer> {
                 let cinfo = VkBufferCreateInfo {

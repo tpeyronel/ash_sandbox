@@ -5,12 +5,12 @@ use log::trace;
 
 use crate::AnyResult;
 
-use super::vk_command_buffer::VkReusableCommandBuffer;
+use super::{vk_command_buffer::VkReusableCommandBuffer, vk_wrapper::VmaAllocator};
 
 #[derive(Clone)]
 pub struct VkBufferCreateInfo<'a> {
         pub device: &'a ash::Device,
-        pub allocator: Rc<vma::Allocator>,
+        pub allocator: Rc<VmaAllocator>,
 
         pub buffer_size: vk::DeviceSize,
         pub buffer_usage: vk::BufferUsageFlags,
@@ -34,7 +34,7 @@ pub enum BufferData<'a, T> {
 
 pub struct VkImmutableBufferCreateInfo<'a, T> {
         pub device: &'a ash::Device,
-        pub allocator: Rc<vma::Allocator>,
+        pub allocator: Rc<VmaAllocator>,
 
         pub cmd_buffer: &'a VkReusableCommandBuffer,
         pub transfer_queue: vk::Queue,
@@ -43,7 +43,7 @@ pub struct VkImmutableBufferCreateInfo<'a, T> {
 }
 
 pub struct VkBuffer {
-        allocator: Rc<vma::Allocator>,
+        allocator: Rc<VmaAllocator>,
 
         handle: vk::Buffer,
         alloc: vma::Allocation,
@@ -162,11 +162,7 @@ impl VkBuffer {
                 Ok(buffer)
         }
 
-        pub fn new_transfer_src(
-                device: &ash::Device,
-                allocator: Rc<vma::Allocator>,
-                data: &[u8],
-        ) -> AnyResult<VkBuffer> {
+        pub fn new_transfer_src(device: &ash::Device, allocator: Rc<VmaAllocator>, data: &[u8]) -> AnyResult<VkBuffer> {
                 let mut staging_buffer = {
                         let buffer_cinfo = VkBufferCreateInfo {
                                 device,

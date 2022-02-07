@@ -9,7 +9,7 @@ use crate::AnyResult;
 
 use super::{
         vk_image::{VkImage, VkImageCreateInfo},
-        vk_wrapper::{VkDevice, VkFramebuffer, VkImageView, VkInstance, VkSurface},
+        vk_wrapper::{VkDevice, VkFramebuffer, VkImageView, VkInstance, VkSurface, VmaAllocator},
 };
 
 pub struct VkSwapchain {
@@ -20,7 +20,7 @@ pub struct VkSwapchain {
         surface: Rc<VkSurface>,
         physical_device: vk::PhysicalDevice,
         device: Rc<VkDevice>,
-        allocator: Rc<vma::Allocator>,
+        allocator: Rc<VmaAllocator>,
 
         handle: vk::SwapchainKHR,
 
@@ -51,7 +51,7 @@ impl VkSwapchain {
                 surface: Rc<VkSurface>,
                 physical_device: vk::PhysicalDevice,
                 device: Rc<VkDevice>,
-                allocator: Rc<vma::Allocator>,
+                allocator: Rc<VmaAllocator>,
         ) -> AnyResult<Self> {
                 let color_format = Self::choose_color_format(&surface, physical_device)?;
                 debug!("VkSwapchain color format ({:?})", color_format);
@@ -408,7 +408,7 @@ impl VkSwapchain {
 
         fn create_color_img_resources(
                 device: Rc<VkDevice>,
-                allocator: Rc<vma::Allocator>,
+                allocator: Rc<VmaAllocator>,
                 format: vk::Format,
                 extent: &vk::Extent2D,
                 samples: vk::SampleCountFlags,
@@ -464,7 +464,7 @@ impl VkSwapchain {
 
         fn create_depth_img_resources(
                 device: Rc<VkDevice>,
-                allocator: Rc<vma::Allocator>,
+                allocator: Rc<VmaAllocator>,
                 format: vk::Format,
                 extent: &vk::Extent2D,
                 samples: vk::SampleCountFlags,
