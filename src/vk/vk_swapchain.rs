@@ -180,7 +180,9 @@ impl VkSwapchain {
                 let old_color_format = self.color_format;
                 self.color_format = Self::choose_color_format(&self.surface, self.physical_device)?;
                 recreation_info.color_format_changed = old_color_format != self.color_format;
-                debug!("VkSwapchain color format ({:?})", self.color_format);
+                if recreation_info.color_format_changed {
+                        debug!("VkSwapchain color format ({:?})", self.color_format);
+                }
 
                 let depth_format = vk::Format::D24_UNORM_S8_UINT;
                 self.depth_format = depth_format;
@@ -199,7 +201,6 @@ impl VkSwapchain {
                                 _ => surface_capabilities.max_image_count,
                         },
                 );
-                debug!("VkSwapchain image count: {}", desired_img_count);
 
                 let old_extent = std::mem::replace(
                         &mut self.extent,
@@ -211,8 +212,11 @@ impl VkSwapchain {
                 self.scissor = Self::create_scissor(&self.extent);
                 debug!("VkSwapchain extent: {:?}", self.extent);
 
+                let old_present_mode = self.present_mode;
                 self.present_mode = Self::choose_present_mode(&self.surface, self.physical_device)?;
-                debug!("VkSwapchain present mode: {:?}", self.present_mode);
+                if old_present_mode != self.present_mode {
+                        debug!("VkSwapchain present mode: {:?}", self.present_mode);
+                }
 
                 let loader = Swapchain::new(&**self.instance, &**self.device);
 
@@ -244,7 +248,9 @@ impl VkSwapchain {
                         Self::choose_sample_count(&self.instance, self.physical_device),
                 );
                 recreation_info.samples_changed = old_samples != self.samples;
-                debug!("VkSwapchain samples: {:?}", self.samples);
+                if recreation_info.samples_changed {
+                        debug!("VkSwapchain samples: {:?}", self.samples);
+                }
 
                 if recreation_info.color_format_changed
                         || recreation_info.extent_changed
@@ -285,6 +291,9 @@ impl VkSwapchain {
 
                 let old_img_count = std::mem::replace(&mut self.img_count, self.resolve_imgs.len() as u32);
                 recreation_info.img_count_changed = old_img_count != self.img_count;
+                if recreation_info.img_count_changed {
+                        debug!("VkSwapchain image count: {}", self.img_count);
+                }
 
                 Ok(recreation_info)
         }
