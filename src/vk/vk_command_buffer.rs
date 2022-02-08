@@ -1,10 +1,12 @@
-use std::{ops::Deref, rc::Rc};
+use std::{cell::Cell, ops::Deref, rc::Rc};
 
 use ash::{prelude::VkResult, vk};
 
 use crate::AnyResult;
 
-use super::vk_wrapper::{VkCommandPool, VkDevice, VkFence};
+use super::vk_wrapper::{
+        impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkCommandPool, VkDevice, VkFence,
+};
 
 pub struct VkReusableCommandBuffer {
         device: Rc<VkDevice>,
@@ -12,6 +14,7 @@ pub struct VkReusableCommandBuffer {
 
         handle: vk::CommandBuffer,
         pub fence: VkFence,
+        destroyed: Cell<bool>,
 }
 
 impl VkReusableCommandBuffer {
@@ -32,6 +35,7 @@ impl VkReusableCommandBuffer {
 
                         handle,
                         fence,
+                        destroyed: Cell::new(false),
                 })
         }
 
@@ -55,6 +59,7 @@ impl VkReusableCommandBuffer {
 
                                         handle,
                                         fence,
+                                        destroyed: Cell::new(false),
                                 })
                         })
                         .collect()
@@ -131,24 +136,17 @@ impl VkReusableCommandBuffer {
                 device.queue_submit(submit_queue, std::slice::from_ref(&submit_info), *self.fence)
         }
 
-        pub unsafe fn wait(&self, device: &ash::Device, timeout: u64) -> VkResult<()> {
-                device.wait_for_fences(&[*self.fence], true, timeout)
+        pub unsafe fn wait(&self, timeout: u64) -> VkResult<()> {
+                self.device.wait_for_fences(&[*self.fence], true, timeout)
         }
 }
 
-impl Deref for VkReusableCommandBuffer {
-        type Target = vk::CommandBuffer;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
+impl_destroyable_expr!(
+        VkReusableCommandBuffer,
+        vk::CommandBuffer,
+        |s: &VkReusableCommandBuffer| {
+                let _ = s.wait(u64::MAX);
+                s.fence.destroy();
+                s.device.free_command_buffers(**s.cmd_pool, std::slice::from_ref(&s.handle));
         }
-}
-
-impl Drop for VkReusableCommandBuffer {
-        fn drop(&mut self) {
-                unsafe {
-                        self.device
-                                .free_command_buffers(**self.cmd_pool, std::slice::from_ref(&self.handle));
-                }
-        }
-}
+);

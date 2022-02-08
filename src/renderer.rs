@@ -19,6 +19,7 @@ pub trait Renderer {
         // fn draw(&mut self, cam: &mut Camera, imgui_draw_data: &imgui::DrawData) -> AnyResult<()>;
         fn draw(&mut self, player_orien: &UnitQuat, imgui_draw_data: &imgui::DrawData) -> AnyResult<()>;
         fn on_window_resize(&mut self, width: u32, height: u32);
+        fn destroy(&mut self) -> AnyResult<()>;
 
         /*
         fn begin_frame(&mut self);

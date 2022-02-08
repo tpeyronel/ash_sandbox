@@ -1,4 +1,4 @@
-use std::{ops::Deref, rc::Rc};
+use std::{cell::Cell, ops::Deref, rc::Rc};
 
 use ash::{extensions::khr::Swapchain, prelude::VkResult, vk};
 use bitflags::bitflags;
@@ -9,7 +9,10 @@ use crate::AnyResult;
 
 use super::{
         vk_image::{VkImage, VkImageCreateInfo},
-        vk_wrapper::{VkDevice, VkFramebuffer, VkImageView, VkInstance, VkSurface, VmaAllocator},
+        vk_wrapper::{
+                impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkDevice, VkFramebuffer,
+                VkImageView, VkInstance, VkSurface, VmaAllocator,
+        },
 };
 
 pub struct VkSwapchain {
@@ -23,6 +26,7 @@ pub struct VkSwapchain {
         allocator: Rc<VmaAllocator>,
 
         handle: vk::SwapchainKHR,
+        destroyed: Cell<bool>,
 
         pub color_format: vk::SurfaceFormatKHR,
         pub depth_format: vk::Format,
@@ -138,6 +142,7 @@ impl VkSwapchain {
                         allocator,
 
                         handle,
+                        destroyed: Cell::new(false),
 
                         color_format,
                         depth_format,
@@ -163,7 +168,7 @@ impl VkSwapchain {
         }
 
         pub fn recreate(&mut self) -> VkResult<VkSwapchainRecreationInfo> {
-                self.framebuffers.clear();
+                self.framebuffers.drain(..).for_each(|fb| unsafe { fb.destroy() });
 
                 let mut recreation_info = VkSwapchainRecreationInfo {
                         color_format_changed: false,
@@ -196,9 +201,12 @@ impl VkSwapchain {
                 );
                 debug!("VkSwapchain image count: {}", desired_img_count);
 
-                let old_extent = self.extent;
-                self.extent = Self::create_extent(&self.window, &surface_capabilities);
+                let old_extent = std::mem::replace(
+                        &mut self.extent,
+                        Self::create_extent(&self.window, &surface_capabilities),
+                );
                 recreation_info.extent_changed = old_extent != self.extent;
+
                 self.viewport = Self::create_viewport(&self.extent);
                 self.scissor = Self::create_scissor(&self.extent);
                 debug!("VkSwapchain extent: {:?}", self.extent);
@@ -227,12 +235,14 @@ impl VkSwapchain {
                         ..Default::default()
                 };
 
-                let old_handle = self.handle;
-                self.handle = unsafe { loader.create_swapchain(&swch_cinfo, None)? };
+                let old_handle =
+                        std::mem::replace(&mut self.handle, unsafe { loader.create_swapchain(&swch_cinfo, None)? });
                 unsafe { self.loader.destroy_swapchain(old_handle, None) };
 
-                let old_samples = self.samples;
-                self.samples = Self::choose_sample_count(&self.instance, self.physical_device);
+                let old_samples = std::mem::replace(
+                        &mut self.samples,
+                        Self::choose_sample_count(&self.instance, self.physical_device),
+                );
                 recreation_info.samples_changed = old_samples != self.samples;
                 debug!("VkSwapchain samples: {:?}", self.samples);
 
@@ -247,8 +257,10 @@ impl VkSwapchain {
                                 &self.extent,
                                 self.samples,
                         )?;
-                        self.color_img = color_img;
-                        self.color_img_view = color_img_view;
+                        unsafe {
+                                std::mem::replace(&mut self.color_img, color_img).destroy();
+                                std::mem::replace(&mut self.color_img_view, color_img_view).destroy();
+                        }
 
                         let (depth_img, depth_img_view) = Self::create_depth_img_resources(
                                 Rc::clone(&self.device),
@@ -257,19 +269,21 @@ impl VkSwapchain {
                                 &self.extent,
                                 self.samples,
                         )?;
-                        self.depth_img = depth_img;
-                        self.depth_img_view = depth_img_view;
+                        unsafe {
+                                std::mem::replace(&mut self.depth_img, depth_img).destroy();
+                                std::mem::replace(&mut self.depth_img_view, depth_img_view).destroy();
+                        }
                 }
 
                 self.resolve_imgs = unsafe { loader.get_swapchain_images(self.handle)? };
+                unsafe { self.resolve_img_views.drain(..).for_each(|iv| iv.destroy()) };
                 self.resolve_img_views = Self::create_resolve_img_views(
                         Rc::clone(&self.device),
                         &self.resolve_imgs,
                         self.color_format.format,
                 )?;
 
-                let old_img_count = self.img_count;
-                self.img_count = self.resolve_imgs.len() as u32;
+                let old_img_count = std::mem::replace(&mut self.img_count, self.resolve_imgs.len() as u32);
                 recreation_info.img_count_changed = old_img_count != self.img_count;
 
                 Ok(recreation_info)
@@ -546,19 +560,15 @@ impl VkSwapchain {
         }
 }
 
-impl Deref for VkSwapchain {
-        type Target = vk::SwapchainKHR;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkSwapchain {
-        fn drop(&mut self) {
-                unsafe { self.loader.destroy_swapchain(self.handle, None) };
-        }
-}
+impl_destroyable_expr!(VkSwapchain, vk::SwapchainKHR, |s: &VkSwapchain| {
+        s.resolve_img_views.iter().for_each(|iv| iv.destroy());
+        s.framebuffers.iter().for_each(|fb| fb.destroy());
+        s.depth_img_view.destroy();
+        s.depth_img.destroy();
+        s.color_img_view.destroy();
+        s.color_img.destroy();
+        s.loader.destroy_swapchain(s.handle, None)
+});
 
 bitflags! {
         pub struct VkSwapchainOutdatedCauseFlags: u32 {

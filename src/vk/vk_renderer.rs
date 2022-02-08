@@ -48,7 +48,7 @@ pub struct VkRenderer {
 
         render_pass: VkRenderPass,
 
-        _setup_cmd_buffer: VkReusableCommandBuffer,
+        setup_cmd_buffer: VkReusableCommandBuffer,
         draw_cmd_buffers: Vec<VkReusableCommandBuffer>,
 
         world_matrices_buffer: VkBuffer,
@@ -71,7 +71,7 @@ pub struct VkRenderer {
         graphics_pipeline_layout: VkPipelineLayout,
         graphics_pipeline: VkPipeline,
 
-        imgui_renderer: imgui_rs_vulkan_renderer::Renderer,
+        imgui_renderer: Option<imgui_rs_vulkan_renderer::Renderer>,
 
         img_avail_semaphores: Vec<VkSemaphore>,
         present_complete_semaphores: Vec<VkSemaphore>,
@@ -131,7 +131,7 @@ impl VkRenderer {
                 trace!("Created VkSemaphores");
 
                 let world_dst_set_layout = Self::create_world_dst_set_layout(&vk_context.device)?;
-                let material_dst_set_layout = Self::create_material_dst_set_layout(&vk_context.device)?;
+                // let material_dst_set_layout = Self::create_material_dst_set_layout(&vk_context.device)?;
                 let object_dst_set_layout = Self::create_object_dst_set_layout(&vk_context.device)?;
 
                 let world_matrices_buffer_size = swapchain.img_count as vk::DeviceSize
@@ -199,9 +199,13 @@ impl VkRenderer {
                         &object_matrices_buffers,
                 )?;
 
-                let (_matrices_dst_set_layout, material_dst_set_layout, _lights_dst_set_layout) =
+                let (mut matrices_dst_set_layout, material_dst_set_layout, mut lights_dst_set_layout) =
                         Self::create_descriptor_set_layouts(&vk_context.device)?;
 
+                unsafe {
+                        matrices_dst_set_layout.destroy();
+                        lights_dst_set_layout.destroy();
+                }
                 // let matrices_dst_sets = Self::create_matrices_dst_sets(
                 //         &vk_context.device,
                 //         *vk_context.dst_pool,
@@ -264,7 +268,7 @@ impl VkRenderer {
                         sample_count: swapchain.samples,
                 };
 
-                let imgui_renderer = imgui_rs_vulkan_renderer::Renderer::with_default_allocator(
+                let imgui_renderer = Some(imgui_rs_vulkan_renderer::Renderer::with_default_allocator(
                         &**vk_context.instance,
                         *vk_context.pdevice,
                         (**vk_context.device).clone(),
@@ -273,7 +277,7 @@ impl VkRenderer {
                         *render_pass,
                         imguic,
                         Some(imgui_renderer_options),
-                )?;
+                )?);
 
                 Ok(Self {
                         target_ticktime: 1.0 / target_tps as f32,
@@ -289,7 +293,7 @@ impl VkRenderer {
 
                         render_pass,
 
-                        _setup_cmd_buffer: setup_cmd_buffer,
+                        setup_cmd_buffer,
                         draw_cmd_buffers,
 
                         world_matrices_buffer,
@@ -483,7 +487,10 @@ impl Renderer for VkRenderer {
                                 )?;
                         }
 
-                        self.imgui_renderer.cmd_draw(draw_cmd_buffer, imgui_draw_data)?;
+                        self.imgui_renderer
+                                .as_mut()
+                                .unwrap()
+                                .cmd_draw(draw_cmd_buffer, imgui_draw_data)?;
 
                         self.end_frame(imagei)?;
                 }
@@ -494,6 +501,32 @@ impl Renderer for VkRenderer {
         fn on_window_resize(&mut self, _width: u32, _height: u32) {
                 self.swapchain_outdated_causes
                         .insert(VkSwapchainOutdatedCauseFlags::WINDOW_RESIZE);
+        }
+
+        fn destroy(&mut self) -> AnyResult<()> {
+                unsafe {
+                        let _ = self.vk_context.device.device_wait_idle();
+                        self.present_complete_semaphores.drain(..).for_each(|s| s.destroy());
+                        self.img_avail_semaphores.drain(..).for_each(|s| s.destroy());
+                        drop(self.imgui_renderer.take().unwrap());
+                        self.graphics_pipeline.destroy();
+                        self.graphics_pipeline_layout.destroy();
+                        self.object_dst_set_layout.destroy();
+                        self.material_dst_set_layout.destroy();
+                        self.world_dst_set_layout.destroy();
+                        self.object_matrices_buffers.drain(..).for_each(|b| b.destroy());
+                        self.material_data_buffer.destroy();
+                        self.world_light_buffer.destroy();
+                        self.world_matrices_buffer.destroy();
+                        self.setup_cmd_buffer.destroy();
+                        self.draw_cmd_buffers.drain(..).for_each(|cb| cb.destroy());
+                        self.render_pass.destroy();
+                        self.swapchain.destroy();
+                        self.vk_asset_manager.destroy();
+                        self.vk_context.destroy();
+                }
+
+                Ok(())
         }
 }
 
@@ -541,7 +574,10 @@ impl VkRenderer {
                                 self.swapchain.depth_format,
                         )?;
 
-                        self.imgui_renderer.set_render_pass(*self.render_pass)?;
+                        self.imgui_renderer
+                                .as_mut()
+                                .unwrap()
+                                .set_render_pass(*self.render_pass)?;
 
                         recreate_pipeline = true;
                 }
@@ -1671,12 +1707,6 @@ impl VkRenderer {
 
                         device.cmd_draw_indexed(draw_cmd_buffer, indices.element_count as u32, 1, 0, 0, 0);
                 }
-        }
-}
-
-impl Drop for VkRenderer {
-        fn drop(&mut self) {
-                let _ = unsafe { self.vk_context.device.device_wait_idle() };
         }
 }
 

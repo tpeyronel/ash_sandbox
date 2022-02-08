@@ -120,6 +120,8 @@ impl VkAssetManager {
                 trace!("Creating VkShaders...");
                 let vk_shaders = Self::create_vk_shaders_from_shaders(&device, asset_manager.shaders())?;
 
+                unsafe { cmd_buffer.destroy() };
+
                 Ok(Self {
                         buffer_views: vk_buffer_views,
                         images: vk_images,
@@ -128,6 +130,39 @@ impl VkAssetManager {
                         shader_resources: vk_shader_resources,
                         shaders: vk_shaders,
                 })
+        }
+
+        pub fn destroy(&mut self) {
+                for (_, bv) in &self.buffer_views {
+                        unsafe { bv.buffer.destroy() };
+                }
+                self.buffer_views.clear();
+
+                for (_, i) in &self.images {
+                        unsafe {
+                                i.image.destroy();
+                                i.image_view.destroy();
+                        }
+                }
+                self.images.clear();
+
+                for (_, s) in &self.samplers {
+                        unsafe { s.destroy() };
+                }
+                self.samplers.clear();
+
+                for (_, sr) in &self.shader_resources {
+                        unsafe { sr.dst_set_layout.destroy() };
+                }
+                self.shader_resources.clear();
+
+                for (_, s) in &self.shaders {
+                        unsafe {
+                                s.vert_module.destroy();
+                                s.frag_module.destroy();
+                        }
+                }
+                self.shaders.clear();
         }
 
         fn discover_buffer_view_usages(meshes: &VecMap<MeshId, Mesh>) -> HashMap<BufferViewId, vk::BufferUsageFlags> {

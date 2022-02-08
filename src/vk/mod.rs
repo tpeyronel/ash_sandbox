@@ -5,4 +5,5 @@ mod vk_context;
 mod vk_image;
 pub mod vk_renderer;
 mod vk_swapchain;
+#[macro_use]
 mod vk_wrapper;

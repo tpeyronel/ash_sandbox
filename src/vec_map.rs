@@ -35,6 +35,10 @@ impl<K: VecMapKey, V> VecMap<K, V> {
         pub fn iter(&self) -> VecMapIterator<K, V> {
                 VecMapIterator { parent: self, index: 0 }
         }
+
+        pub fn clear(&mut self) {
+                self.values.clear();
+        }
 }
 
 impl<K: VecMapKey, V> Index<K> for VecMap<K, V> {

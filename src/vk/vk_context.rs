@@ -1,5 +1,6 @@
 use std::{
         borrow::Cow,
+        cell::Cell,
         ffi::{c_void, CStr, CString},
         os::raw::c_char,
 };
@@ -14,7 +15,7 @@ use log::{debug, error, info, trace, warn};
 use winit::window::Window;
 
 use super::vk_wrapper::{
-        VkCommandPool, VkDebugUtilsMessenger, VkDescriptorPool, VkDevice, VkInstance, VkSurface, VmaAllocator,
+        VkCommandPool, VkDebugUtilsMessenger, VkDescriptorPool, VkDevice, VkInstance, VkSurface, VmaAllocator, impl_destroyable_drop,
 };
 use crate::{
         scoped_timer::{ScopedTimer, TimePrefix},
@@ -31,7 +32,7 @@ macro_rules! cstring {
 pub struct VkContext {
         pub instance: Rc<VkInstance>,
 
-        _debug_utils_messenger: Option<VkDebugUtilsMessenger>,
+        debug_utils_messenger: Option<VkDebugUtilsMessenger>,
 
         pub surface: Rc<VkSurface>,
 
@@ -45,6 +46,8 @@ pub struct VkContext {
         pub allocator: Rc<VmaAllocator>,
         pub cmd_pool: Rc<VkCommandPool>,
         pub dst_pool: VkDescriptorPool,
+
+        destroyed: Cell<bool>,
 }
 
 #[cfg(all(debug_assertions))]
@@ -103,7 +106,7 @@ impl VkContext {
                 Ok(Self {
                         instance,
 
-                        _debug_utils_messenger: debug_utils_messenger,
+                        debug_utils_messenger,
 
                         surface,
 
@@ -119,7 +122,24 @@ impl VkContext {
                         cmd_pool,
 
                         dst_pool,
+
+                        destroyed: Cell::new(false),
                 })
+        }
+
+        pub unsafe fn destroy(&mut self) {
+                self.destroyed.set(true);
+
+                let _ = self.device.device_wait_idle();
+                self.dst_pool.destroy();
+                self.cmd_pool.destroy();
+                self.allocator.destroy();
+                self.device.destroy();
+                self.surface.destroy();
+                if let Some(dum) = &self.debug_utils_messenger {
+                        dum.destroy();
+                }
+                self.instance.destroy();
         }
 
         fn create_instance(
@@ -300,152 +320,7 @@ impl VkContext {
         }
 }
 
-/*impl Renderer for VkContext {
-        fn draw(&mut self, imgui_draw_data: &imgui::DrawData) -> AnyResult<()> {
-                let window_size = self.window.inner_size();
-                if window_size.width == 0 || window_size.height == 0 {
-                        return Ok(());
-                }
-
-                if self.swapchain_outdated_causes != VkSwapchainOutdatedCauses::NONE {
-                        self.recreate_swapchain()?;
-                }
-
-                let frame_img_avail_semaphore = &self.img_avail_semaphores[self.frame_i];
-
-                let (img_i, suboptimal) = unsafe {
-                        self.swapchain
-                                .acquire_next_image(u64::MAX, **frame_img_avail_semaphore, vk::Fence::null())?
-                };
-
-                if suboptimal {
-                        self.swapchain_outdated_causes = VkSwapchainOutdatedCauses::SUBOPTIMAL;
-                }
-
-                let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.frame_i];
-                let frame_present_complete_semaphore = &self.present_complete_semaphores[self.frame_i];
-
-                let frame_framebuffer = &self.swapchain.framebuffers[img_i as usize];
-
-                let time = self.creation_instant.elapsed().as_secs_f32();
-                let intensity = ((time.sin() + 1.0) / 2.0) * 0.05;
-
-                let clear_values = [
-                        vk::ClearValue {
-                                color: vk::ClearColorValue {
-                                        float32: [intensity, intensity, intensity, 1.0],
-                                },
-                        },
-                        vk::ClearValue {
-                                depth_stencil: vk::ClearDepthStencilValue {
-                                        depth:   1.0,
-                                        stencil: 0,
-                                },
-                        },
-                ];
-
-                self.update_matrices_buffer(&self.matrices_buffers[img_i as usize])?;
-
-                let mut imgui_renderer = self.imgui_renderer.take().unwrap();
-
-                frame_draw_cmd_buffer.record_and_submit(
-                        &self.device,
-                        self.queues.graphics,
-                        &[**frame_img_avail_semaphore],
-                        &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
-                        &[**frame_present_complete_semaphore],
-                        |device, draw_cmd_buffer| unsafe {
-                                let render_pass_binfo = vk::RenderPassBeginInfo::builder()
-                                        .render_pass(*self.render_pass)
-                                        .framebuffer(**frame_framebuffer)
-                                        .render_area(self.scissor)
-                                        .clear_values(&clear_values);
-
-                                device.cmd_begin_render_pass(
-                                        draw_cmd_buffer,
-                                        &render_pass_binfo,
-                                        vk::SubpassContents::INLINE,
-                                );
-
-                                device.cmd_bind_pipeline(
-                                        draw_cmd_buffer,
-                                        vk::PipelineBindPoint::GRAPHICS,
-                                        *self.graphics_pipeline,
-                                );
-
-                                device.cmd_set_viewport(draw_cmd_buffer, 0, slice::from_ref(&self.viewport));
-                                device.cmd_set_scissor(draw_cmd_buffer, 0, slice::from_ref(&self.scissor));
-
-                                device.cmd_bind_vertex_buffers(draw_cmd_buffer, 0, &[*self.vertex_buffer], &[0]);
-                                device.cmd_bind_index_buffer(
-                                        draw_cmd_buffer,
-                                        *self.index_buffer,
-                                        0,
-                                        vk::IndexType::UINT32,
-                                );
-                                device.cmd_bind_descriptor_sets(
-                                        draw_cmd_buffer,
-                                        vk::PipelineBindPoint::GRAPHICS,
-                                        *self.graphics_pipeline_layout,
-                                        0,
-                                        &[self.dst_sets[img_i as usize]],
-                                        &[],
-                                );
-
-                                for _ in 0..1 {
-                                        device.cmd_draw_indexed(draw_cmd_buffer, 36, 1, 0, 0, 0);
-                                }
-
-                                imgui_renderer.cmd_draw(self, draw_cmd_buffer, imgui_draw_data)?;
-
-                                device.cmd_end_render_pass(draw_cmd_buffer);
-
-                                Ok(())
-                        },
-                )?;
-
-                self.imgui_renderer = Some(imgui_renderer);
-
-                unsafe {
-                        match self.swapchain.queue_present(
-                                self.queues.present,
-                                &vk::PresentInfoKHR::builder()
-                                        .wait_semaphores(&[**frame_present_complete_semaphore])
-                                        .swapchains(&[*self.swapchain])
-                                        .image_indices(&[img_i]),
-                        ) {
-                                Ok(true) => {
-                                        // Suboptimal
-                                        if let RecreateSwapchain::No = self.recreate_swapchain {
-                                                self.recreate_swapchain = RecreateSwapchain::Swapchain
-                                        }
-                                },
-                                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                                        self.recreate_swapchain = RecreateSwapchain::SwapchainAndPipeline;
-                                },
-                                Err(err) => return Err(err.into()),
-                                _ => {},
-                        };
-                }
-
-                self.frame_i = (self.frame_i + 1) % (self.swapchain.img_count as usize);
-                self.frame_counter += 1;
-
-                Ok(())
-        }
-}*/
-
-impl Drop for VkContext {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkContext...");
-
-                        if let Err(err) = self.device.device_wait_idle() {
-                                error!("Error occurred while waiting device idle: {}", err);
-                        }
-                }
-        }
-}
+impl_destroyable_drop!(VkContext);
 
 unsafe extern "system" fn vk_debug_callback(
         message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,

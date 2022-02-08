@@ -1,13 +1,87 @@
-use std::{ffi::CStr, ops::Deref, rc::Rc};
+use std::{cell::Cell, ffi::CStr, ops::Deref, rc::Rc};
 
 use ash::{extensions::ext::DebugUtils, prelude::VkResult, vk};
 use log::trace;
 use thiserror::Error;
 
+macro_rules! impl_destroyable_deref {
+        ($t:ty, $h:ty) => {
+                impl Deref for $t {
+                        type Target = $h;
+
+                        fn deref(&self) -> &Self::Target {
+                                assert!(
+                                        !self.destroyed.get(),
+                                        "Tried to deref destroyed {}!",
+                                        stringify!($t)
+                                );
+
+                                &self.handle
+                        }
+                }
+        };
+}
+
+macro_rules! impl_destroyable_drop {
+        ($t:ty) => {
+                impl Drop for $t {
+                        fn drop(&mut self) {
+                                assert!(
+                                        self.destroyed.get(),
+                                        "{} dropped but not destroyed!",
+                                        stringify!($t)
+                                );
+                        }
+                }
+        };
+}
+
+macro_rules! impl_destroyable {
+        ($t:ty, $h:ty, $d:ident $(, $args:expr)*) => {
+                impl $t {
+                        pub unsafe fn destroy(&self) {
+                                assert!(!self.destroyed.get(), "Tried to destroy {} that has already been destroyed!", stringify!($t));
+
+                                self.$d($($args),*);
+                                self.destroyed.set(true);
+                        }
+                }
+
+                impl_destroyable_deref!($t, $h);
+                impl_destroyable_drop!($t);
+        }
+}
+
+macro_rules! impl_destroyable_expr {
+        ($t:ty, $h:ty, $c:expr) => {
+                impl $t {
+                        pub unsafe fn destroy(&self) {
+                                assert!(
+                                        !self.destroyed.get(),
+                                        "Tried to destroy {} that has already been destroyed!",
+                                        stringify!($t)
+                                );
+
+                                $c(self);
+                                self.destroyed.set(true);
+                        }
+                }
+
+                impl_destroyable_deref!($t, $h);
+                impl_destroyable_drop!($t);
+        };
+}
+
+pub(crate) use impl_destroyable;
+pub(crate) use impl_destroyable_deref;
+pub(crate) use impl_destroyable_drop;
+pub(crate) use impl_destroyable_expr;
+
 pub struct VkInstance {
         _entry: Rc<ash::Entry>,
 
         handle: ash::Instance,
+        destroyed: Cell<bool>,
 }
 
 impl VkInstance {
@@ -16,57 +90,28 @@ impl VkInstance {
                         _entry: Rc::clone(entry),
 
                         handle: entry.create_instance(create_info, None)?,
+                        destroyed: Cell::new(false),
                 })
         }
 }
 
-impl Deref for VkInstance {
-        type Target = ash::Instance;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkInstance {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkInstance...");
-
-                        self.destroy_instance(None);
-                }
-        }
-}
+impl_destroyable!(VkInstance, ash::Instance, destroy_instance, None);
 
 pub struct VmaAllocator {
         handle: vma::Allocator,
+        destroyed: Cell<bool>,
 }
 
 impl VmaAllocator {
         pub unsafe fn new(create_info: &vma::AllocatorCreateInfo) -> VkResult<Self> {
                 Ok(Self {
                         handle: vma::Allocator::new(&create_info)?,
+                        destroyed: Cell::new(false),
                 })
         }
 }
 
-impl Deref for VmaAllocator {
-        type Target = vma::Allocator;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VmaAllocator {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VmaAllocator...");
-
-                        self.handle.destroy_allocator();
-                }
-        }
-}
+impl_destroyable!(VmaAllocator, vma::Allocator, destroy_allocator);
 
 pub struct VkPhysicalDevice {
         handle: vk::PhysicalDevice,
@@ -210,6 +255,7 @@ pub struct VkDevice {
         _instance: Rc<VkInstance>,
 
         handle: ash::Device,
+        destroyed: Cell<bool>,
 }
 
 impl VkDevice {
@@ -222,33 +268,19 @@ impl VkDevice {
                         _instance: Rc::clone(instance),
 
                         handle: instance.create_device(physical_device, create_info, None)?,
+                        destroyed: Cell::new(false),
                 })
         }
 }
 
-impl Deref for VkDevice {
-        type Target = ash::Device;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkDevice {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkDevice...");
-
-                        self.destroy_device(None);
-                }
-        }
-}
+impl_destroyable!(VkDevice, ash::Device, destroy_device, None);
 
 pub struct VkDebugUtilsMessenger {
         _entry: Rc<ash::Entry>,
 
         loader: DebugUtils,
         handle: vk::DebugUtilsMessengerEXT,
+        destroyed: Cell<bool>,
 }
 
 impl VkDebugUtilsMessenger {
@@ -264,25 +296,16 @@ impl VkDebugUtilsMessenger {
                         _entry: Rc::clone(entry),
                         loader,
                         handle,
+                        destroyed: Cell::new(false),
                 })
         }
 }
 
-impl Deref for VkDebugUtilsMessenger {
-        type Target = vk::DebugUtilsMessengerEXT;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkDebugUtilsMessenger {
-        fn drop(&mut self) {
-                unsafe {
-                        self.loader.destroy_debug_utils_messenger(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(
+        VkDebugUtilsMessenger,
+        vk::DebugUtilsMessengerEXT,
+        |s: &VkDebugUtilsMessenger| s.loader.destroy_debug_utils_messenger(s.handle, None)
+);
 
 pub struct VkSurface {
         _window: Rc<winit::window::Window>,
@@ -291,6 +314,7 @@ pub struct VkSurface {
 
         loader: ash::extensions::khr::Surface,
         handle: vk::SurfaceKHR,
+        destroyed: Cell<bool>,
 }
 
 impl VkSurface {
@@ -309,6 +333,7 @@ impl VkSurface {
 
                         loader,
                         handle,
+                        destroyed: Cell::new(false),
                 })
         }
 
@@ -317,90 +342,59 @@ impl VkSurface {
         }
 }
 
-impl Deref for VkSurface {
-        type Target = vk::SurfaceKHR;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkSurface {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkSurface...");
-
-                        self.loader.destroy_surface(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(VkSurface, vk::SurfaceKHR, |s: &VkSurface| s
+        .loader
+        .destroy_surface(s.handle, None));
 
 pub struct VkImageView {
         device: Rc<VkDevice>,
 
         handle: vk::ImageView,
+        destroyed: Cell<bool>,
 }
 
 impl VkImageView {
         pub unsafe fn new(device: Rc<VkDevice>, create_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
                 let handle = device.create_image_view(create_info, None)?;
 
-                Ok(Self { device, handle })
+                Ok(Self {
+                        device,
+                        handle,
+                        destroyed: Cell::new(false),
+                })
         }
 }
 
-impl Deref for VkImageView {
-        type Target = vk::ImageView;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkImageView {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkImageView...");
-
-                        self.device.destroy_image_view(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(VkImageView, vk::ImageView, |s: &VkImageView| s
+        .device
+        .destroy_image_view(s.handle, None));
 
 pub struct VkSampler {
         device: Rc<VkDevice>,
         handle: vk::Sampler,
+        destroyed: Cell<bool>,
 }
 
 impl VkSampler {
         pub unsafe fn new(device: Rc<VkDevice>, create_info: &vk::SamplerCreateInfo) -> VkResult<Self> {
                 let handle = device.create_sampler(create_info, None)?;
 
-                Ok(Self { device, handle })
+                Ok(Self {
+                        device,
+                        handle,
+                        destroyed: Cell::new(false),
+                })
         }
 }
 
-impl Deref for VkSampler {
-        type Target = vk::Sampler;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkSampler {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkSampler...");
-
-                        self.device.destroy_sampler(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(VkSampler, vk::Sampler, |s: &VkSampler| s
+        .device
+        .destroy_sampler(s.handle, None));
 
 pub struct VkFramebuffer {
         device: Rc<VkDevice>,
         handle: vk::Framebuffer,
+        destroyed: Cell<bool>,
 }
 
 impl VkFramebuffer {
@@ -408,31 +402,19 @@ impl VkFramebuffer {
                 Ok(Self {
                         device: Rc::clone(device),
                         handle: device.create_framebuffer(create_info, None)?,
+                        destroyed: Cell::new(false),
                 })
         }
 }
 
-impl Deref for VkFramebuffer {
-        type Target = vk::Framebuffer;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkFramebuffer {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkFramebuffer...");
-
-                        self.device.destroy_framebuffer(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(VkFramebuffer, vk::Framebuffer, |s: &VkFramebuffer| s
+        .device
+        .destroy_framebuffer(s.handle, None));
 
 pub struct VkRenderPass {
         device: Rc<VkDevice>,
         handle: vk::RenderPass,
+        destroyed: Cell<bool>,
 }
 
 impl VkRenderPass {
@@ -440,32 +422,20 @@ impl VkRenderPass {
                 Ok(Self {
                         device: Rc::clone(device),
                         handle: device.create_render_pass(create_info, None)?,
+                        destroyed: Cell::new(false),
                 })
         }
 }
 
-impl Deref for VkRenderPass {
-        type Target = vk::RenderPass;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkRenderPass {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkRenderPass...");
-
-                        self.device.destroy_render_pass(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(VkRenderPass, vk::RenderPass, |s: &VkRenderPass| s
+        .device
+        .destroy_render_pass(s.handle, None));
 
 pub struct VkCommandPool {
         device: Rc<VkDevice>,
 
         handle: vk::CommandPool,
+        destroyed: Cell<bool>,
 }
 
 impl VkCommandPool {
@@ -474,32 +444,20 @@ impl VkCommandPool {
                         device: Rc::clone(device),
 
                         handle: device.create_command_pool(create_info, None)?,
+                        destroyed: Cell::new(false),
                 })
         }
 }
 
-impl Deref for VkCommandPool {
-        type Target = vk::CommandPool;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkCommandPool {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkCommandPool...");
-
-                        self.device.destroy_command_pool(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(VkCommandPool, vk::CommandPool, |s: &VkCommandPool| s
+        .device
+        .destroy_command_pool(s.handle, None));
 
 pub struct VkDescriptorPool {
         device: Rc<VkDevice>,
 
         handle: vk::DescriptorPool,
+        destroyed: Cell<bool>,
 }
 
 impl VkDescriptorPool {
@@ -508,31 +466,19 @@ impl VkDescriptorPool {
                         device: Rc::clone(device),
 
                         handle: device.create_descriptor_pool(create_info, None)?,
+                        destroyed: Cell::new(false),
                 })
         }
 }
 
-impl Deref for VkDescriptorPool {
-        type Target = vk::DescriptorPool;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkDescriptorPool {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkDescriptorPool...");
-
-                        self.device.destroy_descriptor_pool(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(VkDescriptorPool, vk::DescriptorPool, |s: &VkDescriptorPool| s
+        .device
+        .destroy_descriptor_pool(s.handle, None));
 
 pub struct VkDescriptorSetLayout {
         device: Rc<VkDevice>,
         handle: vk::DescriptorSetLayout,
+        destroyed: Cell<bool>,
 }
 
 impl VkDescriptorSetLayout {
@@ -540,31 +486,21 @@ impl VkDescriptorSetLayout {
                 Ok(Self {
                         device: Rc::clone(device),
                         handle: device.create_descriptor_set_layout(create_info, None)?,
+                        destroyed: Cell::new(false),
                 })
         }
 }
 
-impl Deref for VkDescriptorSetLayout {
-        type Target = vk::DescriptorSetLayout;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkDescriptorSetLayout {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkDescriptorSetLayout...");
-
-                        self.device.destroy_descriptor_set_layout(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(
+        VkDescriptorSetLayout,
+        vk::DescriptorSetLayout,
+        |s: &VkDescriptorSetLayout| s.device.destroy_descriptor_set_layout(s.handle, None)
+);
 
 pub struct VkPipelineLayout {
         device: Rc<VkDevice>,
         handle: vk::PipelineLayout,
+        destroyed: Cell<bool>,
 }
 
 impl VkPipelineLayout {
@@ -572,31 +508,19 @@ impl VkPipelineLayout {
                 Ok(Self {
                         device: Rc::clone(device),
                         handle: device.create_pipeline_layout(create_info, None)?,
+                        destroyed: Cell::new(false),
                 })
         }
 }
 
-impl Deref for VkPipelineLayout {
-        type Target = vk::PipelineLayout;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkPipelineLayout {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkPipelineLayout...");
-
-                        self.device.destroy_pipeline_layout(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(VkPipelineLayout, vk::PipelineLayout, |s: &VkPipelineLayout| s
+        .device
+        .destroy_pipeline_layout(s.handle, None));
 
 pub struct VkPipeline {
         device: Rc<VkDevice>,
         handle: vk::Pipeline,
+        destroyed: Cell<bool>,
 }
 
 impl VkPipeline {
@@ -610,31 +534,19 @@ impl VkPipeline {
                         handle: device
                                 .create_graphics_pipelines(pipeline_cache, std::slice::from_ref(create_info), None)
                                 .map_err(|(_, vk_result)| vk_result)?[0],
+                        destroyed: Cell::new(false),
                 })
         }
 }
 
-impl Deref for VkPipeline {
-        type Target = vk::Pipeline;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkPipeline {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkPipeline...");
-
-                        self.device.destroy_pipeline(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(VkPipeline, vk::Pipeline, |s: &VkPipeline| s
+        .device
+        .destroy_pipeline(s.handle, None));
 
 pub struct VkSemaphore {
         device: Rc<VkDevice>,
         handle: vk::Semaphore,
+        destroyed: Cell<bool>,
 }
 
 impl VkSemaphore {
@@ -642,58 +554,34 @@ impl VkSemaphore {
                 Ok(Self {
                         device: Rc::clone(device),
                         handle: device.create_semaphore(create_info, None)?,
+                        destroyed: Cell::new(false),
                 })
         }
 }
 
-impl Deref for VkSemaphore {
-        type Target = vk::Semaphore;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkSemaphore {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkSemaphore...");
-
-                        self.device.destroy_semaphore(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(VkSemaphore, vk::Semaphore, |s: &VkSemaphore| s
+        .device
+        .destroy_semaphore(s.handle, None));
 
 pub struct VkFence {
         device: Rc<VkDevice>,
         handle: vk::Fence,
+        destroyed: Cell<bool>,
 }
 
 impl VkFence {
         pub unsafe fn new(device: Rc<VkDevice>, create_info: &vk::FenceCreateInfo) -> VkResult<Self> {
                 let handle = device.create_fence(create_info, None)?;
 
-                Ok(Self { device, handle })
+                Ok(Self {
+                        device,
+                        handle,
+                        destroyed: Cell::new(false),
+                })
         }
 }
 
-impl Deref for VkFence {
-        type Target = vk::Fence;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkFence {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkFence...");
-
-                        self.device.destroy_fence(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(VkFence, vk::Fence, |s: &VkFence| s.device.destroy_fence(s.handle, None));
 
 #[derive(Error, Debug, Clone)]
 pub enum VkShaderModuleError {
@@ -706,6 +594,7 @@ pub enum VkShaderModuleError {
 pub struct VkShaderModule {
         device: Rc<VkDevice>,
         handle: vk::ShaderModule,
+        destroyed: Cell<bool>,
 }
 
 impl VkShaderModule {
@@ -713,6 +602,7 @@ impl VkShaderModule {
                 Ok(Self {
                         device: Rc::clone(device),
                         handle: device.create_shader_module(create_info, None)?,
+                        destroyed: Cell::new(false),
                 })
         }
 
@@ -729,20 +619,6 @@ impl VkShaderModule {
         }
 }
 
-impl Deref for VkShaderModule {
-        type Target = vk::ShaderModule;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkShaderModule {
-        fn drop(&mut self) {
-                unsafe {
-                        trace!("Destroying VkShaderModule...");
-
-                        self.device.destroy_shader_module(self.handle, None);
-                }
-        }
-}
+impl_destroyable_expr!(VkShaderModule, vk::ShaderModule, |s: &VkShaderModule| s
+        .device
+        .destroy_shader_module(s.handle, None));

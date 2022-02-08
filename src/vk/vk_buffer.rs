@@ -1,11 +1,14 @@
-use std::{ops::Deref, rc::Rc};
+use std::{cell::Cell, ops::Deref, rc::Rc};
 
 use ash::{prelude::VkResult, vk};
 use log::trace;
 
 use crate::AnyResult;
 
-use super::{vk_command_buffer::VkReusableCommandBuffer, vk_wrapper::VmaAllocator};
+use super::{
+        vk_command_buffer::VkReusableCommandBuffer,
+        vk_wrapper::{impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VmaAllocator},
+};
 
 #[derive(Clone)]
 pub struct VkBufferCreateInfo<'a> {
@@ -48,8 +51,9 @@ pub struct VkBuffer {
         handle: vk::Buffer,
         alloc: vma::Allocation,
         ainfo: vma::AllocationInfo,
+        destroyed: Cell<bool>,
 
-        memory: *mut u8,
+        memory: Cell<*mut u8>,
 }
 
 impl VkBuffer {
@@ -86,7 +90,8 @@ impl VkBuffer {
                         handle,
                         alloc,
                         ainfo,
-                        memory: std::ptr::null_mut(),
+                        destroyed: Cell::new(false),
+                        memory: Cell::new(std::ptr::null_mut()),
                 })
         }
 
@@ -115,7 +120,7 @@ impl VkBuffer {
                         q_family_indices: None,
                 };
 
-                let mut staging_buffer = VkBuffer::new(staging_buffer_cinfo)?;
+                let staging_buffer = VkBuffer::new(staging_buffer_cinfo)?;
 
                 let map = staging_buffer.map_memory()?;
                 unsafe {
@@ -156,7 +161,8 @@ impl VkBuffer {
                 )?;
 
                 unsafe {
-                        create_info.cmd_buffer.wait(create_info.device, u64::MAX)?;
+                        create_info.cmd_buffer.wait(u64::MAX)?;
+                        staging_buffer.destroy();
                 }
 
                 Ok(buffer)
@@ -204,16 +210,16 @@ impl VkBuffer {
                 Ok(())
         }
 
-        pub fn map_memory(&mut self) -> VkResult<*mut u8> {
-                if self.memory.is_null() {
-                        self.memory = unsafe { self.allocator.map_memory(self.alloc)? };
+        pub fn map_memory(&self) -> VkResult<*mut u8> {
+                if self.memory.get().is_null() {
+                        self.memory.set(unsafe { self.allocator.map_memory(self.alloc)? });
                 }
 
-                Ok(self.memory)
+                Ok(self.memory.get())
         }
 
-        pub fn unmap_memory(&mut self) {
-                self.memory = std::ptr::null_mut();
+        pub fn unmap_memory(&self) {
+                self.memory.set(std::ptr::null_mut());
                 unsafe {
                         self.allocator.unmap_memory(self.alloc);
                 }
@@ -225,27 +231,12 @@ impl VkBuffer {
         }
 }
 
-impl Deref for VkBuffer {
-        type Target = vk::Buffer;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
+impl_destroyable_expr!(VkBuffer, vk::Buffer, |s: &VkBuffer| {
+        if !s.memory.get().is_null() {
+                s.unmap_memory();
         }
-}
 
-impl Drop for VkBuffer {
-        fn drop(&mut self) {
-                trace!("Destroying VkBuffer...");
-                assert_ne!(self.handle, vk::Buffer::null());
-
-                if !self.memory.is_null() {
-                        self.unmap_memory();
-                }
-
-                unsafe {
-                        self.allocator.destroy_buffer(self.handle, self.alloc);
-                }
-
-                self.handle = vk::Buffer::null();
+        unsafe {
+                s.allocator.destroy_buffer(s.handle, s.alloc);
         }
-}
+});

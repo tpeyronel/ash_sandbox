@@ -1,4 +1,4 @@
-use std::{ops::Deref, rc::Rc};
+use std::{cell::Cell, ops::Deref, rc::Rc};
 
 use ash::{prelude::VkResult, vk};
 #[allow(unused_imports)]
@@ -6,7 +6,11 @@ use log::{debug, error, info, trace, warn};
 
 use crate::AnyResult;
 
-use super::{vk_buffer::VkBuffer, vk_command_buffer::VkReusableCommandBuffer, vk_wrapper::VmaAllocator};
+use super::{
+        vk_buffer::VkBuffer,
+        vk_command_buffer::VkReusableCommandBuffer,
+        vk_wrapper::{impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VmaAllocator},
+};
 
 #[allow(dead_code)]
 pub enum MipLevels {
@@ -50,6 +54,8 @@ pub struct VkImage {
         handle: vk::Image,
         alloc: vma::Allocation,
         ainfo: vma::AllocationInfo,
+
+        destroyed: Cell<bool>,
 
         pub mip_levels: u32,
 }
@@ -104,6 +110,7 @@ impl VkImage {
                         handle,
                         alloc,
                         ainfo,
+                        destroyed: Cell::new(false),
                         mip_levels: create_info.mip_levels,
                 })
         }
@@ -195,7 +202,8 @@ impl VkImage {
                 cinfo.setup_cmd_buffer
                         .end_and_submit(&device, cinfo.transfer_queue, &[], &[], &[])?;
 
-                cinfo.setup_cmd_buffer.wait(device, u64::MAX)?;
+                cinfo.setup_cmd_buffer.wait(u64::MAX)?;
+                staging_buffer.destroy();
 
                 Ok(vk_img)
         }
@@ -379,27 +387,9 @@ impl VkImage {
         }
 }
 
-impl Deref for VkImage {
-        type Target = vk::Image;
-
-        fn deref(&self) -> &Self::Target {
-                &self.handle
-        }
-}
-
-impl Drop for VkImage {
-        fn drop(&mut self) {
-                trace!("Destroying VkImage...");
-
-                assert_ne!(self.handle, vk::Image::null());
-
-                unsafe {
-                        self.allocator.destroy_image(self.handle, self.alloc);
-                }
-
-                self.handle = vk::Image::null();
-        }
-}
+impl_destroyable_expr!(VkImage, vk::Image, |s: &VkImage| {
+        s.allocator.destroy_image(s.handle, s.alloc);
+});
 
 struct TransitionImageLayoutInfo<'a> {
         device: &'a ash::Device,

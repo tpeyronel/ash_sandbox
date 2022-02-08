@@ -501,6 +501,8 @@ impl Application {
         }
 
         fn on_quit(&mut self) {
+                self.renderer.destroy().unwrap();
+
                 let _ = self
                         .logic_thread_tx
                         .send(LogicThreadMessage::Command(LogicThreadCommand::Exit));
