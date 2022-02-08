@@ -1,6 +1,7 @@
 use std::{cell::Cell, ffi::CStr, ops::Deref, rc::Rc};
 
 use ash::{extensions::ext::DebugUtils, prelude::VkResult, vk};
+#[allow(unused_imports)]
 use log::trace;
 use thiserror::Error;
 

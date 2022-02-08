@@ -1,6 +1,5 @@
 use std::{
         ffi::CString,
-        mem::size_of,
         rc::Rc,
         slice,
         sync::{Arc, Mutex},
@@ -24,7 +23,7 @@ use super::{
                 VkSemaphore, VmaAllocator,
         },
 };
-use crate::{asset_manager::ShaderId, renderer::ModelInstance, scoped_timer::TimePrefix, AnyResult};
+use crate::{asset_manager::ShaderId, scoped_timer::TimePrefix, AnyResult};
 use crate::{
         asset_manager::{AssetManager, Mesh, ModelId, Primitive},
         my_glm::*,
@@ -199,7 +198,7 @@ impl VkRenderer {
                         &object_matrices_buffers,
                 )?;
 
-                let (mut matrices_dst_set_layout, material_dst_set_layout, mut lights_dst_set_layout) =
+                let (matrices_dst_set_layout, material_dst_set_layout, lights_dst_set_layout) =
                         Self::create_descriptor_set_layouts(&vk_context.device)?;
 
                 unsafe {
@@ -388,7 +387,7 @@ impl Renderer for VkRenderer {
                         .proj_camera
                         .calc_proj_matrix(aspect_ratio);
 
-                let mut world_matrices = WorldMatrices {
+                let world_matrices = WorldMatrices {
                         view: view_mat,
                         proj: proj_mat,
                 };
@@ -1088,82 +1087,6 @@ impl VkRenderer {
                 Self::calculate_padded_size(pdevice, std::mem::size_of::<T>())
         }
 
-        fn create_matrices_dst_sets(
-                device: &ash::Device,
-                dst_pool: vk::DescriptorPool,
-                matrices_dst_set_layout: vk::DescriptorSetLayout,
-                matrices_buffers: &[VkBuffer],
-        ) -> VkResult<Vec<vk::DescriptorSet>> {
-                let dst_set_layouts = vec![matrices_dst_set_layout; matrices_buffers.len()];
-
-                let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
-                        .descriptor_pool(dst_pool)
-                        .set_layouts(&dst_set_layouts);
-
-                let dst_sets = unsafe { device.allocate_descriptor_sets(&dst_set_ainfo)? };
-
-                assert_eq!(matrices_buffers.len(), dst_sets.len());
-
-                for (matrices_buffer, &dst_set) in matrices_buffers.iter().zip(dst_sets.iter()) {
-                        let buffer_info = vk::DescriptorBufferInfo {
-                                buffer: **matrices_buffer,
-                                offset: 0,
-                                range: size_of::<MatricesVPN>() as vk::DeviceSize,
-                        };
-
-                        let matrices_dst_write = vk::WriteDescriptorSet::builder()
-                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                .dst_set(dst_set)
-                                .dst_binding(0)
-                                .dst_array_element(0)
-                                .buffer_info(std::slice::from_ref(&buffer_info))
-                                .build();
-
-                        let writes = [matrices_dst_write];
-
-                        unsafe { device.update_descriptor_sets(&writes, &[]) };
-                }
-
-                Ok(dst_sets)
-        }
-
-        fn create_lights_dst_sets(
-                device: &ash::Device,
-                dst_pool: vk::DescriptorPool,
-                lights_dst_set_layout: vk::DescriptorSetLayout,
-                lights_buffers: &[VkBuffer],
-        ) -> VkResult<Vec<vk::DescriptorSet>> {
-                let dst_set_layouts = vec![lights_dst_set_layout; lights_buffers.len()];
-
-                let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
-                        .descriptor_pool(dst_pool)
-                        .set_layouts(&dst_set_layouts);
-
-                let dst_sets = unsafe { device.allocate_descriptor_sets(&dst_set_ainfo)? };
-
-                assert_eq!(lights_buffers.len(), dst_sets.len());
-
-                for (lights_buffer, &dst_set) in lights_buffers.iter().zip(dst_sets.iter()) {
-                        let buffer_info = vk::DescriptorBufferInfo {
-                                buffer: **lights_buffer,
-                                offset: 0,
-                                range: size_of::<UniformLights>() as vk::DeviceSize,
-                        };
-
-                        let lights_dst_write = vk::WriteDescriptorSet::builder()
-                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                .dst_set(dst_set)
-                                .dst_binding(0)
-                                .dst_array_element(0)
-                                .buffer_info(std::slice::from_ref(&buffer_info))
-                                .build();
-
-                        unsafe { device.update_descriptor_sets(std::slice::from_ref(&lights_dst_write), &[]) };
-                }
-
-                Ok(dst_sets)
-        }
-
         fn create_graphics_pipeline_layout(
                 device: &Rc<VkDevice>,
                 dst_set_layouts: &[vk::DescriptorSetLayout],
@@ -1547,37 +1470,8 @@ impl VkRenderer {
                 light: &WorldLight,
                 index: usize,
         ) -> VkResult<()> {
-                let offset = index * Self::calculate_padded_size_for_type::<WorldLight>(pdevice);
+                let offset = Self::calculate_padded_size_for_type::<WorldLight>(pdevice) * index;
                 world_light_buffer.write_offsetted(light, offset)
-                // let copy_size = std::mem::size_of::<WorldLight>() as vk::DeviceSize;
-                // let map = world_light_buffer.map_memory()?;
-                // unsafe {
-
-                //         std::ptr::copy_nonoverlapping(
-                //                 light as *const _ as *const u8,
-                //                 map.offset(offset),
-                //                 copy_size as usize,
-                //         );
-                // }
-                // world_light_buffer.unmap_memory()?;
-
-                // Ok(())
-        }
-
-        fn draw_instance(
-                instance: &ModelInstance,
-                device: &VkDevice,
-                draw_cmd_buffer: vk::CommandBuffer,
-                matrices_dst_set: vk::DescriptorSet,
-                lights_dst_set: vk::DescriptorSet,
-                pipeline_layout: vk::PipelineLayout,
-                asset_manager: &AssetManager,
-                vk_asset_manager: &VkAssetManager,
-                matrices_buffer: &VkBuffer,
-                matrices: &mut MatricesVPN,
-                model_id: ModelId,
-                model_instance_transform: &Mat4,
-        ) {
         }
 
         fn draw_model(

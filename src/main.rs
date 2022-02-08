@@ -29,7 +29,6 @@ extern crate nalgebra_glm as glm;
 extern crate vk_mem as vma;
 #[macro_use]
 extern crate enum_map;
-#[macro_use]
 extern crate approx;
 
 use std::{error::Error, io::Write};

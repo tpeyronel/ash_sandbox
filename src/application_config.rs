@@ -16,6 +16,7 @@ impl ApplicationConfig {
                 Ok(serde_json::from_str(&json)?)
         }
 
+        #[allow(unused)]
         pub fn write(&self, path: &Path) -> AnyResult<()> {
                 let json = serde_json::to_string_pretty(self)?;
 

@@ -80,6 +80,7 @@ impl Vertex {
                 // ]
         }
 
+        #[allow(dead_code)]
         pub fn color_vk_binding_description() -> [vk::VertexInputBindingDescription; 2] {
                 [
                         vk::VertexInputBindingDescription {
@@ -95,6 +96,7 @@ impl Vertex {
                 ]
         }
 
+        #[allow(dead_code)]
         pub fn color_vk_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
                 [
                         vk::VertexInputAttributeDescription {

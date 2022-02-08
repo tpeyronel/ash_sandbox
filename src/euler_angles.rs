@@ -47,22 +47,6 @@ impl EulerAngles {
                 self.angles[2]
         }
 
-        pub fn as_slice(&self) -> &[f32] {
-                &self.angles
-        }
-
-        pub fn as_slice_mut(&mut self) -> &mut [f32] {
-                &mut self.angles
-        }
-
-        pub fn as_array(&self) -> &[f32; 3] {
-                &self.angles
-        }
-
-        pub fn as_array_mut(&mut self) -> &mut [f32; 3] {
-                &mut self.angles
-        }
-
         pub fn set_pitch(&mut self, pitch: f32) {
                 self.angles[0] = pitch;
 

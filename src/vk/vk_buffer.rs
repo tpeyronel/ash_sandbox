@@ -1,6 +1,7 @@
 use std::{cell::Cell, ops::Deref, rc::Rc};
 
 use ash::{prelude::VkResult, vk};
+#[allow(unused_imports)]
 use log::trace;
 
 use crate::AnyResult;
@@ -169,7 +170,7 @@ impl VkBuffer {
         }
 
         pub fn new_transfer_src(device: &ash::Device, allocator: Rc<VmaAllocator>, data: &[u8]) -> AnyResult<VkBuffer> {
-                let mut staging_buffer = {
+                let staging_buffer = {
                         let buffer_cinfo = VkBufferCreateInfo {
                                 device,
                                 allocator,

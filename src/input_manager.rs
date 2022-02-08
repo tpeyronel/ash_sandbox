@@ -145,6 +145,7 @@ impl KeyboardState {
                 &mut self.key_states[key_code as usize]
         }
 
+        #[allow(unused)]
         fn pressed_keys(&self) -> impl Iterator<Item = KeyCode> + '_ {
                 self.key_states.iter().enumerate().filter_map(|(kc, ks)| match ks {
                         KeyState::Pressed => Some(unsafe { std::mem::transmute::<u32, KeyCode>(kc as u32) }),
