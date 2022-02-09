@@ -18,13 +18,12 @@ impl RenderStateSwitcher {
                 self.switch_state.replace(render_state)
         }
 
-        pub fn is_new_state_available(&self) -> bool {
-                self.is_state_new
-        }
-
-        pub fn read_new_render_state(&mut self, old_render_state: Option<Box<RenderState>>) -> Box<RenderState> {
-                assert!(self.is_state_new);
-                self.is_state_new = false;
-                std::mem::replace(&mut self.switch_state, old_render_state).unwrap()
+        pub fn try_exchange(&mut self, old_render_state: &mut Option<Box<RenderState>>) -> Option<Box<RenderState>> {
+                if self.is_state_new {
+                        self.is_state_new = false;
+                        Some(std::mem::replace(&mut self.switch_state, old_render_state.take()).unwrap())
+                } else {
+                        None
+                }
         }
 }

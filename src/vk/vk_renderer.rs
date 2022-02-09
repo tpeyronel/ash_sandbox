@@ -10,7 +10,7 @@ use ash::{prelude::VkResult, vk};
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
-use winit::window::Window;
+use winit::{dpi::PhysicalSize, window::Window};
 
 use super::{
         vk_asset_manager::{VkAssetManager, VkShader},
@@ -82,7 +82,6 @@ pub struct VkRenderer {
 
         creation_instant: Instant,
         framei: usize,
-        frame_counter: u32,
 }
 
 impl VkRenderer {
@@ -328,36 +327,19 @@ impl VkRenderer {
                         creation_instant: Instant::now(),
 
                         framei: 0,
-                        frame_counter: 0,
                 })
         }
 }
 
 impl Renderer for VkRenderer {
         fn draw(&'_ mut self, player_orien: &UnitQuat, imgui_draw_data: &imgui::DrawData) -> AnyResult<()> {
-                {
-                        let mut render_state_switcher = match self.render_state_switcher.lock() {
-                                Ok(v) => v,
-                                Err(_e) => panic!(),
-                        };
+                self.try_update_render_state();
 
-                        if render_state_switcher.is_new_state_available() {
-                                let new_render_state =
-                                        render_state_switcher.read_new_render_state(self.old_render_state.take());
-                                self.old_render_state = self.new_render_state.replace(new_render_state);
-                                self.last_render_state_switch_timestamp = Instant::now();
-                        }
-                }
-
-                if self.old_render_state.is_none() || self.new_render_state.is_none() {
+                if !self.should_render() {
                         return Ok(());
                 }
 
-                let tick_scalar = f32::clamp(
-                        self.last_render_state_switch_timestamp.elapsed().as_secs_f32() / self.target_ticktime,
-                        0.0,
-                        1.0,
-                );
+                let interp_scalar = self.calc_interpolation_scalar();
 
                 let (imagei, draw_cmd_buffer) = match unsafe { self.begin_frame()? } {
                         BeginFrameResult::Draw {
@@ -367,12 +349,12 @@ impl Renderer for VkRenderer {
                         BeginFrameResult::Skip => return Ok(()),
                 };
 
-                let winit::dpi::PhysicalSize { width, height } = self.window.inner_size();
+                let PhysicalSize { width, height } = self.window.inner_size();
                 let aspect_ratio = width as f32 / height as f32;
 
                 let old_camera_pos = &self.old_render_state.as_ref().unwrap().camera_pos;
                 let new_camera_pos = &self.new_render_state.as_ref().unwrap().camera_pos;
-                let lerped_camera_pos = Vec3::lerp(old_camera_pos, new_camera_pos, tick_scalar);
+                let lerped_camera_pos = Vec3::lerp(old_camera_pos, new_camera_pos, interp_scalar);
 
                 let inverted_view_mat = Mat4::new_translation(&lerped_camera_pos) * player_orien.to_homogeneous();
 
@@ -408,7 +390,7 @@ impl Renderer for VkRenderer {
                         .get(light_id)
                         .unwrap_or(new_light);
 
-                let light_pos = Vec3::lerp(&old_light.0 .0, &new_light.0 .0, tick_scalar);
+                let light_pos = Vec3::lerp(&old_light.0 .0, &new_light.0 .0, interp_scalar);
 
                 let world_light = WorldLight {
                         color: view_mat * Vec4::new_position(light_pos),
@@ -462,11 +444,11 @@ impl Renderer for VkRenderer {
 
                                 let old_pos = &old_instance.pos;
                                 let new_pos = &new_instance.pos;
-                                let interpolated_pos = Vec3::lerp(old_pos, new_pos, tick_scalar);
+                                let interpolated_pos = Vec3::lerp(old_pos, new_pos, interp_scalar);
 
                                 let old_orien = &old_instance.orien;
                                 let new_orien = &new_instance.orien;
-                                let interpolated_orien = UnitQuat::nlerp(old_orien, new_orien, tick_scalar);
+                                let interpolated_orien = UnitQuat::nlerp(old_orien, new_orien, interp_scalar);
 
                                 let transform = Mat4::new_translation(&interpolated_pos)
                                         * interpolated_orien.to_homogeneous()
@@ -530,6 +512,19 @@ impl Renderer for VkRenderer {
 }
 
 impl VkRenderer {
+        fn try_update_render_state(&mut self) {
+                let mut render_state_switcher = self.render_state_switcher.lock().unwrap();
+                if let Some(new_render_state) = render_state_switcher.try_exchange(&mut self.old_render_state) {
+                        self.old_render_state = self.new_render_state.replace(new_render_state);
+                        self.last_render_state_switch_timestamp = Instant::now();
+                }
+        }
+
+        fn calc_interpolation_scalar(&self) -> f32 {
+                let elapsed = self.last_render_state_switch_timestamp.elapsed();
+                f32::clamp(elapsed.as_secs_f32() / self.target_ticktime, 0.0, 1.0)
+        }
+
         fn recreate_swapchain_maybe(&mut self) -> AnyResult<()> {
                 match self.swapchain_outdated_causes {
                         VkSwapchainOutdatedCauseFlags::NONE => return Ok(()),
@@ -1327,29 +1322,48 @@ impl VkRenderer {
         //         unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
         // }
 
-        unsafe fn begin_frame(&mut self) -> AnyResult<BeginFrameResult> {
-                let wsize = self.window.inner_size();
-                if (wsize.width == 0) || (wsize.height == 0) {
-                        return Ok(BeginFrameResult::Skip);
+        fn should_render(&self) -> bool {
+                if self.old_render_state.is_none() || self.new_render_state.is_none() {
+                        return false;
                 }
 
+                let wsize = self.window.inner_size();
+                if (wsize.width == 0) || (wsize.height == 0) {
+                        return false;
+                }
+
+                true
+        }
+
+        unsafe fn begin_frame(&mut self) -> AnyResult<BeginFrameResult> {
                 self.recreate_swapchain_maybe()?;
 
                 let frame_img_avail_semaphore = &self.img_avail_semaphores[self.framei];
 
                 let imagei = {
-                        let (imagei, suboptimal) = self.swapchain.acquire_next_image(
+                        let result = self.swapchain.acquire_next_image(
                                 u64::MAX,
                                 **frame_img_avail_semaphore,
                                 vk::Fence::null(),
-                        )?;
+                        );
 
-                        if suboptimal {
-                                self.swapchain_outdated_causes
-                                        .insert(VkSwapchainOutdatedCauseFlags::SUBOPTIMAL);
+                        match result {
+                                Ok((imagei, suboptimal)) => {
+                                        if suboptimal {
+                                                self.swapchain_outdated_causes
+                                                        .insert(VkSwapchainOutdatedCauseFlags::SUBOPTIMAL);
+                                        }
+
+                                        imagei
+                                },
+                                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                                        self.swapchain_outdated_causes
+                                                .insert(VkSwapchainOutdatedCauseFlags::OUT_OF_DATE);
+
+                                        return Ok(BeginFrameResult::Skip);
+                                },
+                                Err(e) => return Err(e.into()),
                         }
-
-                        imagei
                 };
 
                 let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.framei];
@@ -1372,8 +1386,8 @@ impl VkRenderer {
                 self.vk_context
                         .device
                         .wait_for_fences(&[*frame_draw_cmd_buffer.fence], true, u64::MAX)?;
-
                 self.vk_context.device.reset_fences(&[*frame_draw_cmd_buffer.fence])?;
+
                 self.vk_context.device.reset_command_buffer(
                         **frame_draw_cmd_buffer,
                         vk::CommandBufferResetFlags::RELEASE_RESOURCES,
@@ -1449,7 +1463,6 @@ impl VkRenderer {
                 };
 
                 self.framei = (self.framei + 1) % (self.swapchain.img_count as usize);
-                self.frame_counter += 1;
 
                 Ok(())
         }
