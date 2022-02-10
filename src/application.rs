@@ -23,7 +23,7 @@ use crate::{
         },
         my_glm::*,
         render_state_switcher::RenderStateSwitcher,
-        renderer::Renderer,
+        renderer::{RenderState, Renderer},
         vk::vk_renderer::VkRenderer,
         AnyResult,
 };
@@ -39,6 +39,8 @@ use winit::{
 
 #[allow(dead_code)]
 pub struct Application {
+        target_ticktime: f32,
+
         event_loop: Option<EventLoop<()>>,
         window: Rc<Window>,
         window_state: WindowState,
@@ -50,6 +52,7 @@ pub struct Application {
         action_receiver: ActionReceiver,
         asset_manager: Arc<AssetManager>,
 
+        render_state_manager: RenderStateManager,
         renderer: VkRenderer,
 
         player_orien: EulerAngles,
@@ -201,13 +204,10 @@ impl Application {
                 trace!("Initialized AssetManager");
 
                 let render_state_switcher = Arc::new(Mutex::new(RenderStateSwitcher::new()));
-                let renderer = VkRenderer::new(
-                        config.tps,
-                        Rc::clone(&window),
-                        &mut imgui_state.context,
-                        Arc::clone(&asset_manager),
-                        Arc::clone(&render_state_switcher),
-                )?;
+                let render_state_manager = RenderStateManager::new(Arc::clone(&render_state_switcher));
+
+                let renderer =
+                        VkRenderer::new(Rc::clone(&window), &mut imgui_state.context, Arc::clone(&asset_manager))?;
 
                 let (logic_thread_tx, logic_thread_rx) = std::sync::mpsc::channel();
                 let (window_thread_tx, window_thread_rx) = std::sync::mpsc::channel();
@@ -241,6 +241,7 @@ impl Application {
                 let action_receiver = input_manager.create_action_receiver();
 
                 Ok(Self {
+                        target_ticktime: 1.0 / config.tps as f32,
                         event_loop: Some(event_loop),
                         window,
                         window_state,
@@ -251,6 +252,8 @@ impl Application {
                         dispatch_actions,
                         action_receiver,
                         asset_manager,
+
+                        render_state_manager,
                         renderer,
 
                         player_orien: EulerAngles::new(0.0, 0.0, 0.0),
@@ -362,14 +365,6 @@ impl Application {
         fn update(&mut self, control_flow: &mut ControlFlow) -> AnyResult<()> {
                 self.process_logic_thread_messages(control_flow);
 
-                let imgui_ui = Self::build_imgui_ui(
-                        &mut self.dispatch_actions,
-                        &mut self.imgui_context,
-                        &self.window,
-                        &mut self.player_orien,
-                        &mut self.player_transform,
-                )?;
-
                 self.input_manager
                         .set_dispatch_actions(self.window_state.has_focus && self.dispatch_actions);
 
@@ -389,33 +384,49 @@ impl Application {
                         }
                 }
 
-                // self.tps_counter.tick_and_map(|tps| info!("FPS: {:.2}", tps));
-
                 self.logic_thread_tx
                         .send(LogicThreadMessage::SetPlayerOrien(self.player_orien.to_quat()))
                         .expect("Failed to send command to logic thread!");
 
-                self.renderer.draw(&self.player_orien.to_quat(), imgui_ui.render())
+                if let Some(render_state) = self.render_state_manager.get_render_state(self.target_ticktime) {
+                        let imgui_ui = Self::build_imgui_ui(
+                                &mut self.imgui_context,
+                                &self.window,
+                                &mut self.dispatch_actions,
+                                &mut self.player_orien,
+                                &mut self.player_transform,
+                        )?;
+
+                        self.renderer
+                                .draw(&render_state, &self.player_orien.to_quat(), imgui_ui.render())?;
+                }
+
+                Ok(())
         }
 
         fn build_imgui_ui<'a>(
-                dispatch_actions: &mut bool,
-                imgui_state: &'a mut ImguiContext,
+                imgui_context: &'a mut ImguiContext,
                 window: &winit::window::Window,
+                dispatch_actions: &mut bool,
                 player_orien: &mut EulerAngles,
                 player_transform: &mut SharedValueSlave<TransformComponent>,
         ) -> Result<imgui::Ui<'a>, winit::error::ExternalError> {
-                imgui_state
+                imgui_context
                         .platform
-                        .prepare_frame(imgui_state.context.io_mut(), window)?;
+                        .prepare_frame(imgui_context.context.io_mut(), window)?;
 
-                let ui = imgui_state.context.frame();
+                let ui = imgui_context.context.frame();
 
                 imgui::Window::new("Hello world")
                         .size([300.0, 100.0], imgui::Condition::FirstUseEver)
                         .build(&ui, || {
                                 let mouse_pos = ui.io().mouse_pos;
 
+                                ui.text(format!(
+                                        "fps: {:7.2}   {:5.2}ms",
+                                        ui.io().framerate,
+                                        1000.0 / ui.io().framerate
+                                ));
                                 ui.text(format!("Mouse pos: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
                                 ui.separator();
                                 ui.text(format!(
@@ -425,9 +436,8 @@ impl Application {
                                         player_orien.roll().to_degrees(),
                                 ));
 
-                                if imgui::Slider::new("position", -2.5, 2.5)
-                                        .build_array(&ui, (&mut player_transform.get_mut().pos).into())
-                                {
+                                let pos = &mut player_transform.get_mut().pos;
+                                if imgui::Slider::new("position", -2.5, 2.5).build_array(&ui, pos.into()) {
                                         player_transform.reemit();
                                 }
 
@@ -666,5 +676,50 @@ impl<T: Copy> SharedValueSlave<T> {
         #[allow(dead_code)]
         pub fn get_mut(&mut self) -> &mut T {
                 self.rx.latest_mut()
+        }
+}
+
+struct RenderStateManager {
+        render_state_switcher: Arc<Mutex<RenderStateSwitcher>>,
+        old_render_state: Option<Box<RenderState>>,
+        new_render_state: Option<Box<RenderState>>,
+        latest_render_state_switch: Instant,
+}
+
+impl RenderStateManager {
+        fn new(render_state_switcher: Arc<Mutex<RenderStateSwitcher>>) -> Self {
+                Self {
+                        render_state_switcher,
+                        old_render_state: None,
+                        new_render_state: None,
+                        latest_render_state_switch: Instant::now(),
+                }
+        }
+
+        fn get_render_state(&mut self, target_ticktime: f32) -> Option<RenderState> {
+                self.try_switch_render_state();
+
+                self.try_interp_render_states(target_ticktime)
+        }
+
+        fn try_switch_render_state(&mut self) {
+                let mut render_state_switcher = self.render_state_switcher.lock().unwrap();
+                if let Some(new_render_state) = render_state_switcher.try_exchange(&mut self.old_render_state) {
+                        self.old_render_state = self.new_render_state.replace(new_render_state);
+                        self.latest_render_state_switch = Instant::now();
+                }
+        }
+
+        fn try_interp_render_states(&self, target_ticktime: f32) -> Option<RenderState> {
+                match (&self.old_render_state, &self.new_render_state) {
+                        (Some(old_render_state), Some(new_render_state)) => {
+                                let elapsed = self.latest_render_state_switch.elapsed();
+                                let t = f32::clamp(elapsed.as_secs_f32() / target_ticktime, 0.0, 1.0);
+
+                                Some(RenderState::interpolate(old_render_state, new_render_state, t))
+                        },
+                        (None, Some(new_render_state)) => Some(RenderState::clone(new_render_state)),
+                        _ => None,
+                }
         }
 }

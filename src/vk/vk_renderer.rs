@@ -1,10 +1,4 @@
-use std::{
-        ffi::CString,
-        rc::Rc,
-        slice,
-        sync::{Arc, Mutex},
-        time::Instant,
-};
+use std::{ffi::CString, rc::Rc, slice, sync::Arc, time::Instant};
 
 use ash::{prelude::VkResult, vk};
 
@@ -27,13 +21,11 @@ use crate::{asset_manager::ShaderId, scoped_timer::TimePrefix, AnyResult};
 use crate::{
         asset_manager::{AssetManager, Mesh, ModelId, Primitive},
         my_glm::*,
-        render_state_switcher::RenderStateSwitcher,
         renderer::{RenderState, Renderer},
         vertex::Vertex,
 };
 
 pub struct VkRenderer {
-        target_ticktime: f32,
         window: Rc<Window>,
         asset_manager: Arc<AssetManager>,
 
@@ -75,22 +67,15 @@ pub struct VkRenderer {
         img_avail_semaphores: Vec<VkSemaphore>,
         present_complete_semaphores: Vec<VkSemaphore>,
 
-        render_state_switcher: Arc<Mutex<RenderStateSwitcher>>,
-        last_render_state_switch_timestamp: Instant,
-        old_render_state: Option<Box<RenderState>>,
-        new_render_state: Option<Box<RenderState>>,
-
         creation_instant: Instant,
         framei: usize,
 }
 
 impl VkRenderer {
         pub fn new(
-                target_tps: u32,
                 window: Rc<Window>,
                 imguic: &mut imgui::Context,
                 asset_manager: Arc<AssetManager>,
-                render_state_switcher: Arc<Mutex<RenderStateSwitcher>>,
         ) -> AnyResult<Self> {
                 let vk_context = VkContext::new(Rc::clone(&window))?;
 
@@ -278,7 +263,6 @@ impl VkRenderer {
                 )?);
 
                 Ok(Self {
-                        target_ticktime: 1.0 / target_tps as f32,
                         window,
                         asset_manager,
 
@@ -319,11 +303,6 @@ impl VkRenderer {
                         img_avail_semaphores,
                         present_complete_semaphores,
 
-                        render_state_switcher,
-                        last_render_state_switch_timestamp: Instant::now(),
-                        old_render_state: None,
-                        new_render_state: None,
-
                         creation_instant: Instant::now(),
 
                         framei: 0,
@@ -332,14 +311,15 @@ impl VkRenderer {
 }
 
 impl Renderer for VkRenderer {
-        fn draw(&'_ mut self, player_orien: &UnitQuat, imgui_draw_data: &imgui::DrawData) -> AnyResult<()> {
-                self.try_update_render_state();
-
+        fn draw(
+                &mut self,
+                render_state: &RenderState,
+                player_orien: &UnitQuat,
+                imgui_draw_data: &imgui::DrawData,
+        ) -> AnyResult<()> {
                 if !self.should_render() {
                         return Ok(());
                 }
-
-                let interp_scalar = self.calc_interpolation_scalar();
 
                 let (imagei, draw_cmd_buffer) = match unsafe { self.begin_frame()? } {
                         BeginFrameResult::Draw {
@@ -352,22 +332,12 @@ impl Renderer for VkRenderer {
                 let PhysicalSize { width, height } = self.window.inner_size();
                 let aspect_ratio = width as f32 / height as f32;
 
-                let old_camera_pos = &self.old_render_state.as_ref().unwrap().camera_pos;
-                let new_camera_pos = &self.new_render_state.as_ref().unwrap().camera_pos;
-                let lerped_camera_pos = Vec3::lerp(old_camera_pos, new_camera_pos, interp_scalar);
-
-                let inverted_view_mat = Mat4::new_translation(&lerped_camera_pos) * player_orien.to_homogeneous();
-
+                let inverted_view_mat = Mat4::new_translation(&render_state.camera_pos) * player_orien.to_homogeneous();
                 let view_mat = inverted_view_mat
                         .try_inverse()
                         .expect("Couldn't invert camera ViewMatrix!");
 
-                let proj_mat = self
-                        .new_render_state
-                        .as_ref()
-                        .unwrap()
-                        .proj_camera
-                        .calc_proj_matrix(aspect_ratio);
+                let proj_mat = render_state.proj_camera.calc_proj_matrix(aspect_ratio);
 
                 let world_matrices = WorldMatrices {
                         view: view_mat,
@@ -381,20 +351,11 @@ impl Renderer for VkRenderer {
                         self.framei,
                 )?;
 
-                let (light_id, new_light) = self.new_render_state.as_ref().unwrap().lights.iter().next().unwrap();
-                let old_light = self
-                        .old_render_state
-                        .as_ref()
-                        .unwrap()
-                        .lights
-                        .get(light_id)
-                        .unwrap_or(new_light);
-
-                let light_pos = Vec3::lerp(&old_light.0 .0, &new_light.0 .0, interp_scalar);
+                let (_, light) = render_state.lights.iter().next().unwrap();
 
                 let world_light = WorldLight {
-                        color: view_mat * Vec4::new_position(light_pos),
-                        pos: Vec4::new_position(new_light.1 .0),
+                        color: view_mat * Vec4::new_position(&light.0 .0),
+                        pos: Vec4::new_position(&light.1 .0),
                 };
 
                 Self::update_world_light_buffer(
@@ -433,26 +394,10 @@ impl Renderer for VkRenderer {
 
                         let object_dst_set = self.object_dst_sets[imagei as usize];
 
-                        for (model, new_instance) in &self.new_render_state.as_ref().unwrap().model_instances {
-                                let old_instance = self
-                                        .old_render_state
-                                        .as_ref()
-                                        .unwrap()
-                                        .model_instances
-                                        .get(model)
-                                        .unwrap_or(new_instance);
-
-                                let old_pos = &old_instance.pos;
-                                let new_pos = &new_instance.pos;
-                                let interpolated_pos = Vec3::lerp(old_pos, new_pos, interp_scalar);
-
-                                let old_orien = &old_instance.orien;
-                                let new_orien = &new_instance.orien;
-                                let interpolated_orien = UnitQuat::nlerp(old_orien, new_orien, interp_scalar);
-
-                                let transform = Mat4::new_translation(&interpolated_pos)
-                                        * interpolated_orien.to_homogeneous()
-                                        * Mat4::new_nonuniform_scaling(&new_instance.scale);
+                        for (_, minstance) in &render_state.model_instances {
+                                let transform = Mat4::new_translation(&minstance.pos)
+                                        * UnitQuat::to_homogeneous(&minstance.orien)
+                                        * Mat4::new_nonuniform_scaling(&minstance.scale);
 
                                 Self::draw_model(
                                         &self.vk_context.device,
@@ -462,7 +407,7 @@ impl Renderer for VkRenderer {
                                         &self.asset_manager,
                                         &self.vk_asset_manager,
                                         &world_matrices,
-                                        new_instance.model_id,
+                                        minstance.model_id,
                                         &transform,
                                         0,
                                 )?;
@@ -512,19 +457,6 @@ impl Renderer for VkRenderer {
 }
 
 impl VkRenderer {
-        fn try_update_render_state(&mut self) {
-                let mut render_state_switcher = self.render_state_switcher.lock().unwrap();
-                if let Some(new_render_state) = render_state_switcher.try_exchange(&mut self.old_render_state) {
-                        self.old_render_state = self.new_render_state.replace(new_render_state);
-                        self.last_render_state_switch_timestamp = Instant::now();
-                }
-        }
-
-        fn calc_interpolation_scalar(&self) -> f32 {
-                let elapsed = self.last_render_state_switch_timestamp.elapsed();
-                f32::clamp(elapsed.as_secs_f32() / self.target_ticktime, 0.0, 1.0)
-        }
-
         fn recreate_swapchain_maybe(&mut self) -> AnyResult<()> {
                 match self.swapchain_outdated_causes {
                         VkSwapchainOutdatedCauseFlags::NONE => return Ok(()),
@@ -1323,16 +1255,16 @@ impl VkRenderer {
         // }
 
         fn should_render(&self) -> bool {
-                if self.old_render_state.is_none() || self.new_render_state.is_none() {
-                        return false;
-                }
-
-                let wsize = self.window.inner_size();
-                if (wsize.width == 0) || (wsize.height == 0) {
+                if self.is_window_minimized() {
                         return false;
                 }
 
                 true
+        }
+
+        fn is_window_minimized(&self) -> bool {
+                let wsize = self.window.inner_size();
+                (wsize.width == 0) || (wsize.height == 0)
         }
 
         unsafe fn begin_frame(&mut self) -> AnyResult<BeginFrameResult> {

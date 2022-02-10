@@ -516,7 +516,7 @@ impl<'a> specs::System<'a> for ModelRotationSystem {
         }
 }
 
-#[derive(Debug, Default, Clone, Component)]
+#[derive(Debug, Default, Clone, Copy, Component)]
 #[storage(VecStorage)]
 pub struct ProjectionCameraComponent {
         fovy: f32,
