@@ -5,7 +5,7 @@ use bitflags::bitflags;
 #[allow(unused_imports)]
 use log::{debug, trace};
 
-use crate::{constants::DESIRED_SWAPCHAIN_IMAGE_COUNT, AnyResult};
+use crate::AnyResult;
 
 use super::{
         vk_image::{VkImage, VkImageCreateInfo},
@@ -24,6 +24,7 @@ pub struct VkSwapchain {
         physical_device: vk::PhysicalDevice,
         device: Rc<VkDevice>,
         allocator: Rc<VmaAllocator>,
+        desired_img_count: u32,
 
         handle: vk::SwapchainKHR,
         destroyed: Cell<bool>,
@@ -56,6 +57,7 @@ impl VkSwapchain {
                 physical_device: vk::PhysicalDevice,
                 device: Rc<VkDevice>,
                 allocator: Rc<VmaAllocator>,
+                desired_img_count: u32,
         ) -> AnyResult<Self> {
                 let color_format = Self::choose_color_format(&surface, physical_device)?;
                 debug!("VkSwapchain color format ({:?})", color_format);
@@ -66,15 +68,7 @@ impl VkSwapchain {
                                 .get_physical_device_surface_capabilities(physical_device, **surface)?
                 };
 
-                let requested_img_count = na::clamp(
-                        DESIRED_SWAPCHAIN_IMAGE_COUNT,
-                        surface_capabilities.min_image_count,
-                        match surface_capabilities.max_image_count {
-                                0 => u32::MAX,
-                                _ => surface_capabilities.max_image_count,
-                        },
-                );
-
+                let requested_img_count = Self::clamp_image_count(desired_img_count, &surface_capabilities);
                 debug!("VkSwapchain image count: {}", requested_img_count);
 
                 let extent = Self::create_extent(&window, &surface_capabilities);
@@ -140,6 +134,7 @@ impl VkSwapchain {
                         physical_device,
                         device,
                         allocator,
+                        desired_img_count,
 
                         handle,
                         destroyed: Cell::new(false),
@@ -193,19 +188,10 @@ impl VkSwapchain {
                                 .get_physical_device_surface_capabilities(self.physical_device, **self.surface)?
                 };
 
-                let requested_img_count = na::clamp(
-                        DESIRED_SWAPCHAIN_IMAGE_COUNT,
-                        surface_capabilities.min_image_count,
-                        match surface_capabilities.max_image_count {
-                                0 => u32::MAX,
-                                _ => surface_capabilities.max_image_count,
-                        },
-                );
+                let requested_img_count = Self::clamp_image_count(self.desired_img_count, &surface_capabilities);
 
-                let old_extent = std::mem::replace(
-                        &mut self.extent,
-                        Self::create_extent(&self.window, &surface_capabilities),
-                );
+                let old_extent = self.extent;
+                self.extent = Self::create_extent(&self.window, &surface_capabilities);
                 recreation_info.extent_changed = old_extent != self.extent;
 
                 self.viewport = Self::create_viewport(&self.extent);
@@ -239,14 +225,12 @@ impl VkSwapchain {
                         ..Default::default()
                 };
 
-                let old_handle =
-                        std::mem::replace(&mut self.handle, unsafe { loader.create_swapchain(&swch_cinfo, None)? });
+                let old_handle = self.handle;
+                self.handle = unsafe { loader.create_swapchain(&swch_cinfo, None)? };
                 unsafe { self.loader.destroy_swapchain(old_handle, None) };
 
-                let old_samples = std::mem::replace(
-                        &mut self.samples,
-                        Self::choose_sample_count(&self.instance, self.physical_device),
-                );
+                let old_samples = self.samples;
+                self.samples = Self::choose_sample_count(&self.instance, self.physical_device);
                 recreation_info.samples_changed = old_samples != self.samples;
                 if recreation_info.samples_changed {
                         debug!("VkSwapchain samples: {:?}", self.samples);
@@ -289,7 +273,8 @@ impl VkSwapchain {
                         self.color_format.format,
                 )?;
 
-                let old_img_count = std::mem::replace(&mut self.img_count, self.resolve_imgs.len() as u32);
+                let old_img_count = self.img_count;
+                self.img_count = self.resolve_imgs.len() as u32;
                 recreation_info.img_count_changed = old_img_count != self.img_count;
                 if recreation_info.img_count_changed {
                         debug!("VkSwapchain image count: {}", self.img_count);
@@ -354,6 +339,17 @@ impl VkSwapchain {
                 } else {
                         Ok(formats[0])
                 }
+        }
+
+        fn clamp_image_count(image_count: u32, surface_capabilities: &vk::SurfaceCapabilitiesKHR) -> u32 {
+                na::clamp(
+                        image_count,
+                        surface_capabilities.min_image_count,
+                        match surface_capabilities.max_image_count {
+                                0 => u32::MAX,
+                                _ => surface_capabilities.max_image_count,
+                        },
+                )
         }
 
         fn create_extent(

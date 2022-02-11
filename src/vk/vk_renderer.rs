@@ -14,7 +14,7 @@ use super::{
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
         vk_wrapper::{VkDescriptorSetLayout, VkDevice, VkPipeline, VkPipelineLayout, VkRenderPass, VkSemaphore},
 };
-use crate::{asset_manager::ShaderId, constants::MAX_CONCURRENT_FRAMES, scoped_timer::TimePrefix, AnyResult};
+use crate::{asset_manager::ShaderId, constants::{MAX_CONCURRENT_FRAMES, DESIRED_SWAPCHAIN_IMG_COUNT}, scoped_timer::TimePrefix, AnyResult};
 use crate::{
         asset_manager::{AssetManager, Mesh, ModelId, Primitive},
         my_glm::*,
@@ -217,6 +217,7 @@ impl VkRenderer {
                         *vk_context.pdevice,
                         Rc::clone(&vk_context.device),
                         Rc::clone(&vk_context.allocator),
+                        DESIRED_SWAPCHAIN_IMG_COUNT,
                 )?;
                 trace!("Created VkSwapchain");
 
