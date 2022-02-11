@@ -5,7 +5,7 @@ use bitflags::bitflags;
 #[allow(unused_imports)]
 use log::{debug, trace};
 
-use crate::AnyResult;
+use crate::{constants::DESIRED_SWAPCHAIN_IMAGE_COUNT, AnyResult};
 
 use super::{
         vk_image::{VkImage, VkImageCreateInfo},
@@ -66,8 +66,8 @@ impl VkSwapchain {
                                 .get_physical_device_surface_capabilities(physical_device, **surface)?
                 };
 
-                let desired_img_count = na::clamp(
-                        3,
+                let requested_img_count = na::clamp(
+                        DESIRED_SWAPCHAIN_IMAGE_COUNT,
                         surface_capabilities.min_image_count,
                         match surface_capabilities.max_image_count {
                                 0 => u32::MAX,
@@ -75,7 +75,7 @@ impl VkSwapchain {
                         },
                 );
 
-                debug!("VkSwapchain image count: {}", desired_img_count);
+                debug!("VkSwapchain image count: {}", requested_img_count);
 
                 let extent = Self::create_extent(&window, &surface_capabilities);
                 debug!("VkSwapchain extent: {:?}", extent);
@@ -92,7 +92,7 @@ impl VkSwapchain {
 
                 let swch_cinfo = vk::SwapchainCreateInfoKHR::builder()
                         .surface(**surface)
-                        .min_image_count(desired_img_count)
+                        .min_image_count(requested_img_count)
                         .image_color_space(color_format.color_space)
                         .image_format(color_format.format)
                         .image_extent(extent)
@@ -193,8 +193,8 @@ impl VkSwapchain {
                                 .get_physical_device_surface_capabilities(self.physical_device, **self.surface)?
                 };
 
-                let desired_img_count = na::clamp(
-                        3,
+                let requested_img_count = na::clamp(
+                        DESIRED_SWAPCHAIN_IMAGE_COUNT,
                         surface_capabilities.min_image_count,
                         match surface_capabilities.max_image_count {
                                 0 => u32::MAX,
@@ -222,7 +222,7 @@ impl VkSwapchain {
 
                 let swch_cinfo = vk::SwapchainCreateInfoKHR {
                         surface: **self.surface,
-                        min_image_count: desired_img_count,
+                        min_image_count: requested_img_count,
                         image_format: self.color_format.format,
                         image_color_space: self.color_format.color_space,
                         image_extent: self.extent,

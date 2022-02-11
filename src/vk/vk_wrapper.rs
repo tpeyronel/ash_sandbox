@@ -1,4 +1,4 @@
-use std::{cell::Cell, ffi::CStr, ops::Deref, rc::Rc};
+use std::{cell::Cell, convert::TryInto, ffi::CStr, ops::Deref, rc::Rc};
 
 use ash::{extensions::ext::DebugUtils, prelude::VkResult, vk};
 #[allow(unused_imports)]
@@ -27,11 +27,11 @@ macro_rules! impl_destroyable_drop {
         ($t:ty) => {
                 impl Drop for $t {
                         fn drop(&mut self) {
-                                assert!(
-                                        self.destroyed.get(),
-                                        "{} dropped but not destroyed!",
-                                        stringify!($t)
-                                );
+                                // assert!(
+                                //         self.destroyed.get(),
+                                //         "{} dropped but not destroyed!",
+                                //         stringify!($t)
+                                // );
                         }
                 }
         };
@@ -126,16 +126,29 @@ impl VkPhysicalDevice {
                 let (pdevice, qfamilies_indices) = Self::choose_physical_device(instance, surface)?;
 
                 let props = unsafe { instance.get_physical_device_properties(pdevice) };
-                let limits = &props.limits;
 
                 Ok((
                         Self {
                                 handle: pdevice,
                                 props,
-                                max_sampler_anisotropy: limits.max_sampler_anisotropy,
+                                max_sampler_anisotropy: props.limits.max_sampler_anisotropy,
                         },
                         qfamilies_indices,
                 ))
+        }
+
+        pub fn calc_padded_size(&self, size: usize) -> usize {
+                let alignment = self.props.limits.min_uniform_buffer_offset_alignment as usize;
+
+                if alignment > 0 {
+                        (size + alignment - 1) & !(alignment - 1)
+                } else {
+                        size
+                }
+        }
+
+        pub fn padded_size_of<T: 'static>(&self) -> usize {
+                self.calc_padded_size(std::mem::size_of::<T>())
         }
 
         fn choose_physical_device(
@@ -271,6 +284,18 @@ impl VkDevice {
                         handle: instance.create_device(physical_device, create_info, None)?,
                         destroyed: Cell::new(false),
                 })
+        }
+
+        pub unsafe fn allocate_descriptor_sets_array<const N: usize>(
+                &self,
+                dst_pool: vk::DescriptorPool,
+                dst_set_layouts: &[vk::DescriptorSetLayout; N],
+        ) -> VkResult<[vk::DescriptorSet; N]> {
+                let create_info = vk::DescriptorSetAllocateInfo::builder()
+                        .descriptor_pool(dst_pool)
+                        .set_layouts(dst_set_layouts);
+
+                Ok(self.allocate_descriptor_sets(&create_info)?.try_into().unwrap())
         }
 }
 

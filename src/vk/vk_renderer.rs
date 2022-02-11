@@ -8,22 +8,170 @@ use winit::{dpi::PhysicalSize, window::Window};
 
 use super::{
         vk_asset_manager::{VkAssetManager, VkShader},
-        vk_buffer::{VkBuffer, VkBufferCreateInfo},
+        vk_buffer::VkBuffer,
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
         vk_wrapper::{
                 VkDescriptorSetLayout, VkDevice, VkPhysicalDevice, VkPipeline, VkPipelineLayout, VkRenderPass,
-                VkSemaphore, VmaAllocator,
+                VkSemaphore,
         },
 };
-use crate::{asset_manager::ShaderId, scoped_timer::TimePrefix, AnyResult};
+use crate::{asset_manager::ShaderId, constants::CONCURRENT_FRAMES, scoped_timer::TimePrefix, AnyResult};
 use crate::{
         asset_manager::{AssetManager, Mesh, ModelId, Primitive},
         my_glm::*,
         renderer::{RenderState, Renderer},
         vertex::Vertex,
 };
+
+struct VkFrameData {
+        draw_cmd_buffer: VkReusableCommandBuffer,
+
+        world_dst_set: vk::DescriptorSet,
+        object_dst_set: vk::DescriptorSet,
+
+        world_matrices_buffer: VkBuffer,
+        world_light_buffer: VkBuffer,
+        material_data_buffer: VkBuffer,
+        object_matrices_buffer: VkBuffer,
+
+        img_available_semaphore: VkSemaphore,
+        present_complete_semaphore: VkSemaphore,
+}
+
+impl VkFrameData {
+        fn new(
+                vk_context: &VkContext,
+                world_dst_set_layout: vk::DescriptorSetLayout,
+                object_dst_set_layout: vk::DescriptorSetLayout,
+        ) -> AnyResult<Self> {
+                let draw_cmd_buffer =
+                        VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
+
+                let [world_dst_set, object_dst_set] = unsafe {
+                        vk_context.device.allocate_descriptor_sets_array(
+                                *vk_context.dst_pool,
+                                &[world_dst_set_layout, object_dst_set_layout],
+                        )?
+                };
+
+                let world_matrices_buffer_size = std::mem::size_of::<WorldMatrices>() as vk::DeviceSize;
+                let world_matrices_buffer = VkBuffer::new_uniform_buffer(
+                        &vk_context.device,
+                        Rc::clone(&vk_context.allocator),
+                        std::mem::size_of::<WorldMatrices>() as vk::DeviceSize,
+                )?;
+
+                let world_light_buffer_size = std::mem::size_of::<WorldLight>() as vk::DeviceSize;
+                let world_light_buffer = VkBuffer::new_uniform_buffer(
+                        &vk_context.device,
+                        Rc::clone(&vk_context.allocator),
+                        world_light_buffer_size,
+                )?;
+
+                let material_data_buffer_size = std::mem::size_of::<MaterialData>() as vk::DeviceSize;
+                let material_data_buffer = VkBuffer::new_uniform_buffer(
+                        &vk_context.device,
+                        Rc::clone(&vk_context.allocator),
+                        material_data_buffer_size,
+                )?;
+
+                let object_matrices_padded_size = vk_context.pdevice.padded_size_of::<ObjectMatrices>();
+                let object_matrices_buffer_size = object_matrices_padded_size as vk::DeviceSize * 2048;
+                let object_matrices_buffer = VkBuffer::new_uniform_buffer(
+                        &vk_context.device,
+                        Rc::clone(&vk_context.allocator),
+                        object_matrices_buffer_size,
+                )?;
+
+                let object_matrices = ObjectMatrices {
+                        model: Mat4::new_translation(&Vec3::new(2.0, 0.0, 0.0)),
+                        mvp: Mat4::identity(),
+                        normal: Mat4::identity(),
+                };
+                object_matrices_buffer.write(&object_matrices)?;
+
+                let world_matrices_buffer_info = vk::DescriptorBufferInfo {
+                        buffer: *world_matrices_buffer,
+                        offset: 0,
+                        range: world_matrices_buffer_size,
+                };
+
+                let world_matrices_dst_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .dst_set(world_dst_set)
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .buffer_info(std::slice::from_ref(&world_matrices_buffer_info))
+                        .build();
+
+                let world_light_buffer_info = vk::DescriptorBufferInfo {
+                        buffer: *world_light_buffer,
+                        offset: 0,
+                        range: world_light_buffer_size,
+                };
+
+                let world_light_dst_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .dst_set(world_dst_set)
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .buffer_info(std::slice::from_ref(&world_light_buffer_info))
+                        .build();
+
+                let object_matrices_buffer_info = vk::DescriptorBufferInfo {
+                        buffer: *object_matrices_buffer,
+                        offset: 0,
+                        range: object_matrices_padded_size as vk::DeviceSize,
+                };
+
+                let object_matrices_dst_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
+                        .dst_set(object_dst_set)
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .buffer_info(std::slice::from_ref(&object_matrices_buffer_info))
+                        .build();
+
+                let writes = [
+                        world_matrices_dst_write,
+                        world_light_dst_write,
+                        object_matrices_dst_write,
+                ];
+                unsafe { vk_context.device.update_descriptor_sets(&writes, &[]) };
+
+                let semaphore_cinfo = vk::SemaphoreCreateInfo::builder().build();
+                let img_available_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
+                let present_complete_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
+
+                Ok(Self {
+                        draw_cmd_buffer,
+                        world_dst_set,
+                        object_dst_set,
+                        world_matrices_buffer,
+                        world_light_buffer,
+                        material_data_buffer,
+                        object_matrices_buffer,
+                        img_available_semaphore,
+                        present_complete_semaphore,
+                })
+        }
+}
+
+impl Drop for VkFrameData {
+        fn drop(&mut self) {
+                unsafe {
+                        self.present_complete_semaphore.destroy();
+                        self.img_available_semaphore.destroy();
+                        self.object_matrices_buffer.destroy();
+                        self.material_data_buffer.destroy();
+                        self.world_light_buffer.destroy();
+                        self.world_matrices_buffer.destroy();
+                        self.draw_cmd_buffer.destroy();
+                }
+        }
+}
 
 pub struct VkRenderer {
         window: Rc<Window>,
@@ -40,32 +188,18 @@ pub struct VkRenderer {
         render_pass: VkRenderPass,
 
         setup_cmd_buffer: VkReusableCommandBuffer,
-        draw_cmd_buffers: Vec<VkReusableCommandBuffer>,
 
-        world_matrices_buffer: VkBuffer,
-        world_light_buffer: VkBuffer,
-        material_data_buffer: VkBuffer,
-        object_matrices_buffers: Vec<VkBuffer>,
+        concurrent_frames: usize,
+        frames_data: Vec<VkFrameData>,
 
         world_dst_set_layout: VkDescriptorSetLayout,
         material_dst_set_layout: VkDescriptorSetLayout,
         object_dst_set_layout: VkDescriptorSetLayout,
 
-        // matrices_dst_set_layout: VkDescriptorSetLayout,
-        // lights_dst_set_layout: VkDescriptorSetLayout,
-        // _material_dst_set_layout: VkDescriptorSetLayout,
-        // matrices_dst_sets: Vec<vk::DescriptorSet>,
-        // lights_dst_sets: Vec<vk::DescriptorSet>,
-        world_dst_sets: Vec<vk::DescriptorSet>,
-        object_dst_sets: Vec<vk::DescriptorSet>,
-
         graphics_pipeline_layout: VkPipelineLayout,
         graphics_pipeline: VkPipeline,
 
         imgui_renderer: Option<imgui_rs_vulkan_renderer::Renderer>,
-
-        img_avail_semaphores: Vec<VkSemaphore>,
-        present_complete_semaphores: Vec<VkSemaphore>,
 
         creation_instant: Instant,
         framei: usize,
@@ -102,107 +236,18 @@ impl VkRenderer {
 
                 let setup_cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
-                let draw_cmd_buffers = VkReusableCommandBuffer::new_vec(
-                        Rc::clone(&vk_context.device),
-                        Rc::clone(&vk_context.cmd_pool),
-                        swapchain.img_count,
-                )?;
                 trace!("Allocated VkCommandBuffers");
-
-                let (img_avail_semaphores, present_complete_semaphores) =
-                        Self::create_sync_objects(&vk_context.device, swapchain.img_count)?;
-                trace!("Created VkSemaphores");
 
                 let world_dst_set_layout = Self::create_world_dst_set_layout(&vk_context.device)?;
                 // let material_dst_set_layout = Self::create_material_dst_set_layout(&vk_context.device)?;
                 let object_dst_set_layout = Self::create_object_dst_set_layout(&vk_context.device)?;
 
-                let world_matrices_buffer_size = swapchain.img_count as vk::DeviceSize
-                        * Self::calculate_padded_size_for_type::<WorldMatrices>(&vk_context.pdevice) as vk::DeviceSize;
-                let world_matrices_buffer = Self::create_uniform_buffer(
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        world_matrices_buffer_size,
-                )?;
+                let concurrent_frames = CONCURRENT_FRAMES;
+                let frames_data = (0..concurrent_frames)
+                        .map(|_| VkFrameData::new(&vk_context, *world_dst_set_layout, *object_dst_set_layout))
+                        .collect::<AnyResult<Vec<VkFrameData>>>()?;
 
-                let world_light_buffer_size = swapchain.img_count as vk::DeviceSize
-                        * Self::calculate_padded_size_for_type::<WorldLight>(&vk_context.pdevice) as vk::DeviceSize;
-                let world_light_buffer = Self::create_uniform_buffer(
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        world_light_buffer_size,
-                )?;
-
-                let material_data_buffer_size = swapchain.img_count as vk::DeviceSize
-                        * Self::calculate_padded_size_for_type::<MaterialData>(&vk_context.pdevice) as vk::DeviceSize;
-                let material_data_buffer = Self::create_uniform_buffer(
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        material_data_buffer_size,
-                )?;
-
-                let object_matrices_padded_size =
-                        Self::calculate_padded_size_for_type::<ObjectMatrices>(&vk_context.pdevice);
-                let object_matrices_buffer_size = object_matrices_padded_size * 2048;
-                let mut object_matrices_buffers = (0..swapchain.img_count)
-                        .map(|_| {
-                                Self::create_uniform_buffer(
-                                        &vk_context.device,
-                                        Rc::clone(&vk_context.allocator),
-                                        object_matrices_buffer_size as vk::DeviceSize,
-                                )
-                        })
-                        .collect::<anyhow::Result<Vec<VkBuffer>>>()?;
-
-                for b in &mut object_matrices_buffers {
-                        let object_matrices = ObjectMatrices {
-                                model: Mat4::new_translation(&Vec3::new(2.0, 0.0, 0.0)),
-                                mvp: Mat4::identity(),
-                                normal: Mat4::identity(),
-                        };
-
-                        b.write(&object_matrices)?;
-                }
-
-                let world_dst_sets = Self::alloc_and_init_world_dst_sets(
-                        &vk_context.pdevice,
-                        &vk_context.device,
-                        *vk_context.dst_pool,
-                        *world_dst_set_layout,
-                        &world_matrices_buffer,
-                        &world_light_buffer,
-                        swapchain.img_count as usize,
-                )?;
-
-                let object_dst_sets = Self::alloc_and_init_object_dst_sets(
-                        &vk_context.pdevice,
-                        &vk_context.device,
-                        *vk_context.dst_pool,
-                        *object_dst_set_layout,
-                        &object_matrices_buffers,
-                )?;
-
-                let (matrices_dst_set_layout, material_dst_set_layout, lights_dst_set_layout) =
-                        Self::create_descriptor_set_layouts(&vk_context.device)?;
-
-                unsafe {
-                        matrices_dst_set_layout.destroy();
-                        lights_dst_set_layout.destroy();
-                }
-                // let matrices_dst_sets = Self::create_matrices_dst_sets(
-                //         &vk_context.device,
-                //         *vk_context.dst_pool,
-                //         *matrices_dst_set_layout,
-                //         &matrices_buffers,
-                // )?;
-
-                // let lights_dst_sets = Self::create_lights_dst_sets(
-                //         &vk_context.device,
-                //         *vk_context.dst_pool,
-                //         *lights_dst_set_layout,
-                //         &lights_buffers,
-                // )?;
-
+                let material_dst_set_layout = Self::create_descriptor_set_layouts(&vk_context.device)?;
                 trace!("Created VkDescriptorSets");
 
                 let vk_asset_manager = VkAssetManager::new(
@@ -225,14 +270,6 @@ impl VkRenderer {
                         &vk_context.device,
                         &[*world_dst_set_layout, *material_dst_set_layout, *object_dst_set_layout],
                 )?;
-                // let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
-                //         &vk_context.device,
-                //         &[
-                //                 *matrices_dst_set_layout,
-                //                 *material_dst_set_layout,
-                //                 *lights_dst_set_layout,
-                //         ],
-                // )?;
                 trace!("Created VkGraphicsPipelineLayout");
 
                 let graphics_pipeline = Self::create_graphics_pipeline(
@@ -245,7 +282,7 @@ impl VkRenderer {
                 trace!("Created VkGraphicsPipeline");
 
                 let imgui_renderer_options = imgui_rs_vulkan_renderer::Options {
-                        in_flight_frames: swapchain.img_count as usize,
+                        in_flight_frames: concurrent_frames,
                         enable_depth_test: false,
                         enable_depth_write: false,
                         sample_count: swapchain.samples,
@@ -276,32 +313,17 @@ impl VkRenderer {
                         render_pass,
 
                         setup_cmd_buffer,
-                        draw_cmd_buffers,
-
-                        world_matrices_buffer,
-                        world_light_buffer,
-                        material_data_buffer,
-                        object_matrices_buffers,
+                        concurrent_frames,
+                        frames_data,
 
                         world_dst_set_layout,
                         material_dst_set_layout,
                         object_dst_set_layout,
 
-                        world_dst_sets,
-                        object_dst_sets,
-
-                        // matrices_dst_set_layout,
-                        // lights_dst_set_layout,
-                        // _material_dst_set_layout: material_dst_set_layout,
-                        // matrices_dst_sets,
-                        // lights_dst_sets,
                         graphics_pipeline_layout,
                         graphics_pipeline,
 
                         imgui_renderer,
-
-                        img_avail_semaphores,
-                        present_complete_semaphores,
 
                         creation_instant: Instant::now(),
 
@@ -321,13 +343,12 @@ impl Renderer for VkRenderer {
                         return Ok(());
                 }
 
-                let (imagei, draw_cmd_buffer) = match unsafe { self.begin_frame()? } {
-                        BeginFrameResult::Draw {
-                                imagei,
-                                draw_cmd_buffer,
-                        } => (imagei, draw_cmd_buffer),
+                let imagei = match unsafe { self.begin_frame()? } {
+                        BeginFrameResult::Draw { imagei } => imagei,
                         BeginFrameResult::Skip => return Ok(()),
                 };
+
+                let frame_data = &mut self.frames_data[self.framei];
 
                 let PhysicalSize { width, height } = self.window.inner_size();
                 let aspect_ratio = width as f32 / height as f32;
@@ -344,12 +365,7 @@ impl Renderer for VkRenderer {
                         proj: proj_mat,
                 };
 
-                Self::update_world_matrices_buffer(
-                        &self.vk_context.pdevice,
-                        &mut self.world_matrices_buffer,
-                        &world_matrices,
-                        self.framei,
-                )?;
+                frame_data.world_matrices_buffer.write(&world_matrices)?;
 
                 let (_, light) = render_state.lights.iter().next().unwrap();
 
@@ -358,41 +374,33 @@ impl Renderer for VkRenderer {
                         pos: Vec4::new_position(&light.1 .0),
                 };
 
-                Self::update_world_light_buffer(
-                        &self.vk_context.pdevice,
-                        &mut self.world_light_buffer,
-                        &world_light,
-                        self.framei,
-                )?;
+                frame_data.world_light_buffer.write(&world_light)?;
 
                 unsafe {
                         self.vk_context.device.cmd_bind_pipeline(
-                                draw_cmd_buffer,
+                                *frame_data.draw_cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
                                 *self.graphics_pipeline,
                         );
                         self.vk_context.device.cmd_set_viewport(
-                                draw_cmd_buffer,
+                                *frame_data.draw_cmd_buffer,
                                 0,
                                 slice::from_ref(&self.swapchain.viewport),
                         );
                         self.vk_context.device.cmd_set_scissor(
-                                draw_cmd_buffer,
+                                *frame_data.draw_cmd_buffer,
                                 0,
                                 slice::from_ref(&self.swapchain.scissor),
                         );
 
-                        let world_dst_set = self.world_dst_sets[imagei as usize];
                         self.vk_context.device.cmd_bind_descriptor_sets(
-                                draw_cmd_buffer,
+                                *frame_data.draw_cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
                                 *self.graphics_pipeline_layout,
                                 0,
-                                &[world_dst_set],
+                                &[frame_data.world_dst_set],
                                 &[],
                         );
-
-                        let object_dst_set = self.object_dst_sets[imagei as usize];
 
                         for (_, minstance) in &render_state.model_instances {
                                 let transform = Mat4::new_translation(&minstance.pos)
@@ -401,8 +409,8 @@ impl Renderer for VkRenderer {
 
                                 Self::draw_model(
                                         &self.vk_context.device,
-                                        draw_cmd_buffer,
-                                        object_dst_set,
+                                        *frame_data.draw_cmd_buffer,
+                                        frame_data.object_dst_set,
                                         *self.graphics_pipeline_layout,
                                         &self.asset_manager,
                                         &self.vk_asset_manager,
@@ -416,7 +424,7 @@ impl Renderer for VkRenderer {
                         self.imgui_renderer
                                 .as_mut()
                                 .unwrap()
-                                .cmd_draw(draw_cmd_buffer, imgui_draw_data)?;
+                                .cmd_draw(*frame_data.draw_cmd_buffer, imgui_draw_data)?;
 
                         self.end_frame(imagei)?;
                 }
@@ -432,20 +440,21 @@ impl Renderer for VkRenderer {
         fn destroy(&mut self) -> AnyResult<()> {
                 unsafe {
                         let _ = self.vk_context.device.device_wait_idle();
-                        self.present_complete_semaphores.drain(..).for_each(|s| s.destroy());
-                        self.img_avail_semaphores.drain(..).for_each(|s| s.destroy());
+                        // self.present_complete_semaphores.drain(..).for_each(|s| s.destroy());
+                        // self.img_avail_semaphores.drain(..).for_each(|s| s.destroy());
                         drop(self.imgui_renderer.take().unwrap());
                         self.graphics_pipeline.destroy();
                         self.graphics_pipeline_layout.destroy();
+                        self.frames_data.clear();
                         self.object_dst_set_layout.destroy();
                         self.material_dst_set_layout.destroy();
                         self.world_dst_set_layout.destroy();
-                        self.object_matrices_buffers.drain(..).for_each(|b| b.destroy());
-                        self.material_data_buffer.destroy();
-                        self.world_light_buffer.destroy();
-                        self.world_matrices_buffer.destroy();
+                        // self.object_matrices_buffers.drain(..).for_each(|b| b.destroy());
+                        // self.material_data_buffer.destroy();
+                        // self.world_light_buffer.destroy();
+                        // self.world_matrices_buffer.destroy();
                         self.setup_cmd_buffer.destroy();
-                        self.draw_cmd_buffers.drain(..).for_each(|cb| cb.destroy());
+                        // self.draw_cmd_buffers.drain(..).for_each(|cb| cb.destroy());
                         self.render_pass.destroy();
                         self.swapchain.destroy();
                         self.vk_asset_manager.destroy();
@@ -552,16 +561,16 @@ impl VkRenderer {
                         //         &self.lights_buffers,
                         // )?;
 
-                        self.draw_cmd_buffers = VkReusableCommandBuffer::new_vec(
-                                Rc::clone(&self.vk_context.device),
-                                Rc::clone(&self.vk_context.cmd_pool),
-                                self.swapchain.img_count,
-                        )?;
+                        // self.draw_cmd_buffers = VkReusableCommandBuffer::new_vec(
+                        //         Rc::clone(&self.vk_context.device),
+                        //         Rc::clone(&self.vk_context.cmd_pool),
+                        //         self.swapchain.img_count,
+                        // )?;
 
-                        let (img_avail_semaphores, present_complete_semaphores) =
-                                Self::create_sync_objects(&self.vk_context.device, self.swapchain.img_count)?;
-                        self.img_avail_semaphores = img_avail_semaphores;
-                        self.present_complete_semaphores = present_complete_semaphores;
+                        // let (img_avail_semaphores, present_complete_semaphores) =
+                        // Self::create_sync_objects(&self.vk_context.device, self.swapchain.img_count)?;
+                        // self.img_avail_semaphores = img_avail_semaphores;
+                        // self.present_complete_semaphores = present_complete_semaphores;
 
                         self.framei = 0;
                 }
@@ -669,53 +678,6 @@ impl VkRenderer {
                 unsafe { VkRenderPass::new(device, &render_pass_cinfo) }
         }
 
-        fn create_sync_objects(
-                device: &Rc<VkDevice>,
-                swch_img_count: u32,
-        ) -> VkResult<(Vec<VkSemaphore>, Vec<VkSemaphore>)> {
-                fn create_n_semaphores(
-                        device: &Rc<VkDevice>,
-                        semaphore_cinfo: &vk::SemaphoreCreateInfo,
-                        n: usize,
-                ) -> VkResult<Vec<VkSemaphore>> {
-                        let mut semaphores = Vec::with_capacity(n);
-
-                        for _ in 0..n {
-                                semaphores.push(unsafe { VkSemaphore::new(device, semaphore_cinfo)? });
-                        }
-
-                        Ok(semaphores)
-                }
-
-                let semaphore_cinfo = vk::SemaphoreCreateInfo::builder().build();
-
-                Ok((
-                        create_n_semaphores(device, &semaphore_cinfo, swch_img_count as usize)?,
-                        create_n_semaphores(device, &semaphore_cinfo, swch_img_count as usize)?,
-                ))
-        }
-
-        fn create_uniform_buffer(
-                device: &ash::Device,
-                allocator: Rc<VmaAllocator>,
-                buffer_size: vk::DeviceSize,
-        ) -> AnyResult<VkBuffer> {
-                let cinfo = VkBufferCreateInfo {
-                        device,
-                        allocator,
-                        buffer_size,
-                        buffer_usage: vk::BufferUsageFlags::UNIFORM_BUFFER,
-                        mem_usage: vma::MemoryUsage::CpuToGpu,
-                        alloc_flags: vma::AllocationCreateFlags::NONE,
-                        req_mem_flags: vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-                        pref_mem_flags: Default::default(),
-                        mem_type_bits: 0,
-                        q_family_indices: None,
-                };
-
-                VkBuffer::new(cinfo)
-        }
-
         fn create_world_dst_set_layout(device: &Rc<VkDevice>) -> VkResult<VkDescriptorSetLayout> {
                 let bindings = [
                         // WorldMatrices
@@ -791,24 +753,7 @@ impl VkRenderer {
                 unsafe { VkDescriptorSetLayout::new(device, &create_info) }
         }
 
-        fn create_descriptor_set_layouts(
-                device: &Rc<VkDevice>,
-        ) -> VkResult<(VkDescriptorSetLayout, VkDescriptorSetLayout, VkDescriptorSetLayout)> {
-                let matrices_dst_set_layout = {
-                        let mat_binding = vk::DescriptorSetLayoutBinding {
-                                binding: 0,
-                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::VERTEX,
-                                p_immutable_samplers: std::ptr::null(),
-                        };
-
-                        let matrices_dst_set_layout_cinfo =
-                                vk::DescriptorSetLayoutCreateInfo::builder().bindings(slice::from_ref(&mat_binding));
-
-                        unsafe { VkDescriptorSetLayout::new(device, &matrices_dst_set_layout_cinfo)? }
-                };
-
+        fn create_descriptor_set_layouts(device: &Rc<VkDevice>) -> VkResult<VkDescriptorSetLayout> {
                 let material_dst_set_layout = {
                         let tex_binding = vk::DescriptorSetLayoutBinding {
                                 binding: 0,
@@ -832,22 +777,7 @@ impl VkRenderer {
                         unsafe { VkDescriptorSetLayout::new(device, &mat_set_layout_cinfo)? }
                 };
 
-                let lights_dst_set_layout = {
-                        let lights_binding = vk::DescriptorSetLayoutBinding {
-                                binding: 0,
-                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                                p_immutable_samplers: std::ptr::null(),
-                        };
-
-                        let lights_dst_set_layout_cinfo =
-                                vk::DescriptorSetLayoutCreateInfo::builder().bindings(slice::from_ref(&lights_binding));
-
-                        unsafe { VkDescriptorSetLayout::new(device, &lights_dst_set_layout_cinfo)? }
-                };
-
-                Ok((matrices_dst_set_layout, material_dst_set_layout, lights_dst_set_layout))
+                Ok(material_dst_set_layout)
         }
 
         fn allocate_identical_descriptor_sets(
@@ -865,66 +795,6 @@ impl VkRenderer {
                 unsafe { device.allocate_descriptor_sets(&dst_set_ainfo) }
         }
 
-        fn alloc_and_init_world_dst_sets(
-                pdevice: &VkPhysicalDevice,
-                device: &ash::Device,
-                dst_pool: vk::DescriptorPool,
-                dst_set_layout: vk::DescriptorSetLayout,
-                world_matrices_buffer: &VkBuffer,
-                world_light_buffer: &VkBuffer,
-                amount: usize,
-        ) -> VkResult<Vec<vk::DescriptorSet>> {
-                let dst_sets = Self::allocate_identical_descriptor_sets(device, dst_pool, dst_set_layout, amount)?;
-
-                let world_matrices_padded_size =
-                        Self::calculate_padded_size_for_type::<WorldMatrices>(pdevice) as vk::DeviceSize;
-                let world_light_padded_size =
-                        Self::calculate_padded_size_for_type::<WorldLight>(pdevice) as vk::DeviceSize;
-
-                info!(
-                        "WorldMatrices padded size: {}  ---  WorldLight padded size: {}",
-                        world_matrices_padded_size, world_light_padded_size,
-                );
-
-                // let required_buffer_size = total_padded_size * amount;
-                // assert_eq!(buffer.size, required_buffer_size);
-
-                for (i, &dst_set) in dst_sets.iter().enumerate() {
-                        let world_matrices_buffer_info = vk::DescriptorBufferInfo {
-                                buffer: **world_matrices_buffer,
-                                offset: world_matrices_padded_size * i as vk::DeviceSize,
-                                range: world_matrices_padded_size,
-                        };
-
-                        let world_matrices_dst_write = vk::WriteDescriptorSet::builder()
-                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                .dst_set(dst_set)
-                                .dst_binding(0)
-                                .dst_array_element(0)
-                                .buffer_info(std::slice::from_ref(&world_matrices_buffer_info))
-                                .build();
-
-                        let world_light_buffer_info = vk::DescriptorBufferInfo {
-                                buffer: **world_light_buffer,
-                                offset: world_light_padded_size * i as vk::DeviceSize,
-                                range: world_light_padded_size,
-                        };
-
-                        let world_light_dst_write = vk::WriteDescriptorSet::builder()
-                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                .dst_set(dst_set)
-                                .dst_binding(1)
-                                .dst_array_element(0)
-                                .buffer_info(std::slice::from_ref(&world_light_buffer_info))
-                                .build();
-
-                        let writes = [world_matrices_dst_write, world_light_dst_write];
-                        unsafe { device.update_descriptor_sets(&writes, &[]) };
-                }
-
-                Ok(dst_sets)
-        }
-
         fn alloc_and_init_material_dst_sets(
                 pdevice: &VkPhysicalDevice,
                 device: &ash::Device,
@@ -935,8 +805,7 @@ impl VkRenderer {
         ) -> VkResult<Vec<vk::DescriptorSet>> {
                 let dst_sets = Self::allocate_identical_descriptor_sets(device, dst_pool, dst_set_layout, amount)?;
 
-                let material_data_padded_size =
-                        Self::calculate_padded_size_for_type::<MaterialData>(pdevice) as vk::DeviceSize;
+                let material_data_padded_size = pdevice.padded_size_of::<MaterialData>() as vk::DeviceSize;
 
                 info!("MaterialData padded size: {}", material_data_padded_size);
 
@@ -960,58 +829,6 @@ impl VkRenderer {
                 }
 
                 Ok(dst_sets)
-        }
-
-        fn alloc_and_init_object_dst_sets(
-                pdevice: &VkPhysicalDevice,
-                device: &ash::Device,
-                dst_pool: vk::DescriptorPool,
-                dst_set_layout: vk::DescriptorSetLayout,
-                object_matrices_buffers: &Vec<VkBuffer>,
-        ) -> VkResult<Vec<vk::DescriptorSet>> {
-                let dst_sets = Self::allocate_identical_descriptor_sets(
-                        device,
-                        dst_pool,
-                        dst_set_layout,
-                        object_matrices_buffers.len(),
-                )?;
-
-                let padded_size = Self::calculate_padded_size_for_type::<ObjectMatrices>(pdevice) as vk::DeviceSize;
-
-                for (&dst_set, buffer) in dst_sets.iter().zip(object_matrices_buffers.iter()) {
-                        let object_matrices_buffer_info = vk::DescriptorBufferInfo {
-                                buffer: **buffer,
-                                offset: 0,
-                                range: padded_size, // std::mem::size_of::<ObjectMatrices>() as vk::DeviceSize,
-                        };
-
-                        let object_matrices_dst_write = vk::WriteDescriptorSet::builder()
-                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-                                .dst_set(dst_set)
-                                .dst_binding(0)
-                                .dst_array_element(0)
-                                .buffer_info(std::slice::from_ref(&object_matrices_buffer_info))
-                                .build();
-
-                        let writes = [object_matrices_dst_write];
-                        unsafe { device.update_descriptor_sets(&writes, &[]) };
-                }
-
-                Ok(dst_sets)
-        }
-
-        fn calculate_padded_size(pdevice: &VkPhysicalDevice, data_size: usize) -> usize {
-                let alignment = pdevice.props.limits.min_uniform_buffer_offset_alignment as usize;
-
-                if alignment > 0 {
-                        (data_size + alignment - 1) & !(alignment - 1)
-                } else {
-                        data_size
-                }
-        }
-
-        fn calculate_padded_size_for_type<T>(pdevice: &VkPhysicalDevice) -> usize {
-                Self::calculate_padded_size(pdevice, std::mem::size_of::<T>())
         }
 
         fn create_graphics_pipeline_layout(
@@ -1269,13 +1086,12 @@ impl VkRenderer {
 
         unsafe fn begin_frame(&mut self) -> AnyResult<BeginFrameResult> {
                 self.recreate_swapchain_maybe()?;
-
-                let frame_img_avail_semaphore = &self.img_avail_semaphores[self.framei];
+                let frame_data = &mut self.frames_data[self.framei];
 
                 let imagei = {
                         let result = self.swapchain.acquire_next_image(
                                 u64::MAX,
-                                **frame_img_avail_semaphore,
+                                *frame_data.img_available_semaphore,
                                 vk::Fence::null(),
                         );
 
@@ -1298,7 +1114,6 @@ impl VkRenderer {
                         }
                 };
 
-                let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.framei];
                 let frame_framebuffer = &self.swapchain.framebuffers[imagei as usize];
 
                 let time = self.creation_instant.elapsed().as_secs_f32();
@@ -1317,11 +1132,13 @@ impl VkRenderer {
 
                 self.vk_context
                         .device
-                        .wait_for_fences(&[*frame_draw_cmd_buffer.fence], true, u64::MAX)?;
-                self.vk_context.device.reset_fences(&[*frame_draw_cmd_buffer.fence])?;
+                        .wait_for_fences(&[*frame_data.draw_cmd_buffer.fence], true, u64::MAX)?;
+                self.vk_context
+                        .device
+                        .reset_fences(&[*frame_data.draw_cmd_buffer.fence])?;
 
                 self.vk_context.device.reset_command_buffer(
-                        **frame_draw_cmd_buffer,
+                        *frame_data.draw_cmd_buffer,
                         vk::CommandBufferResetFlags::RELEASE_RESOURCES,
                 )?;
 
@@ -1330,7 +1147,7 @@ impl VkRenderer {
 
                 self.vk_context
                         .device
-                        .begin_command_buffer(**frame_draw_cmd_buffer, &cmd_buffer_binfo)?;
+                        .begin_command_buffer(*frame_data.draw_cmd_buffer, &cmd_buffer_binfo)?;
 
                 let render_pass_binfo = vk::RenderPassBeginInfo::builder()
                         .render_pass(*self.render_pass)
@@ -1339,46 +1156,42 @@ impl VkRenderer {
                         .clear_values(&clear_values);
 
                 self.vk_context.device.cmd_begin_render_pass(
-                        **frame_draw_cmd_buffer,
+                        *frame_data.draw_cmd_buffer,
                         &render_pass_binfo,
                         vk::SubpassContents::INLINE,
                 );
 
-                Ok(BeginFrameResult::Draw {
-                        imagei,
-                        draw_cmd_buffer: **frame_draw_cmd_buffer,
-                })
+                Ok(BeginFrameResult::Draw { imagei })
         }
 
         unsafe fn end_frame(&mut self, imagei: u32) -> AnyResult<()> {
-                let frame_img_avail_semaphore = &self.img_avail_semaphores[self.framei];
-                let frame_present_complete_semaphore = &self.present_complete_semaphores[self.framei];
-                let frame_draw_cmd_buffer = &self.draw_cmd_buffers[self.framei];
+                let frame_data = &mut self.frames_data[self.framei];
 
-                self.vk_context.device.cmd_end_render_pass(**frame_draw_cmd_buffer);
-                self.vk_context.device.end_command_buffer(**frame_draw_cmd_buffer)?;
+                self.vk_context.device.cmd_end_render_pass(*frame_data.draw_cmd_buffer);
+                self.vk_context.device.end_command_buffer(*frame_data.draw_cmd_buffer)?;
 
-                let cmd_buffers = [**frame_draw_cmd_buffer];
-                let wait_semaphores = &[**frame_img_avail_semaphore];
-                let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-                let signal_semaphores = &[**frame_present_complete_semaphore];
+                let cmd_buffers = [*frame_data.draw_cmd_buffer];
+                let wait_semaphores = [*frame_data.img_available_semaphore];
+                let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+                let signal_semaphores = [*frame_data.present_complete_semaphore];
 
                 let submit_info = vk::SubmitInfo::builder()
                         .command_buffers(&cmd_buffers)
-                        .wait_semaphores(wait_semaphores)
-                        .wait_dst_stage_mask(wait_stages)
-                        .signal_semaphores(signal_semaphores);
+                        .wait_semaphores(&wait_semaphores)
+                        .wait_dst_stage_mask(&wait_stages)
+                        .signal_semaphores(&signal_semaphores)
+                        .build();
 
                 self.vk_context.device.queue_submit(
                         self.vk_context.queues.graphics,
-                        &[submit_info.build()],
-                        *frame_draw_cmd_buffer.fence,
+                        &[submit_info],
+                        *frame_data.draw_cmd_buffer.fence,
                 )?;
 
                 match self.swapchain.queue_present(
                         self.vk_context.queues.present,
                         &vk::PresentInfoKHR::builder()
-                                .wait_semaphores(&[**frame_present_complete_semaphore])
+                                .wait_semaphores(&[*frame_data.present_complete_semaphore])
                                 .swapchains(&[*self.swapchain])
                                 .image_indices(&[imagei]),
                 ) {
@@ -1394,29 +1207,9 @@ impl VkRenderer {
                         _ => (),
                 };
 
-                self.framei = (self.framei + 1) % (self.swapchain.img_count as usize);
+                self.framei = (self.framei + 1) % self.concurrent_frames;
 
                 Ok(())
-        }
-
-        fn update_world_matrices_buffer(
-                pdevice: &VkPhysicalDevice,
-                world_matrices_buffer: &mut VkBuffer,
-                matrices: &WorldMatrices,
-                index: usize,
-        ) -> VkResult<()> {
-                let offset = index * Self::calculate_padded_size_for_type::<WorldMatrices>(pdevice);
-                world_matrices_buffer.write_offsetted(matrices, offset)
-        }
-
-        fn update_world_light_buffer(
-                pdevice: &VkPhysicalDevice,
-                world_light_buffer: &mut VkBuffer,
-                light: &WorldLight,
-                index: usize,
-        ) -> VkResult<()> {
-                let offset = Self::calculate_padded_size_for_type::<WorldLight>(pdevice) * index;
-                world_light_buffer.write_offsetted(light, offset)
         }
 
         fn draw_model(
@@ -1550,10 +1343,7 @@ impl VkRenderer {
 }
 
 enum BeginFrameResult {
-        Draw {
-                imagei: u32,
-                draw_cmd_buffer: vk::CommandBuffer,
-        },
+        Draw { imagei: u32 },
         Skip,
 }
 

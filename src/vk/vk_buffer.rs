@@ -169,6 +169,27 @@ impl VkBuffer {
                 Ok(buffer)
         }
 
+        pub fn new_uniform_buffer(
+                device: &ash::Device,
+                allocator: Rc<VmaAllocator>,
+                buffer_size: vk::DeviceSize,
+        ) -> AnyResult<Self> {
+                let cinfo = VkBufferCreateInfo {
+                        device,
+                        allocator,
+                        buffer_size,
+                        buffer_usage: vk::BufferUsageFlags::UNIFORM_BUFFER,
+                        mem_usage: vma::MemoryUsage::CpuToGpu,
+                        alloc_flags: vma::AllocationCreateFlags::NONE,
+                        req_mem_flags: vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+                        pref_mem_flags: Default::default(),
+                        mem_type_bits: 0,
+                        q_family_indices: None,
+                };
+
+                VkBuffer::new(cinfo)
+        }
+
         pub fn new_transfer_src(device: &ash::Device, allocator: Rc<VmaAllocator>, data: &[u8]) -> AnyResult<VkBuffer> {
                 let staging_buffer = {
                         let buffer_cinfo = VkBufferCreateInfo {
@@ -197,11 +218,11 @@ impl VkBuffer {
                 Ok(staging_buffer)
         }
 
-        pub fn write<T: 'static>(&mut self, value: &T) -> VkResult<()> {
+        pub fn write<T: 'static>(&self, value: &T) -> VkResult<()> {
                 self.write_offsetted(value, 0)
         }
 
-        pub fn write_offsetted<T: 'static>(&mut self, value: &T, offset: usize) -> VkResult<()> {
+        pub fn write_offsetted<T: 'static>(&self, value: &T, offset: usize) -> VkResult<()> {
                 let map = self.map_memory()?;
                 unsafe {
                         let src = value as *const _ as *const u8;
