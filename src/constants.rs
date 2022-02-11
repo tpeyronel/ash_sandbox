@@ -1,5 +1,5 @@
 pub const DESIRED_SWAPCHAIN_IMAGE_COUNT: u32 = 3;
-pub const CONCURRENT_FRAMES: usize = 2;
+pub const MAX_CONCURRENT_FRAMES: usize = 2;
 pub const ENABLE_ANISOTROPY: bool = true;
 pub const LOD_CLAMP_NONE: f32 = ash::vk::LOD_CLAMP_NONE;
 pub const FONT_SIZE: f32 = 13.0;

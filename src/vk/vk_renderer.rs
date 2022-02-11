@@ -12,12 +12,9 @@ use super::{
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
-        vk_wrapper::{
-                VkDescriptorSetLayout, VkDevice, VkPhysicalDevice, VkPipeline, VkPipelineLayout, VkRenderPass,
-                VkSemaphore,
-        },
+        vk_wrapper::{VkDescriptorSetLayout, VkDevice, VkPipeline, VkPipelineLayout, VkRenderPass, VkSemaphore},
 };
-use crate::{asset_manager::ShaderId, constants::CONCURRENT_FRAMES, scoped_timer::TimePrefix, AnyResult};
+use crate::{asset_manager::ShaderId, constants::MAX_CONCURRENT_FRAMES, scoped_timer::TimePrefix, AnyResult};
 use crate::{
         asset_manager::{AssetManager, Mesh, ModelId, Primitive},
         my_glm::*,
@@ -189,7 +186,7 @@ pub struct VkRenderer {
 
         setup_cmd_buffer: VkReusableCommandBuffer,
 
-        concurrent_frames: usize,
+        max_concurrent_frames: usize,
         frames_data: Vec<VkFrameData>,
 
         world_dst_set_layout: VkDescriptorSetLayout,
@@ -242,8 +239,8 @@ impl VkRenderer {
                 // let material_dst_set_layout = Self::create_material_dst_set_layout(&vk_context.device)?;
                 let object_dst_set_layout = Self::create_object_dst_set_layout(&vk_context.device)?;
 
-                let concurrent_frames = CONCURRENT_FRAMES;
-                let frames_data = (0..concurrent_frames)
+                let max_concurrent_frames = MAX_CONCURRENT_FRAMES;
+                let frames_data = (0..max_concurrent_frames)
                         .map(|_| VkFrameData::new(&vk_context, *world_dst_set_layout, *object_dst_set_layout))
                         .collect::<AnyResult<Vec<VkFrameData>>>()?;
 
@@ -282,7 +279,7 @@ impl VkRenderer {
                 trace!("Created VkGraphicsPipeline");
 
                 let imgui_renderer_options = imgui_rs_vulkan_renderer::Options {
-                        in_flight_frames: concurrent_frames,
+                        in_flight_frames: max_concurrent_frames,
                         enable_depth_test: false,
                         enable_depth_write: false,
                         sample_count: swapchain.samples,
@@ -313,7 +310,7 @@ impl VkRenderer {
                         render_pass,
 
                         setup_cmd_buffer,
-                        concurrent_frames,
+                        max_concurrent_frames,
                         frames_data,
 
                         world_dst_set_layout,
@@ -486,14 +483,12 @@ impl VkRenderer {
                 trace!("Recreating VkSwapchain...");
                 scoped_timer!("Recreated VkSwapchain in: ", TimePrefix::Milli);
 
-                let mut recreate_render_pass: bool = false;
-                let mut recreate_pipeline: bool = self
-                        .swapchain_outdated_causes
-                        .contains(VkSwapchainOutdatedCauseFlags::OUT_OF_DATE);
-
                 unsafe { self.vk_context.device.device_wait_idle()? };
 
                 let srecreation_info = self.swapchain.recreate()?;
+
+                let mut recreate_render_pass: bool = false;
+                let mut recreate_pipeline: bool = false;
 
                 if srecreation_info.color_format_changed || srecreation_info.samples_changed {
                         recreate_render_pass = true;
@@ -519,71 +514,18 @@ impl VkRenderer {
 
                 self.swapchain.create_framebuffers(*self.render_pass)?;
 
-                if srecreation_info.img_count_changed {
-                        trace!("Recreating VkObjects that depend on VkSwapchain img count...");
-                        warn!("VkSwapchain image count changed!");
-
-                        // self.matrices_buffers = Self::create_matrices_buffers(
-                        //         &self.vk_context.device,
-                        //         Rc::clone(&self.vk_context.allocator),
-                        //         self.swapchain.img_count,
-                        // )?;
-
-                        // self.lights_buffers = Self::create_lights_buffers(
-                        //         &self.vk_context.device,
-                        //         Rc::clone(&self.vk_context.allocator),
-                        //         self.swapchain.img_count,
-                        // )?;
-
-                        // unsafe {
-                        //         self.vk_context
-                        //                 .device
-                        //                 .free_descriptor_sets(*self.vk_context.dst_pool, &self.matrices_dst_sets)?
-                        // };
-
-                        // self.matrices_dst_sets = Self::create_matrices_dst_sets(
-                        //         &self.vk_context.device,
-                        //         *self.vk_context.dst_pool,
-                        //         *self.matrices_dst_set_layout,
-                        //         &self.matrices_buffers,
-                        // )?;
-
-                        // unsafe {
-                        //         self.vk_context
-                        //                 .device
-                        //                 .free_descriptor_sets(*self.vk_context.dst_pool, &self.lights_dst_sets)?
-                        // };
-
-                        // self.lights_dst_sets = Self::create_lights_dst_sets(
-                        //         &self.vk_context.device,
-                        //         *self.vk_context.dst_pool,
-                        //         *self.lights_dst_set_layout,
-                        //         &self.lights_buffers,
-                        // )?;
-
-                        // self.draw_cmd_buffers = VkReusableCommandBuffer::new_vec(
-                        //         Rc::clone(&self.vk_context.device),
-                        //         Rc::clone(&self.vk_context.cmd_pool),
-                        //         self.swapchain.img_count,
-                        // )?;
-
-                        // let (img_avail_semaphores, present_complete_semaphores) =
-                        // Self::create_sync_objects(&self.vk_context.device, self.swapchain.img_count)?;
-                        // self.img_avail_semaphores = img_avail_semaphores;
-                        // self.present_complete_semaphores = present_complete_semaphores;
-
-                        self.framei = 0;
-                }
-
                 if recreate_pipeline {
                         trace!("Recreating VkGraphicsPipeline...");
-                        self.graphics_pipeline = Self::create_graphics_pipeline(
+                        let new_graphics_pipeline = Self::create_graphics_pipeline(
                                 &self.vk_asset_manager.shaders[self.basic_shader_id],
                                 &self.vk_context.device,
                                 self.swapchain.samples,
                                 *self.render_pass,
                                 &self.graphics_pipeline_layout,
                         )?;
+                        let old_graphics_pipeline =
+                                std::mem::replace(&mut self.graphics_pipeline, new_graphics_pipeline);
+                        unsafe { old_graphics_pipeline.destroy() };
                 }
 
                 self.swapchain_outdated_causes = VkSwapchainOutdatedCauseFlags::NONE;
@@ -778,57 +720,6 @@ impl VkRenderer {
                 };
 
                 Ok(material_dst_set_layout)
-        }
-
-        fn allocate_identical_descriptor_sets(
-                device: &ash::Device,
-                dst_pool: vk::DescriptorPool,
-                dst_set_layout: vk::DescriptorSetLayout,
-                amount: usize,
-        ) -> VkResult<Vec<vk::DescriptorSet>> {
-                let dst_set_layouts = vec![dst_set_layout; amount];
-
-                let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
-                        .descriptor_pool(dst_pool)
-                        .set_layouts(&dst_set_layouts);
-
-                unsafe { device.allocate_descriptor_sets(&dst_set_ainfo) }
-        }
-
-        fn alloc_and_init_material_dst_sets(
-                pdevice: &VkPhysicalDevice,
-                device: &ash::Device,
-                dst_pool: vk::DescriptorPool,
-                dst_set_layout: vk::DescriptorSetLayout,
-                material_data_buffer: &VkBuffer,
-                amount: usize,
-        ) -> VkResult<Vec<vk::DescriptorSet>> {
-                let dst_sets = Self::allocate_identical_descriptor_sets(device, dst_pool, dst_set_layout, amount)?;
-
-                let material_data_padded_size = pdevice.padded_size_of::<MaterialData>() as vk::DeviceSize;
-
-                info!("MaterialData padded size: {}", material_data_padded_size);
-
-                for (i, &dst_set) in dst_sets.iter().enumerate() {
-                        let material_data_buffer_info = vk::DescriptorBufferInfo {
-                                buffer: **material_data_buffer,
-                                offset: material_data_padded_size * i as vk::DeviceSize,
-                                range: material_data_padded_size,
-                        };
-
-                        let material_data_dst_write = vk::WriteDescriptorSet::builder()
-                                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                                .dst_set(dst_set)
-                                .dst_binding(0)
-                                .dst_array_element(0)
-                                .buffer_info(std::slice::from_ref(&material_data_buffer_info))
-                                .build();
-
-                        let writes = [material_data_dst_write];
-                        unsafe { device.update_descriptor_sets(&writes, &[]) };
-                }
-
-                Ok(dst_sets)
         }
 
         fn create_graphics_pipeline_layout(
@@ -1207,7 +1098,7 @@ impl VkRenderer {
                         _ => (),
                 };
 
-                self.framei = (self.framei + 1) % self.concurrent_frames;
+                self.framei = (self.framei + 1) % self.max_concurrent_frames;
 
                 Ok(())
         }
