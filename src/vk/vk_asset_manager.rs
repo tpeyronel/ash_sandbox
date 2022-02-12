@@ -19,7 +19,7 @@ use crate::{
                 vk_image::{MipLevels, VkImage, VkImageCreateFromDataInfo},
                 vk_wrapper::{VkCommandPool, VkDevice, VkImageView, VkPhysicalDevice, VkSampler},
         },
-        AnyResult,
+        AnyResult, util::RefIntoSlice,
 };
 
 use super::vk_wrapper::{VkDescriptorSetLayout, VkShaderModule, VmaAllocator};
@@ -362,7 +362,7 @@ impl VkAssetManager {
                                 .dst_set(material_dst_set)
                                 .dst_binding(0)
                                 .dst_array_element(0)
-                                .image_info(std::slice::from_ref(&image_info))
+                                .image_info(image_info.ref_into_slice())
                                 .build();
 
                         let sampler_info = vk::DescriptorImageInfo {
@@ -374,7 +374,7 @@ impl VkAssetManager {
                                 .dst_set(material_dst_set)
                                 .dst_binding(1)
                                 .dst_array_element(0)
-                                .image_info(std::slice::from_ref(&sampler_info))
+                                .image_info(sampler_info.ref_into_slice())
                                 .build();
 
                         unsafe { device.update_descriptor_sets(&[image_dst_set_write, sampler_dst_set_write], &[]) };
