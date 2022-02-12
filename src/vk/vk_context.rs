@@ -15,7 +15,8 @@ use log::{debug, error, info, trace, warn};
 use winit::window::Window;
 
 use super::vk_wrapper::{
-        VkCommandPool, VkDebugUtilsMessenger, VkDescriptorPool, VkDevice, VkInstance, VkSurface, VmaAllocator, impl_destroyable_drop,
+        impl_destroyable_drop, VkCommandPool, VkDebugUtilsMessenger, VkDescriptorPool, VkDevice, VkInstance, VkSurface,
+        VmaAllocator,
 };
 use crate::{
         scoped_timer::{ScopedTimer, TimePrefix},
@@ -347,14 +348,23 @@ unsafe extern "system" fn vk_debug_callback(
                 CStr::from_ptr(callback_data.p_message).to_string_lossy()
         };
 
-        println!(
-                "\n{:?}:\n{:?} [{} ({})] : {}\n",
+        let display = format!(
+                "Vulkan {:?}:\n{:?} [{} ({})] : {}",
                 message_severity,
                 message_type,
                 message_id_name,
                 &message_id_number.to_string(),
                 message,
         );
+
+        println!();
+        match message_severity {
+                vk::DebugUtilsMessageSeverityFlagsEXT::INFO => log::info!("{}", display),
+                vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => log::warn!("{}", display),
+                vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => log::error!("{}", display),
+                vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => (),
+                _ => log::info!("{}", display),
+        }
 
         vk::FALSE
 }

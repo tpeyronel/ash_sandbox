@@ -97,16 +97,17 @@ impl VkBuffer {
         }
 
         pub fn new_immutable<T>(create_info: VkImmutableBufferCreateInfo<T>) -> AnyResult<Self> {
-                let (buffer_data, buffer_size) = match create_info.data {
-                        BufferData::FullSlice(s) => (
-                                s.as_ptr() as *const u8,
-                                (std::mem::size_of::<T>() * s.len()) as vk::DeviceSize,
-                        ),
-                        BufferData::OffsetLength { data, offset, length } => (
-                                unsafe { (data.as_ptr() as *const u8).offset(offset as isize) },
-                                length as vk::DeviceSize,
-                        ),
+                let buffer_data = match create_info.data {
+                        BufferData::FullSlice(s) => unsafe {
+                                std::slice::from_raw_parts(s.as_ptr() as *const u8, s.len() * std::mem::size_of::<T>())
+                        },
+                        BufferData::OffsetLength { data, offset, length } => unsafe {
+                                assert!((offset + length) <= (data.len() * std::mem::size_of::<T>()));
+
+                                std::slice::from_raw_parts((data.as_ptr() as *const u8).offset(offset as isize), length)
+                        },
                 };
+                let buffer_size = buffer_data.len() as vk::DeviceSize;
 
                 let staging_buffer_cinfo = VkBufferCreateInfo {
                         device: create_info.device,
@@ -123,10 +124,7 @@ impl VkBuffer {
 
                 let staging_buffer = VkBuffer::new(staging_buffer_cinfo)?;
 
-                let map = staging_buffer.map_memory()?;
-                unsafe {
-                        std::ptr::copy_nonoverlapping(buffer_data, map, buffer_size as usize);
-                }
+                staging_buffer.write_bytes(buffer_data)?;
                 staging_buffer.unmap_memory();
 
                 let buffer_cinfo = VkBufferCreateInfo {
@@ -209,10 +207,7 @@ impl VkBuffer {
                         VkBuffer::new(buffer_cinfo)?
                 };
 
-                let buffer_data = staging_buffer.map_memory()?;
-                unsafe {
-                        std::ptr::copy_nonoverlapping(data.as_ptr(), buffer_data, data.len());
-                }
+                staging_buffer.write_bytes(data)?;
                 staging_buffer.unmap_memory();
 
                 Ok(staging_buffer)
@@ -223,11 +218,43 @@ impl VkBuffer {
         }
 
         pub fn write_offsetted<T: 'static>(&self, value: &T, offset: usize) -> VkResult<()> {
+                let data = value as *const _ as *const u8;
+                let len = std::mem::size_of::<T>();
+                let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+
+                self.write_bytes_offsetted(bytes, offset)
+        }
+
+        pub fn write_slice<T: 'static>(&self, data: &[T]) -> VkResult<()> {
+                self.write_slice_offsetted(data, 0)
+        }
+
+        pub fn write_slice_offsetted<T: 'static>(&self, data: &[T], offset: usize) -> VkResult<()> {
+                let data_bytes = data.as_ptr() as *const u8;
+                let len = data.len() * std::mem::size_of::<T>();
+                let bytes = unsafe { std::slice::from_raw_parts(data_bytes, len) };
+
+                self.write_bytes_offsetted(bytes, offset)
+        }
+
+        pub fn write_bytes(&self, bytes: &[u8]) -> VkResult<()> {
+                self.write_bytes_offsetted(bytes, 0)
+        }
+
+        pub fn write_bytes_offsetted(&self, bytes: &[u8], offset: usize) -> VkResult<()> {
+                assert!(
+                        offset + bytes.len() <= self.ainfo.size(),
+                        "Tried to write {} bytes with offset {} (total: {}) into buffer of size {}!",
+                        bytes.len(),
+                        offset,
+                        offset + bytes.len(),
+                        self.ainfo.size()
+                );
+
                 let map = self.map_memory()?;
                 unsafe {
-                        let src = value as *const _ as *const u8;
                         let dst = map.offset(offset as isize);
-                        std::ptr::copy_nonoverlapping(src, dst, std::mem::size_of::<T>());
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
                 }
                 Ok(())
         }

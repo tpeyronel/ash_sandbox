@@ -74,8 +74,9 @@ impl VkFrameData {
                         material_data_buffer_size,
                 )?;
 
+                const MAX_OBJECT_MATRICES: usize = 16384;
                 let object_matrices_padded_size = vk_context.pdevice.padded_size_of::<ObjectMatrices>();
-                let object_matrices_buffer_size = object_matrices_padded_size as vk::DeviceSize * 2048;
+                let object_matrices_buffer_size = (object_matrices_padded_size * MAX_OBJECT_MATRICES) as vk::DeviceSize;
                 let object_matrices_buffer = VkBuffer::new_uniform_buffer(
                         &vk_context.device,
                         Rc::clone(&vk_context.allocator),
