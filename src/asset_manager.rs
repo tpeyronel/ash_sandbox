@@ -11,7 +11,6 @@ use thiserror::Error;
 use crate::{
         hashmap::{GetOrInsert, HashMap},
         my_glm::*,
-        scoped_timer::TimePrefix,
         vec_map::{VecMap, VecMapKey},
 };
 
@@ -393,7 +392,7 @@ impl AssetManager {
         }
 
         pub fn import_gltf_file(&mut self, gltf_path: &Path) -> Result<ModelId, GLTFImportError> {
-                scoped_timer!("Loaded model in ", TimePrefix::Milli);
+                scoped_timer!("Loaded model in ", Millis);
 
                 let (doc, buffers, images) = gltf::import(gltf_path).map_err(|e| GLTFImportError::GLTFCrateError(e))?;
 

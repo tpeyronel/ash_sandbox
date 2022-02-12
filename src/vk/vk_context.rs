@@ -19,7 +19,6 @@ use super::vk_wrapper::{
         VmaAllocator,
 };
 use crate::{
-        scoped_timer::{ScopedTimer, TimePrefix},
         vk::vk_wrapper::{VkPhysicalDevice, VkQueueFamilyIndices, VkQueues},
         AnyResult,
 };
@@ -58,7 +57,7 @@ const ENABLE_VALIDATION_LAYERS: bool = false;
 
 impl VkContext {
         pub fn new(window: Rc<Window>) -> AnyResult<Self> {
-                let _t = ScopedTimer::new("Initialized VkContext in: ", TimePrefix::Base);
+                scoped_timer!("Initialized VkContext in: ", Millis);
 
                 let entry = Rc::new(unsafe { ash::Entry::load()? });
 
