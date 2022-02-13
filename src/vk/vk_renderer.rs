@@ -21,7 +21,7 @@ use crate::{
         AnyResult,
 };
 use crate::{
-        asset_manager::{AssetManager, Mesh, ModelId, Primitive},
+        asset_manager::{AssetManager, Mesh, ModelId},
         my_glm::*,
         renderer::{RenderState, Renderer},
         vertex::Vertex,
@@ -1146,14 +1146,14 @@ impl VkRenderer {
                 // matrices.normal = glm::inverse_transpose(transform_final);
 
                 //let mut last_material = MaterialID::MAX;
-                if let Some(mesh) = model.mesh {
+                for &mesh_id in &model.meshes {
                         Self::draw_mesh(
                                 device,
                                 draw_cmd_buffer,
                                 object_dst_set,
                                 pipeline_layout,
                                 vk_asset_manager,
-                                &asset_manager.meshes()[mesh],
+                                &asset_manager.meshes()[mesh_id],
                                 offset,
                         );
                 }
@@ -1185,37 +1185,15 @@ impl VkRenderer {
                 mesh: &Mesh,
                 offset: u32,
         ) {
-                for primitive in &mesh.primitives {
-                        Self::draw_primitive(
-                                device,
-                                draw_cmd_buffer,
-                                object_dst_set,
-                                pipeline_layout,
-                                vk_asset_manager,
-                                primitive,
-                                offset,
-                        );
-                }
-        }
-
-        fn draw_primitive(
-                device: &VkDevice,
-                draw_cmd_buffer: vk::CommandBuffer,
-                object_dst_set: vk::DescriptorSet,
-                pipeline_layout: vk::PipelineLayout,
-                vk_asset_manager: &VkAssetManager,
-                primitive: &Primitive,
-                offset: u32,
-        ) {
                 /* if primitive.material != last_material {
                         last_material = mesh.material;
                 } */
 
-                let material_dst_set = vk_asset_manager.material_dst_sets[primitive.material];
-                let positions = &vk_asset_manager.buffer_views[primitive.positions];
-                let normals = &vk_asset_manager.buffer_views[primitive.normals];
-                let tex_coords = &vk_asset_manager.buffer_views[primitive.tex_coords];
-                let indices = &vk_asset_manager.buffer_views[primitive.indices];
+                let material_dst_set = vk_asset_manager.material_dst_sets[mesh.material];
+                let positions = &vk_asset_manager.buffer_views[mesh.positions];
+                let normals = &vk_asset_manager.buffer_views[mesh.normals];
+                let tex_coords = &vk_asset_manager.buffer_views[mesh.tex_coords];
+                let indices = &vk_asset_manager.buffer_views[mesh.indices];
 
                 unsafe {
                         device.cmd_bind_descriptor_sets(

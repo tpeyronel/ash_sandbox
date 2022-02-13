@@ -169,17 +169,15 @@ impl VkAssetManager {
                 let mut vk_buffer_usages = HashMap::<BufferViewId, vk::BufferUsageFlags>::new();
 
                 for (_, mesh) in meshes {
-                        for p in &mesh.primitives {
-                                (*vk_buffer_usages.entry(p.positions).or_default()) |=
-                                        vk::BufferUsageFlags::VERTEX_BUFFER;
-                                (*vk_buffer_usages.entry(p.tex_coords).or_default()) |=
-                                        vk::BufferUsageFlags::VERTEX_BUFFER;
-                                (*vk_buffer_usages.entry(p.normals).or_default()) |=
-                                        vk::BufferUsageFlags::VERTEX_BUFFER;
-                                (*vk_buffer_usages.entry(p.tangents).or_default()) |=
-                                        vk::BufferUsageFlags::VERTEX_BUFFER;
-                                (*vk_buffer_usages.entry(p.indices).or_default()) |= vk::BufferUsageFlags::INDEX_BUFFER;
-                        }
+                        (*vk_buffer_usages.entry(mesh.positions).or_default()) |=
+                                vk::BufferUsageFlags::VERTEX_BUFFER;
+                        (*vk_buffer_usages.entry(mesh.tex_coords).or_default()) |=
+                                vk::BufferUsageFlags::VERTEX_BUFFER;
+                        (*vk_buffer_usages.entry(mesh.normals).or_default()) |=
+                                vk::BufferUsageFlags::VERTEX_BUFFER;
+                        (*vk_buffer_usages.entry(mesh.tangents).or_default()) |=
+                                vk::BufferUsageFlags::VERTEX_BUFFER;
+                        (*vk_buffer_usages.entry(mesh.indices).or_default()) |= vk::BufferUsageFlags::INDEX_BUFFER;
                 }
 
                 vk_buffer_usages
