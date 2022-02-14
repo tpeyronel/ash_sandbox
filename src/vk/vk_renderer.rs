@@ -388,6 +388,7 @@ impl Renderer for VkRenderer {
                 let proj_mat = render_state.proj_camera.calc_proj_matrix(aspect_ratio);
 
                 let world_matrices = WorldMatrices {
+                        view_pos: Vec4::new_position(&render_state.camera_pos),
                         view: view_mat,
                         proj: proj_mat,
                 };
@@ -397,8 +398,8 @@ impl Renderer for VkRenderer {
                 let (_, light) = render_state.lights.iter().next().unwrap();
 
                 let world_light = WorldLight {
-                        color: view_mat * Vec4::new_position(&light.0 .0),
-                        pos: Vec4::new_position(&light.1 .0),
+                        pos: Vec4::new_position(&light.0 .0),
+                        color: Vec4::new_position(&light.1 .0),
                 };
 
                 frame_data.world_light_buffer.write(&world_light)?;
@@ -669,7 +670,7 @@ impl VkRenderer {
                                 binding: 0,
                                 descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
                                 descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::VERTEX,
+                                stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                                 p_immutable_samplers: std::ptr::null(),
                         },
                         // WorldLight
@@ -1050,7 +1051,7 @@ impl VkRenderer {
                 let frame_framebuffer = &self.swapchain.framebuffers[imagei as usize];
 
                 let time = self.creation_instant.elapsed().as_secs_f32();
-                let intensity = ((time.sin() + 1.0) / 2.0) * 0.05;
+                let intensity = (((time.sin() + 1.0) / 2.0) * 0.05) + 0.05;
 
                 let clear_values = [
                         vk::ClearValue {
@@ -1277,14 +1278,15 @@ struct MatricesVPN {
 
 #[allow(dead_code)]
 struct WorldMatrices {
+        view_pos: Vec4,
         view: Mat4,
         proj: Mat4,
 }
 
 #[allow(dead_code)]
 struct WorldLight {
-        color: Vec4,
         pos: Vec4,
+        color: Vec4,
 }
 
 #[allow(dead_code)]

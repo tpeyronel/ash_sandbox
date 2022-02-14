@@ -1,6 +1,12 @@
 #version 450
 #extension GL_EXT_debug_printf : enable
 
+layout (set = 0, binding = 0) uniform WorldMatrices {
+        vec4 view_pos;
+        mat4 view;
+        mat4 proj;
+} u_world_matrices;
+
 layout (set = 0, binding = 1) uniform WorldLight {
         vec4 pos;
         vec4 color;
@@ -26,14 +32,14 @@ void main() {
         vec4 ambient = ambient_strength * u_light.color;
 
         vec3 normal = normalize(i_normal);
-        vec3 light_dir = normalize(i_frag_pos - vec3(u_light.pos));
+        vec3 light_dir = normalize(i_frag_pos - u_light.pos.xyz);
 
         float diffuse_angle = max(dot(-light_dir, normal), 0.0);
         vec4 diffuse = diffuse_angle * u_light.color;
 
         float specular_strength = 0.5;
         vec3 reflected_light_dir = reflect(light_dir, normal);
-        vec3 camera_rdir = normalize(-i_frag_pos); // normalize(vec3(0.0, 0.0, 0.0) - i_frag_pos)
+        vec3 camera_rdir = normalize(u_world_matrices.view_pos.xyz - i_frag_pos);
         float specular_angle = max(dot(reflected_light_dir, camera_rdir), 0.0);
         float specular_coefficient = pow(specular_angle, 32.0);
         vec4 specular = (specular_strength * specular_coefficient) * u_light.color;
@@ -45,6 +51,6 @@ void main() {
 
 
 
-        float gamma = 2.2;
-        o_out_color.rgb = pow(o_out_color.rgb, vec3(1.0 / gamma));
+        // float gamma = 2.2;
+        // o_out_color.rgb = pow(o_out_color.rgb, vec3(1.0 / gamma));
 }

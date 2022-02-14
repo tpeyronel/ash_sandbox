@@ -2,6 +2,7 @@
 #extension GL_EXT_debug_printf : enable
 
 layout (set = 0, binding = 0) uniform WorldMatrices {
+        vec4 view_pos;
         mat4 view;
         mat4 proj;
 } u_world_matrices;
@@ -29,9 +30,10 @@ layout (location = 2) out vec2 o_tex_coord;
 
 
 void main() {
-        o_frag_pos = vec3(u_world_matrices.view * u_object_matrices.model * vec4(i_pos, 1.0));
+        o_frag_pos = vec3(u_object_matrices.model * vec4(i_pos, 1.0));
+
         // o_normal = mat3(u_object_matrices.normal) * i_normal;
-        o_normal = mat3(transpose(inverse(u_world_matrices.view * u_object_matrices.model))) * i_normal;
+        o_normal = mat3(transpose(inverse(u_object_matrices.model))) * i_normal;
 
         o_tex_coord = i_tex_coord;
 
