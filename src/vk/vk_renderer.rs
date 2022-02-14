@@ -1,4 +1,4 @@
-use std::{ffi::CString, rc::Rc, slice, sync::Arc, time::Instant};
+use std::{rc::Rc, slice, sync::Arc, time::Instant};
 
 use ash::{prelude::VkResult, vk};
 
@@ -9,24 +9,19 @@ use specs::Entity;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use super::{
-        vk_asset_manager::{VkAssetManager, VkShader},
+        vk_asset_manager::VkAssetManager,
         vk_buffer::VkBuffer,
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
-        vk_wrapper::{
-                VkDescriptorSetLayout, VkDevice, VkPhysicalDevice, VkPipeline, VkPipelineLayout, VkRenderPass,
-                VkSemaphore,
-        },
+        vk_wrapper::{VkDescriptorSetLayout, VkDevice, VkPhysicalDevice, VkPipelineLayout, VkRenderPass, VkSemaphore},
 };
 use crate::{
         asset_manager::AssetManager,
         my_glm::*,
         renderer::{RenderState, Renderer},
-        vertex::Vertex,
 };
 use crate::{
-        asset_manager::ShaderId,
         constants::{DESIRED_SWAPCHAIN_IMG_COUNT, MAX_CONCURRENT_FRAMES},
         hashmap::HashMap,
         renderer::{MeshInstance, MeshInstanceId, ModelInstance, ModelInstanceId, TransformManager},
@@ -192,8 +187,6 @@ pub struct VkRenderer {
         vk_context: VkContext,
         vk_asset_manager: VkAssetManager,
 
-        basic_shader_id: ShaderId,
-
         swapchain: VkSwapchain,
         swapchain_outdated_causes: VkSwapchainOutdatedCauseFlags,
 
@@ -209,7 +202,6 @@ pub struct VkRenderer {
         object_dst_set_layout: VkDescriptorSetLayout,
 
         graphics_pipeline_layout: VkPipelineLayout,
-        graphics_pipeline: VkPipeline,
 
         imgui_renderer: Option<imgui_rs_vulkan_renderer::Renderer>,
 
@@ -263,6 +255,12 @@ impl VkRenderer {
                 let material_dst_set_layout = Self::create_descriptor_set_layouts(&vk_context.device)?;
                 trace!("Created VkDescriptorSets");
 
+                let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
+                        &vk_context.device,
+                        &[*world_dst_set_layout, *material_dst_set_layout, *object_dst_set_layout],
+                )?;
+                trace!("Created VkGraphicsPipelineLayout");
+
                 let vk_asset_manager = VkAssetManager::new(
                         &vk_context.instance,
                         &vk_context.pdevice,
@@ -272,27 +270,13 @@ impl VkRenderer {
                         Rc::clone(&vk_context.cmd_pool),
                         *vk_context.dst_pool,
                         *material_dst_set_layout,
+                        swapchain.samples,
+                        *render_pass,
+                        *graphics_pipeline_layout,
                         &asset_manager,
                         swapchain.img_count as usize,
                 )?;
                 trace!("Created VkAssetManager");
-
-                let basic_shader_id = asset_manager.shader_names()["basic-shader"];
-
-                let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
-                        &vk_context.device,
-                        &[*world_dst_set_layout, *material_dst_set_layout, *object_dst_set_layout],
-                )?;
-                trace!("Created VkGraphicsPipelineLayout");
-
-                let graphics_pipeline = Self::create_graphics_pipeline(
-                        &vk_asset_manager.shaders[basic_shader_id],
-                        &vk_context.device,
-                        swapchain.samples,
-                        *render_pass,
-                        &graphics_pipeline_layout,
-                )?;
-                trace!("Created VkGraphicsPipeline");
 
                 let imgui_renderer_options = imgui_rs_vulkan_renderer::Options {
                         in_flight_frames: max_concurrent_frames,
@@ -318,7 +302,6 @@ impl VkRenderer {
 
                         vk_context,
                         vk_asset_manager,
-                        basic_shader_id,
 
                         swapchain,
                         swapchain_outdated_causes: VkSwapchainOutdatedCauseFlags::NONE,
@@ -334,8 +317,6 @@ impl VkRenderer {
                         object_dst_set_layout,
 
                         graphics_pipeline_layout,
-                        graphics_pipeline,
-
                         imgui_renderer,
 
                         creation_instant: Instant::now(),
@@ -405,11 +386,6 @@ impl Renderer for VkRenderer {
                 frame_data.world_light_buffer.write(&world_light)?;
 
                 unsafe {
-                        self.vk_context.device.cmd_bind_pipeline(
-                                *frame_data.draw_cmd_buffer,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                *self.graphics_pipeline,
-                        );
                         self.vk_context.device.cmd_set_viewport(
                                 *frame_data.draw_cmd_buffer,
                                 0,
@@ -480,21 +456,13 @@ impl Renderer for VkRenderer {
         fn destroy(&mut self) -> AnyResult<()> {
                 unsafe {
                         let _ = self.vk_context.device.device_wait_idle();
-                        // self.present_complete_semaphores.drain(..).for_each(|s| s.destroy());
-                        // self.img_avail_semaphores.drain(..).for_each(|s| s.destroy());
                         drop(self.imgui_renderer.take().unwrap());
-                        self.graphics_pipeline.destroy();
                         self.graphics_pipeline_layout.destroy();
                         self.frames_data.clear();
                         self.object_dst_set_layout.destroy();
                         self.material_dst_set_layout.destroy();
                         self.world_dst_set_layout.destroy();
-                        // self.object_matrices_buffers.drain(..).for_each(|b| b.destroy());
-                        // self.material_data_buffer.destroy();
-                        // self.world_light_buffer.destroy();
-                        // self.world_matrices_buffer.destroy();
                         self.setup_cmd_buffer.destroy();
-                        // self.draw_cmd_buffers.drain(..).for_each(|cb| cb.destroy());
                         self.render_pass.destroy();
                         self.swapchain.destroy();
                         self.vk_asset_manager.destroy();
@@ -559,16 +527,17 @@ impl VkRenderer {
 
                 if recreate_pipeline {
                         trace!("Recreating VkGraphicsPipeline...");
-                        let new_graphics_pipeline = Self::create_graphics_pipeline(
-                                &self.vk_asset_manager.shaders[self.basic_shader_id],
-                                &self.vk_context.device,
-                                self.swapchain.samples,
-                                *self.render_pass,
-                                &self.graphics_pipeline_layout,
-                        )?;
-                        let old_graphics_pipeline =
-                                std::mem::replace(&mut self.graphics_pipeline, new_graphics_pipeline);
-                        unsafe { old_graphics_pipeline.destroy() };
+                        // TODO: recreate pipelines in VkAssetManager
+                        // let new_graphics_pipeline = Self::create_graphics_pipeline(
+                        //         &self.vk_asset_manager.shaders[self.basic_shader_id],
+                        //         &self.vk_context.device,
+                        //         self.swapchain.samples,
+                        //         *self.render_pass,
+                        //         &self.graphics_pipeline_layout,
+                        // )?;
+                        // let old_graphics_pipeline =
+                        // std::mem::replace(&mut self.graphics_pipeline, new_graphics_pipeline);
+                        // unsafe { old_graphics_pipeline.destroy() };
                 }
 
                 self.swapchain_outdated_causes = VkSwapchainOutdatedCauseFlags::NONE;
@@ -781,229 +750,6 @@ impl VkRenderer {
 
                 unsafe { VkPipelineLayout::new(device, &layout_cinfo) }
         }
-
-        fn create_graphics_pipeline(
-                shader: &VkShader,
-                device: &Rc<VkDevice>,
-                swapchain_samples: vk::SampleCountFlags,
-                render_pass: vk::RenderPass,
-                pipeline_layout: &VkPipelineLayout,
-        ) -> VkResult<VkPipeline> {
-                let entry_point = CString::new("main").unwrap();
-
-                let shader_stages = [
-                        vk::PipelineShaderStageCreateInfo::builder()
-                                .stage(vk::ShaderStageFlags::VERTEX)
-                                .module(*shader.vert_module)
-                                .name(&entry_point)
-                                .build(),
-                        vk::PipelineShaderStageCreateInfo::builder()
-                                .stage(vk::ShaderStageFlags::FRAGMENT)
-                                .module(*shader.frag_module)
-                                .name(&entry_point)
-                                .build(),
-                ];
-
-                let vert_binding_desc = Vertex::vk_binding_description();
-                let vert_attrib_descs = Vertex::vk_attribute_descriptions();
-                let vert_input_cinfo = vk::PipelineVertexInputStateCreateInfo::builder()
-                        .vertex_binding_descriptions(&vert_binding_desc)
-                        .vertex_attribute_descriptions(&vert_attrib_descs);
-
-                let input_assembly_cinfo = vk::PipelineInputAssemblyStateCreateInfo::builder()
-                        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                        .primitive_restart_enable(false);
-
-                let viewport = vk::Viewport {
-                        x: 0.0,
-                        y: 0.0,
-                        width: 1.0,
-                        height: 1.0,
-                        min_depth: 0.0,
-                        max_depth: 1.0,
-                };
-
-                let scissor = vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: vk::Extent2D { width: 1, height: 1 },
-                };
-
-                let viewport_state_cinfo = vk::PipelineViewportStateCreateInfo::builder()
-                        .viewports(slice::from_ref(&viewport))
-                        .scissors(slice::from_ref(&scissor));
-
-                let rasterization_state_cinfo = vk::PipelineRasterizationStateCreateInfo::builder()
-                        .depth_clamp_enable(false)
-                        .rasterizer_discard_enable(false)
-                        .polygon_mode(vk::PolygonMode::FILL)
-                        .line_width(1.0)
-                        .cull_mode(vk::CullModeFlags::BACK)
-                        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-                        .depth_bias_enable(false)
-                        .depth_bias_constant_factor(0.0)
-                        .depth_bias_clamp(0.0)
-                        .depth_bias_slope_factor(0.0);
-
-                let multisample_state_cinfo = vk::PipelineMultisampleStateCreateInfo::builder()
-                        .rasterization_samples(swapchain_samples)
-                        .sample_shading_enable(false);
-
-                let depth_stencil_state_cinfo = vk::PipelineDepthStencilStateCreateInfo::builder()
-                        .depth_test_enable(true)
-                        .depth_write_enable(true)
-                        .depth_compare_op(vk::CompareOp::LESS)
-                        .depth_bounds_test_enable(false)
-                        .stencil_test_enable(false)
-                        .build();
-
-                let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::builder()
-                        .color_write_mask(vk::ColorComponentFlags::RGBA)
-                        .blend_enable(false)
-                        .build()];
-
-                let color_blend_state_cinfo = vk::PipelineColorBlendStateCreateInfo::builder()
-                        .attachments(&color_blend_attachments)
-                        .logic_op_enable(false);
-
-                let dyn_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-                let pipeline_dyn_state_cinfo =
-                        vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dyn_states);
-
-                let graphics_pipeline_cinfo = vk::GraphicsPipelineCreateInfo::builder()
-                        .stages(&shader_stages)
-                        .vertex_input_state(&vert_input_cinfo)
-                        .input_assembly_state(&input_assembly_cinfo)
-                        .viewport_state(&viewport_state_cinfo)
-                        .rasterization_state(&rasterization_state_cinfo)
-                        .multisample_state(&multisample_state_cinfo)
-                        .depth_stencil_state(&depth_stencil_state_cinfo)
-                        .color_blend_state(&color_blend_state_cinfo)
-                        .dynamic_state(&pipeline_dyn_state_cinfo)
-                        .layout(**pipeline_layout)
-                        .render_pass(render_pass)
-                        .subpass(0)
-                        .build();
-
-                unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
-        }
-
-        // fn create_graphics_pipeline_for_shader(
-        //         device: &Rc<VkDevice>,
-        //         swapchain_samples: vk::SampleCountFlags,
-        //         render_pass: vk::RenderPass,
-        //         pipeline_layout: &VkPipelineLayout,
-        //         vk_shader: VkShader,
-        //         shader: Shader,
-        // ) -> VkResult<(VkPipelineLayout, VkPipeline)> {
-        //         let push_constant_range = vk::PushConstantRange {
-        //                 stage_flags: vk::ShaderStageFlags::VERTEX,
-        //                 offset: 0,
-        //                 size: std::mem::size_of::<MatricesMMvp>() as u32,
-        //         };
-
-        //         let layout_cinfo = vk::PipelineLayoutCreateInfo::builder()
-        //                 .push_constant_ranges(std::slice::from_ref(&push_constant_range))
-        //                 .set_layouts(dst_set_layouts);
-
-        //         let pipeline_layout = unsafe { VkPipelineLayout::new(device, &layout_cinfo)? };
-
-        //         let entry_point = CString::new("main").unwrap();
-
-        //         let shader_stages = [
-        //                 vk::PipelineShaderStageCreateInfo::builder()
-        //                         .stage(vk::ShaderStageFlags::VERTEX)
-        //                         .module(*vk_shader.vert_module)
-        //                         .name(&entry_point)
-        //                         .build(),
-        //                 vk::PipelineShaderStageCreateInfo::builder()
-        //                         .stage(vk::ShaderStageFlags::FRAGMENT)
-        //                         .module(*vk_shader.frag_module)
-        //                         .name(&entry_point)
-        //                         .build(),
-        //         ];
-
-        //         let vert_binding_desc = Vertex::vk_binding_description();
-        //         let vert_attrib_descs = Vertex::vk_attribute_descriptions();
-        //         let vert_input_cinfo = vk::PipelineVertexInputStateCreateInfo::builder()
-        //                 .vertex_binding_descriptions(&vert_binding_desc)
-        //                 .vertex_attribute_descriptions(&vert_attrib_descs);
-
-        //         let input_assembly_cinfo = vk::PipelineInputAssemblyStateCreateInfo::builder()
-        //                 .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-        //                 .primitive_restart_enable(false);
-
-        //         let viewport = vk::Viewport {
-        //                 x: 0.0,
-        //                 y: 0.0,
-        //                 width: 1.0,
-        //                 height: 1.0,
-        //                 min_depth: 0.0,
-        //                 max_depth: 1.0,
-        //         };
-
-        //         let scissor = vk::Rect2D {
-        //                 offset: vk::Offset2D { x: 0, y: 0 },
-        //                 extent: vk::Extent2D { width: 1, height: 1 },
-        //         };
-
-        //         let viewport_state_cinfo = vk::PipelineViewportStateCreateInfo::builder()
-        //                 .viewports(slice::from_ref(&viewport))
-        //                 .scissors(slice::from_ref(&scissor));
-
-        //         let rasterization_state_cinfo = vk::PipelineRasterizationStateCreateInfo::builder()
-        //                 .depth_clamp_enable(false)
-        //                 .rasterizer_discard_enable(false)
-        //                 .polygon_mode(vk::PolygonMode::FILL)
-        //                 .line_width(1.0)
-        //                 .cull_mode(vk::CullModeFlags::NONE)
-        //                 .front_face(vk::FrontFace::CLOCKWISE)
-        //                 .depth_bias_enable(false)
-        //                 .depth_bias_constant_factor(0.0)
-        //                 .depth_bias_clamp(0.0)
-        //                 .depth_bias_slope_factor(0.0);
-
-        //         let multisample_state_cinfo = vk::PipelineMultisampleStateCreateInfo::builder()
-        //                 .rasterization_samples(swapchain_samples)
-        //                 .sample_shading_enable(false);
-
-        //         let depth_stencil_state_cinfo = vk::PipelineDepthStencilStateCreateInfo::builder()
-        //                 .depth_test_enable(true)
-        //                 .depth_write_enable(true)
-        //                 .depth_compare_op(vk::CompareOp::LESS)
-        //                 .depth_bounds_test_enable(false)
-        //                 .stencil_test_enable(false)
-        //                 .build();
-
-        //         let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::builder()
-        //                 .color_write_mask(vk::ColorComponentFlags::RGBA)
-        //                 .blend_enable(false)
-        //                 .build()];
-
-        //         let color_blend_state_cinfo = vk::PipelineColorBlendStateCreateInfo::builder()
-        //                 .attachments(&color_blend_attachments)
-        //                 .logic_op_enable(false);
-
-        //         let dyn_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        //         let pipeline_dyn_state_cinfo =
-        //                 vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dyn_states);
-
-        //         let graphics_pipeline_cinfo = vk::GraphicsPipelineCreateInfo::builder()
-        //                 .stages(&shader_stages)
-        //                 .vertex_input_state(&vert_input_cinfo)
-        //                 .input_assembly_state(&input_assembly_cinfo)
-        //                 .viewport_state(&viewport_state_cinfo)
-        //                 .rasterization_state(&rasterization_state_cinfo)
-        //                 .multisample_state(&multisample_state_cinfo)
-        //                 .depth_stencil_state(&depth_stencil_state_cinfo)
-        //                 .color_blend_state(&color_blend_state_cinfo)
-        //                 .dynamic_state(&pipeline_dyn_state_cinfo)
-        //                 .layout(**pipeline_layout)
-        //                 .render_pass(render_pass)
-        //                 .subpass(0)
-        //                 .build();
-
-        //         unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
-        // }
 
         fn should_render(&self) -> bool {
                 if self.is_window_minimized() {
@@ -1232,6 +978,9 @@ impl VkRenderer {
                         last_material = mesh.material;
                 } */
 
+                let material = &asset_manager.materials()[mesh.material];
+                let pipeline = *vk_asset_manager.pipelines[material.shader];
+
                 let material_dst_set = vk_asset_manager.material_dst_sets[mesh.material];
                 let positions = &vk_asset_manager.buffer_views[mesh.positions];
                 let normals = &vk_asset_manager.buffer_views[mesh.normals];
@@ -1239,6 +988,8 @@ impl VkRenderer {
                 let indices = &vk_asset_manager.buffer_views[mesh.indices];
 
                 unsafe {
+                        device.cmd_bind_pipeline(draw_cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+
                         let object_matrices_padded_size = pdevice.padded_size_of::<ObjectMatrices>();
                         let object_matrices_buffer_idx = mesh_instance_id.data().as_ffi() as u32 as usize;
                         let object_matrices_buffer_offset = object_matrices_padded_size * object_matrices_buffer_idx;

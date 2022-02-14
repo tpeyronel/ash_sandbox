@@ -66,6 +66,7 @@ impl LogicThread {
                 }
         }
 
+        #[allow(dead_code)]
         pub fn join(self) -> std::thread::Result<()> {
                 self.handle.join()
         }
@@ -166,8 +167,12 @@ impl LogicThread {
 
                 let _light = world
                         .create_entity()
-                        .with(TransformComponent::from_pos(Vec3::new(1.0, 2.0, 0.0)))
-                        .with(ModelComponent(params.asset_manager.get_model_by_name("icosphere")))
+                        .with(TransformComponent {
+                                pos: Vec3::new(1.0, 2.0, 0.0),
+                                orien: UnitQuat::identity(),
+                                scale: Vec3::from_element(0.25),
+                        })
+                        .with(ModelComponent(params.asset_manager.get_model_by_name("lit-icosphere")))
                         .with(LightEmitterComponent {
                                 color: Vec3::new(0.9, 1.0, 0.9),
                         })

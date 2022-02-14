@@ -150,8 +150,10 @@ impl Application {
                         wrap_t: WrappingMode::Repeat,
                 };
 
+                // TODO: improve default shader.
                 let dmaterial = Material {
                         name: Some(String::from("Default Material")),
+                        shader: ShaderId::from(slotmap::KeyData::default()),
                         base_color_factor: Vec4::new(0.8, 0.8, 0.8, 1.0),
                         metallic_factor: 0.0,
                         roughness_factor: 1.0,
@@ -160,17 +162,10 @@ impl Application {
                         normal_texture: None,
                         occlusion_texture: None,
                         emissive_texture: None,
+                        emissive_factor: Vec3::from_element(0.0),
                 };
 
                 let mut asset_manager = AssetManager::new(dsampler, dmaterial);
-                let _model_colt =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/new-colt/colt.gltf"))?;
-                let _model_grass_plane =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
-                let _model_sphere =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/sphere/sphere.gltf"))?;
-                let _model_icosphere =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/icosphere/icosphere.gltf"))?;
 
                 asset_manager.register_shader_resource(
                         "matrices".to_string(),
@@ -208,6 +203,19 @@ impl Application {
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/basic_shader/basic_shader.yaml"))?;
                 let _color_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/color_shader/color_shader.yaml"))?;
+
+
+                let _model_colt =
+                        asset_manager.import_gltf_file(std::path::Path::new("res/model/new-colt/colt.gltf"))?;
+                let _model_grass_plane =
+                        asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
+                let _model_sphere =
+                        asset_manager.import_gltf_file(std::path::Path::new("res/model/sphere/sphere.gltf"))?;
+                let _model_icosphere =
+                        asset_manager.import_gltf_file(std::path::Path::new("res/model/icosphere/icosphere.gltf"))?;
+                let _model_lit_icosphere = asset_manager
+                        .import_gltf_file(std::path::Path::new("res/model/lit-icosphere/lit-icosphere.gltf"))?;
+
 
                 let asset_manager = Arc::new(asset_manager);
                 trace!("Initialized AssetManager");

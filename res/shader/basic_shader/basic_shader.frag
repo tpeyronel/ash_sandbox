@@ -51,6 +51,6 @@ void main() {
 
 
 
-        // float gamma = 2.2;
-        // o_out_color.rgb = pow(o_out_color.rgb, vec3(1.0 / gamma));
+        float gamma = 2.2;
+        o_out_color.rgb = pow(o_out_color.rgb, vec3(1.0 / gamma));
 }

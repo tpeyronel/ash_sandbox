@@ -87,6 +87,8 @@ slotmap::new_key_type! { pub struct MaterialId; }
 pub struct Material {
         pub name: Option<String>,
 
+        pub shader: ShaderId,
+
         pub base_color_factor: Vec4,
         pub metallic_factor: f32,
         pub roughness_factor: f32,
@@ -96,6 +98,7 @@ pub struct Material {
         pub normal_texture: Option<TextureId>,
         pub occlusion_texture: Option<TextureId>,
         pub emissive_texture: Option<TextureId>,
+        pub emissive_factor: Vec3,
 }
 
 slotmap::new_key_type! { pub struct TextureId; }
@@ -405,7 +408,7 @@ impl AssetManager {
                 let sampler_ids = Self::load_samplers(&doc, self.default_sampler, &mut self.samplers);
                 let texture_ids =
                         Self::load_textures(&doc, &image_ids, &sampler_ids, self.default_sampler, &mut self.textures);
-                let material_ids = Self::load_materials(&doc, &texture_ids, &mut self.materials);
+                let material_ids = Self::load_materials(&doc, &self.shader_names, &texture_ids, &mut self.materials);
                 let mesh_groups = Self::load_meshes(
                         &doc,
                         &buffer_view_ids,
@@ -625,33 +628,46 @@ impl AssetManager {
 
         fn load_materials(
                 doc: &gltf::Document,
+                shader_names: &HashMap<String, ShaderId>,
                 texture_ids: &Vec<TextureId>,
                 out_materials: &mut SlotMap<MaterialId, Material>,
         ) -> Vec<MaterialId> {
                 doc.materials()
                         .map(|m| {
                                 // TODO: handle textures better
+                                let pbr_mr = m.pbr_metallic_roughness();
+
+                                let base_color_factor = pbr_mr.base_color_factor().into();
+                                let metallic_factor = pbr_mr.metallic_factor();
+                                let roughness_factor = pbr_mr.roughness_factor();
+                                let base_color_texture =
+                                        pbr_mr.base_color_texture().map(|t| texture_ids[t.texture().index()]);
+                                let metallic_roughness_texture = pbr_mr
+                                        .metallic_roughness_texture()
+                                        .map(|t| texture_ids[t.texture().index()]);
+                                let normal_texture = m.normal_texture().map(|t| texture_ids[t.texture().index()]);
+                                let occlusion_texture = m.occlusion_texture().map(|t| texture_ids[t.texture().index()]);
+                                let emissive_texture = m.emissive_texture().map(|t| texture_ids[t.texture().index()]);
+                                let emissive_factor = Vec3::from_column_slice(&m.emissive_factor());
+
+                                let shader = if emissive_factor.norm_squared() == 0.0 {
+                                        shader_names["basic-shader"]
+                                } else {
+                                        shader_names["color-shader"]
+                                };
 
                                 let mat_id = out_materials.insert(Material {
                                         name: m.name().map(String::from),
-                                        base_color_factor: m.pbr_metallic_roughness().base_color_factor().into(),
-                                        metallic_factor: m.pbr_metallic_roughness().metallic_factor(),
-                                        roughness_factor: m.pbr_metallic_roughness().roughness_factor(),
-                                        base_color_texture: m
-                                                .pbr_metallic_roughness()
-                                                .base_color_texture()
-                                                .map(|t| texture_ids[t.texture().index()]),
-                                        metallic_roughness_texture: m
-                                                .pbr_metallic_roughness()
-                                                .metallic_roughness_texture()
-                                                .map(|t| texture_ids[t.texture().index()]),
-                                        normal_texture: m.normal_texture().map(|t| texture_ids[t.texture().index()]),
-                                        occlusion_texture: m
-                                                .occlusion_texture()
-                                                .map(|t| texture_ids[t.texture().index()]),
-                                        emissive_texture: m
-                                                .emissive_texture()
-                                                .map(|t| texture_ids[t.texture().index()]),
+                                        shader,
+                                        base_color_factor,
+                                        metallic_factor,
+                                        roughness_factor,
+                                        base_color_texture,
+                                        metallic_roughness_texture,
+                                        normal_texture,
+                                        occlusion_texture,
+                                        emissive_texture,
+                                        emissive_factor,
                                 });
 
                                 mat_id

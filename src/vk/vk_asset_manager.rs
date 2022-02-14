@@ -1,6 +1,6 @@
-use std::rc::Rc;
+use std::{ffi::CString, rc::Rc};
 
-use ash::vk;
+use ash::{prelude::VkResult, vk};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 use slotmap::{SecondaryMap, SlotMap};
@@ -13,6 +13,7 @@ use crate::{
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         hashmap::HashMap,
+        my_glm::{Vec2, Vec3},
         util::RefIntoSlice,
         vk::{
                 vk_buffer::{BufferData, VkBuffer, VkImmutableBufferCreateInfo},
@@ -23,7 +24,7 @@ use crate::{
         AnyResult,
 };
 
-use super::vk_wrapper::{VkDescriptorSetLayout, VkShaderModule, VmaAllocator};
+use super::vk_wrapper::{VkDescriptorSetLayout, VkPipeline, VkShaderModule, VmaAllocator};
 
 pub struct VkModelBufferView {
         pub buffer: VkBuffer,
@@ -40,6 +41,8 @@ pub struct VkModelImage {
 pub struct VkShader {
         pub vert_module: VkShaderModule,
         pub frag_module: VkShaderModule,
+        pub vertex_input_bindings: Vec<vk::VertexInputBindingDescription>,
+        pub vertex_input_attributes: Vec<vk::VertexInputAttributeDescription>,
 }
 
 pub struct VkShaderResource {
@@ -54,6 +57,7 @@ pub struct VkAssetManager {
         pub material_dst_sets: SecondaryMap<MaterialId, vk::DescriptorSet>,
         pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
         pub shaders: SecondaryMap<ShaderId, VkShader>,
+        pub pipelines: SecondaryMap<ShaderId, VkPipeline>,
 }
 
 impl VkAssetManager {
@@ -66,6 +70,9 @@ impl VkAssetManager {
                 cmd_pool: Rc<VkCommandPool>,
                 dst_pool: vk::DescriptorPool,
                 material_dst_set_layout: vk::DescriptorSetLayout,
+                swapchain_samples: vk::SampleCountFlags,
+                render_pass: vk::RenderPass,
+                pipeline_layout: vk::PipelineLayout,
                 asset_manager: &AssetManager,
                 frames_in_flight: usize,
         ) -> AnyResult<Self> {
@@ -121,6 +128,15 @@ impl VkAssetManager {
                 trace!("Creating VkShaders...");
                 let vk_shaders = Self::create_vk_shaders_from_shaders(&device, asset_manager.shaders())?;
 
+                trace!("Creating VkPipelines...");
+                let vk_pipelines = Self::create_vk_pipelines_from_vk_shaders(
+                        &device,
+                        swapchain_samples,
+                        render_pass,
+                        pipeline_layout,
+                        &vk_shaders,
+                )?;
+
                 unsafe { cmd_buffer.destroy() };
 
                 Ok(Self {
@@ -130,6 +146,7 @@ impl VkAssetManager {
                         material_dst_sets: vk_material_dst_sets,
                         shader_resources: vk_shader_resources,
                         shaders: vk_shaders,
+                        pipelines: vk_pipelines,
                 })
         }
 
@@ -164,6 +181,10 @@ impl VkAssetManager {
                         }
                 }
                 self.shaders.clear();
+
+                self.pipelines.drain().for_each(|(_, pipeline)| {
+                        unsafe { pipeline.destroy() };
+                });
         }
 
         fn discover_buffer_view_usages(meshes: &SlotMap<MeshId, Mesh>) -> HashMap<BufferViewId, vk::BufferUsageFlags> {
@@ -344,7 +365,14 @@ impl VkAssetManager {
                 let mut material_dst_sets_map = SecondaryMap::new();
 
                 for ((mat_id, mat), &material_dst_set) in materials.iter().zip(&material_dst_sets) {
-                        let color_texture = &textures[mat.base_color_texture.unwrap()];
+                        material_dst_sets_map.insert(mat_id, material_dst_set);
+
+                        let base_color_texture = match mat.base_color_texture {
+                                Some(t) => t,
+                                None => continue,
+                        };
+
+                        let color_texture = &textures[base_color_texture];
                         let color_vk_image_view = &vk_images[color_texture.image].image_view;
                         let color_vk_sampler = &vk_samplers[color_texture.sampler];
 
@@ -374,8 +402,6 @@ impl VkAssetManager {
                                 .build();
 
                         unsafe { device.update_descriptor_sets(&[image_dst_set_write, sampler_dst_set_write], &[]) };
-
-                        material_dst_sets_map.insert(mat_id, material_dst_set);
                 }
 
                 Ok(material_dst_sets_map)
@@ -438,13 +464,179 @@ impl VkAssetManager {
                         let vert_module = VkShaderModule::from_code(device, &shader.vert_module.bin)?;
                         let frag_module = VkShaderModule::from_code(device, &shader.frag_module.bin)?;
 
-                        vk_shaders.insert(shader_id, VkShader {
-                                vert_module,
-                                frag_module,
-                        });
+                        let mut vertex_input_bindings = Vec::new();
+                        let mut vertex_input_attributes = Vec::new();
+
+                        for (i, vertex_input) in shader.vertex_inputs.iter().enumerate() {
+                                let mut binding = vk::VertexInputBindingDescription::builder().binding(i as u32);
+                                let mut attribute = vk::VertexInputAttributeDescription::builder()
+                                        .binding(i as u32)
+                                        .location(i as u32)
+                                        .offset(0);
+
+                                match vertex_input.as_str() {
+                                        "positions" => {
+                                                binding = binding.stride(std::mem::size_of::<Vec3>() as u32);
+                                                binding = binding.input_rate(vk::VertexInputRate::VERTEX);
+                                                attribute = attribute.format(vk::Format::R32G32B32_SFLOAT);
+                                        },
+                                        "normals" => {
+                                                binding = binding.stride(std::mem::size_of::<Vec3>() as u32);
+                                                binding = binding.input_rate(vk::VertexInputRate::VERTEX);
+                                                attribute = attribute.format(vk::Format::R32G32B32_SFLOAT);
+                                        },
+                                        "texture-coordinates" => {
+                                                binding = binding.stride(std::mem::size_of::<Vec2>() as u32);
+                                                binding = binding.input_rate(vk::VertexInputRate::VERTEX);
+                                                attribute = attribute.format(vk::Format::R32G32_SFLOAT);
+                                        },
+                                        _ => panic!("Invalid shader vertex input: {}", vertex_input),
+                                }
+
+                                vertex_input_bindings.push(binding.build());
+                                vertex_input_attributes.push(attribute.build());
+                        }
+
+                        vk_shaders.insert(
+                                shader_id,
+                                VkShader {
+                                        vert_module,
+                                        frag_module,
+                                        vertex_input_bindings,
+                                        vertex_input_attributes,
+                                },
+                        );
                 }
 
                 Ok(vk_shaders)
+        }
+
+        fn create_vk_pipelines_from_vk_shaders(
+                device: &Rc<VkDevice>,
+                swapchain_samples: vk::SampleCountFlags,
+                render_pass: vk::RenderPass,
+                pipeline_layout: vk::PipelineLayout,
+                vk_shaders: &SecondaryMap<ShaderId, VkShader>,
+        ) -> AnyResult<SecondaryMap<ShaderId, VkPipeline>> {
+                let mut vk_pipelines = SecondaryMap::new();
+
+                for (shader_id, vk_shader) in vk_shaders {
+                        vk_pipelines.insert(
+                                shader_id,
+                                Self::create_graphics_pipeline_from_vk_shader(
+                                        device,
+                                        swapchain_samples,
+                                        render_pass,
+                                        pipeline_layout,
+                                        vk_shader,
+                                )?,
+                        );
+                }
+
+                Ok(vk_pipelines)
+        }
+
+        fn create_graphics_pipeline_from_vk_shader(
+                device: &Rc<VkDevice>,
+                swapchain_samples: vk::SampleCountFlags,
+                render_pass: vk::RenderPass,
+                pipeline_layout: vk::PipelineLayout,
+                shader: &VkShader,
+        ) -> VkResult<VkPipeline> {
+                let entry_point = CString::new("main").unwrap();
+
+                let shader_stages = [
+                        vk::PipelineShaderStageCreateInfo::builder()
+                                .stage(vk::ShaderStageFlags::VERTEX)
+                                .module(*shader.vert_module)
+                                .name(&entry_point)
+                                .build(),
+                        vk::PipelineShaderStageCreateInfo::builder()
+                                .stage(vk::ShaderStageFlags::FRAGMENT)
+                                .module(*shader.frag_module)
+                                .name(&entry_point)
+                                .build(),
+                ];
+
+                let vert_input_cinfo = vk::PipelineVertexInputStateCreateInfo::builder()
+                        .vertex_binding_descriptions(&shader.vertex_input_bindings)
+                        .vertex_attribute_descriptions(&shader.vertex_input_attributes);
+
+                let input_assembly_cinfo = vk::PipelineInputAssemblyStateCreateInfo::builder()
+                        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                        .primitive_restart_enable(false);
+
+                let viewport = vk::Viewport {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1.0,
+                        height: 1.0,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                };
+
+                let scissor = vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D { width: 1, height: 1 },
+                };
+
+                let viewport_state_cinfo = vk::PipelineViewportStateCreateInfo::builder()
+                        .viewports(viewport.ref_into_slice())
+                        .scissors(scissor.ref_into_slice());
+
+                let rasterization_state_cinfo = vk::PipelineRasterizationStateCreateInfo::builder()
+                        .depth_clamp_enable(false)
+                        .rasterizer_discard_enable(false)
+                        .polygon_mode(vk::PolygonMode::FILL)
+                        .line_width(1.0)
+                        .cull_mode(vk::CullModeFlags::BACK)
+                        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                        .depth_bias_enable(false)
+                        .depth_bias_constant_factor(0.0)
+                        .depth_bias_clamp(0.0)
+                        .depth_bias_slope_factor(0.0);
+
+                let multisample_state_cinfo = vk::PipelineMultisampleStateCreateInfo::builder()
+                        .rasterization_samples(swapchain_samples)
+                        .sample_shading_enable(false);
+
+                let depth_stencil_state_cinfo = vk::PipelineDepthStencilStateCreateInfo::builder()
+                        .depth_test_enable(true)
+                        .depth_write_enable(true)
+                        .depth_compare_op(vk::CompareOp::LESS)
+                        .depth_bounds_test_enable(false)
+                        .stencil_test_enable(false)
+                        .build();
+
+                let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::builder()
+                        .color_write_mask(vk::ColorComponentFlags::RGBA)
+                        .blend_enable(false)
+                        .build()];
+
+                let color_blend_state_cinfo = vk::PipelineColorBlendStateCreateInfo::builder()
+                        .attachments(&color_blend_attachments)
+                        .logic_op_enable(false);
+
+                let dyn_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+                let pipeline_dyn_state_cinfo =
+                        vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dyn_states);
+
+                let graphics_pipeline_cinfo = vk::GraphicsPipelineCreateInfo::builder()
+                        .stages(&shader_stages)
+                        .vertex_input_state(&vert_input_cinfo)
+                        .input_assembly_state(&input_assembly_cinfo)
+                        .viewport_state(&viewport_state_cinfo)
+                        .rasterization_state(&rasterization_state_cinfo)
+                        .multisample_state(&multisample_state_cinfo)
+                        .depth_stencil_state(&depth_stencil_state_cinfo)
+                        .color_blend_state(&color_blend_state_cinfo)
+                        .dynamic_state(&pipeline_dyn_state_cinfo)
+                        .layout(pipeline_layout)
+                        .render_pass(render_pass)
+                        .subpass(0)
+                        .build();
+
+                unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
         }
 
         fn vk_format_from_component_and_data_type(comp_type: ComponentType, data_type: DataType) -> vk::Format {
