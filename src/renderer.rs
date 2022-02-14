@@ -1,17 +1,31 @@
+use slotmap::{SecondaryMap, SlotMap};
 use specs::Entity;
 
-use crate::{asset_manager::ModelId, hashmap::HashMap, logic_thread::ProjectionCameraComponent, my_glm::*, AnyResult};
+use crate::{
+        asset_manager::{MeshId, ModelId},
+        hashmap::HashMap,
+        logic_thread::{ModelComponent, ProjectionCameraComponent, TransformComponent},
+        my_glm::*,
+        AnyResult,
+};
+
+slotmap::new_key_type! { pub struct ModelInstanceId; }
 
 #[derive(Debug, Clone)]
 pub struct ModelInstance {
         pub model_id: ModelId,
-        pub pos: Vec3,
-        pub orien: UnitQuat,
-        pub scale: Vec3,
+        pub mesh_instances: Vec<MeshInstanceId>,
+        pub children: Vec<ModelInstanceId>,
+        pub transform: TransformComponent,
 }
 
-#[derive(Clone, Copy, Debug, Hash, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ModelInstanceId(pub Entity);
+slotmap::new_key_type! { pub struct MeshInstanceId; }
+
+#[derive(Debug, Clone)]
+pub struct MeshInstance {
+        pub mesh_id: MeshId,
+        pub transform: TransformComponent,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct LightPos(pub Vec3);
@@ -21,7 +35,16 @@ pub struct LightColor(pub Vec3);
 
 pub trait Renderer {
         // fn draw(&mut self, cam: &mut Camera, imgui_draw_data: &imgui::DrawData) -> AnyResult<()>;
-        fn draw(&mut self, render_state: &RenderState, player_orien: &UnitQuat, imgui_draw_data: &imgui::DrawData) -> AnyResult<()>;
+        fn draw(
+                &mut self,
+                mesh_instances: &SlotMap<MeshInstanceId, MeshInstance>,
+                model_instances: &SlotMap<ModelInstanceId, ModelInstance>,
+                model_instances_index: &HashMap<Entity, ModelInstanceId>,
+                transform_manager: &TransformManager,
+                render_state: &RenderState,
+                player_orien: &UnitQuat,
+                imgui_draw_data: &imgui::DrawData,
+        ) -> AnyResult<()>;
         fn on_window_resize(&mut self, width: u32, height: u32);
         fn destroy(&mut self) -> AnyResult<()>;
 
@@ -36,7 +59,7 @@ pub trait Renderer {
 pub struct RenderState {
         pub camera_pos: Vec3,
         pub proj_camera: ProjectionCameraComponent,
-        pub model_instances: HashMap<ModelInstanceId, ModelInstance>,
+        pub model_instances: HashMap<Entity, (TransformComponent, ModelComponent)>,
         pub lights: HashMap<Entity, (LightPos, LightColor)>,
 }
 
@@ -54,11 +77,17 @@ impl RenderState {
                 let camera_pos = Vec3::lerp(&old.camera_pos, &new.camera_pos, t);
 
                 let mut model_instances = new.model_instances.clone();
-                for (model_instance_id, new_instance) in &mut model_instances {
-                        if let Some(old_instance) = old.model_instances.get(model_instance_id) {
-                                new_instance.pos = Vec3::lerp(&old_instance.pos, &new_instance.pos, t);
-                                new_instance.orien = UnitQuat::nlerp(&old_instance.orien, &new_instance.orien, t);
-                                new_instance.scale = Vec3::lerp(&old_instance.scale, &new_instance.scale, t);
+                for (model_instance_id, (new_instance_transform, _)) in &mut model_instances {
+                        if let Some((old_instance_transform, _)) = old.model_instances.get(model_instance_id) {
+                                new_instance_transform.pos =
+                                        Vec3::lerp(&old_instance_transform.pos, &new_instance_transform.pos, t);
+                                new_instance_transform.orien = UnitQuat::nlerp(
+                                        &old_instance_transform.orien,
+                                        &new_instance_transform.orien,
+                                        t,
+                                );
+                                new_instance_transform.scale =
+                                        Vec3::lerp(&old_instance_transform.scale, &new_instance_transform.scale, t);
                         }
                 }
 
@@ -78,3 +107,85 @@ impl RenderState {
                 }
         }
 }
+
+slotmap::new_key_type! {
+        pub struct TransformId;
+}
+
+pub struct TransformManager {
+        transforms: Vec<SecondaryMap<MeshInstanceId, Mat4>>,
+        update_index: usize,
+}
+
+impl TransformManager {
+        pub fn new(update_history: usize) -> Self {
+                Self {
+                        transforms: vec![SecondaryMap::new(); update_history],
+                        update_index: update_history - 1,
+                }
+        }
+
+        pub fn on_update(&mut self) {
+                self.update_index = (self.update_index + 1) % self.transforms.len();
+                self.transforms[self.update_index].clear();
+        }
+
+        pub fn set_transform(&mut self, mesh_instance_id: MeshInstanceId, transform: &Mat4) {
+                self.transforms[self.update_index].insert(mesh_instance_id, *transform);
+        }
+
+        pub fn get_transform(&self, mesh_instance_id: MeshInstanceId) -> &Mat4 {
+                &self.transforms[self.update_index][mesh_instance_id]
+        }
+
+        pub fn iter(&self) -> impl Iterator<Item = (MeshInstanceId, &Mat4)> + '_ {
+                let split_index = (self.update_index + 1) % self.transforms.len();
+                let (new, old) = self.transforms.split_at(split_index);
+
+                old.iter().chain(new.iter()).flatten()
+        }
+}
+
+// pub struct ModelTransformManager {
+//         transforms: Vec<Mat4>,
+//         indices: HashMap<ModelInstanceId, usize>,
+// }
+
+// impl ModelTransformManager {
+//         pub fn new() -> Self {
+//                 Self {
+//                         transforms: Vec::new(),
+//                         indices: HashMap::new(),
+//                 }
+//         }
+
+//         pub fn update(&mut self) {
+//                 self.transforms.clear();
+//                 self.indices.clear();
+//         }
+
+//         pub fn set_transform(&mut self, id: &ModelInstanceId, transform: Mat4) {
+//                 match self.indices.get(id) {
+//                         Some(&i) => {
+//                                 self.transforms[i] = transform;
+//                         },
+//                         None => {
+//                                 self.indices.insert(*id, self.transforms.len());
+//                                 self.transforms.push(transform);
+//                         },
+//                 }
+//         }
+
+//         pub fn for_each_transform(&self, mut f: impl FnMut(usize, &Mat4)) {
+//                 for (_, &i) in &self.indices {
+//                         f(i, &self.transforms[i]);
+//                 }
+//         }
+
+//         // pub fn iter(&self) -> impl Iterator<Item = (&ModelInstanceId, &TransformComponent)> + '_ {
+//         //         let split_index = (self.update_index + 1) % self.update_history;
+//         //         let (new, old) = self.transforms_history.split_at(split_index);
+
+//         //         old.iter().chain(new.iter()).flatten()
+//         // }
+// }

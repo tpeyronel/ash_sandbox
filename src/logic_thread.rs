@@ -21,7 +21,7 @@ use crate::{
         input_manager::ActionReceiver,
         my_glm::{Mat4, Quat, UnitQuat, Vec3},
         render_state_switcher::RenderStateSwitcher,
-        renderer::{LightColor, LightPos, ModelInstance, ModelInstanceId, RenderState},
+        renderer::{LightColor, LightPos, RenderState},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -365,6 +365,12 @@ impl Default for TransformComponent {
 }
 
 impl TransformComponent {
+        pub fn to_matrix(&self) -> Mat4 {
+                Mat4::new_translation(&self.pos)
+                        * UnitQuat::to_homogeneous(&self.orien)
+                        * Mat4::new_nonuniform_scaling(&self.scale)
+        }
+
         pub fn from_pos(pos: Vec3) -> Self {
                 Self {
                         pos,
@@ -415,9 +421,9 @@ impl Component for ChildrenComponent {
         type Storage = FlaggedStorage<Self, VecStorage<Self>>;
 }
 
-#[derive(Debug, Component)]
+#[derive(Debug, Component, Clone, Copy)]
 #[storage(DenseVecStorage)]
-struct ModelComponent(ModelId);
+pub struct ModelComponent(pub ModelId);
 
 #[derive(Debug, Component)]
 #[storage(VecStorage)]
@@ -584,16 +590,8 @@ impl<'a> specs::System<'a> for RenderStateGeneratorSystem {
                 render_state.proj_camera = proj_cams.get(active_cam.0).unwrap().clone();
 
                 render_state.model_instances.clear();
-                for (e, model, transform) in (&entities, &mdl_strg, &transforms).join() {
-                        render_state.model_instances.insert(
-                                ModelInstanceId(e),
-                                ModelInstance {
-                                        model_id: model.0,
-                                        pos: transform.pos,
-                                        orien: transform.orien,
-                                        scale: transform.scale,
-                                },
-                        );
+                for (e, &model, &transform) in (&entities, &mdl_strg, &transforms).join() {
+                        render_state.model_instances.insert(e, (transform, model));
                 }
 
                 render_state.lights.clear();

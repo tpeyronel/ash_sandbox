@@ -5,15 +5,17 @@ use std::{
         time::Instant,
 };
 
-use specs::{DispatcherBuilder, ReadExpect, WriteStorage};
+use slotmap::SlotMap;
+use specs::{DispatcherBuilder, Entity, ReadExpect, WriteStorage};
 use tps_counter::TPSCounter;
 
 use crate::{
         actions::*,
         application_config::ApplicationConfig,
         asset_manager::*,
-        constants::{FONT_SIZE, ROTATION_PER_SECOND},
+        constants::{FONT_SIZE, MAX_CONCURRENT_FRAMES, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
+        hashmap::HashMap,
         input_manager::{
                 ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType,
         },
@@ -23,7 +25,9 @@ use crate::{
         },
         my_glm::*,
         render_state_switcher::RenderStateSwitcher,
-        renderer::{RenderState, Renderer},
+        renderer::{
+                MeshInstance, MeshInstanceId, ModelInstance, ModelInstanceId, RenderState, Renderer, TransformManager,
+        },
         vk::vk_renderer::VkRenderer,
         AnyResult,
 };
@@ -52,8 +56,13 @@ pub struct Application {
         action_receiver: ActionReceiver,
         asset_manager: Arc<AssetManager>,
 
+        mesh_instances: SlotMap<MeshInstanceId, MeshInstance>,
+        model_instances: SlotMap<ModelInstanceId, ModelInstance>,
+        model_instances_index: HashMap<Entity, ModelInstanceId>,
+
         render_state_manager: RenderStateManager,
         renderer: VkRenderer,
+        transform_manager: TransformManager,
 
         player_orien: EulerAngles,
         player_camera_enabled: bool,
@@ -86,11 +95,11 @@ impl Application {
                         .build(&event_loop)?);
                 trace!("Created window");
 
-                let mut imgui_state = Self::init_imgui(&window);
+                let mut imgui_context = Self::init_imgui(&window);
 
                 let window_state = WindowState::new(
                         &window,
-                        imgui_state.context.io_mut(),
+                        imgui_context.context.io_mut(),
                         WindowMode::Windowed,
                         fullscreen_video_mode,
                         CursorState::Normal,
@@ -206,8 +215,11 @@ impl Application {
                 let render_state_switcher = Arc::new(Mutex::new(RenderStateSwitcher::new()));
                 let render_state_manager = RenderStateManager::new(Arc::clone(&render_state_switcher));
 
-                let renderer =
-                        VkRenderer::new(Rc::clone(&window), &mut imgui_state.context, Arc::clone(&asset_manager))?;
+                let renderer = VkRenderer::new(
+                        Rc::clone(&window),
+                        &mut imgui_context.context,
+                        Arc::clone(&asset_manager),
+                )?;
 
                 let (logic_thread_tx, logic_thread_rx) = std::sync::mpsc::channel();
                 let (window_thread_tx, window_thread_rx) = std::sync::mpsc::channel();
@@ -247,14 +259,19 @@ impl Application {
                         window_state,
                         window_thread_rx,
                         logic_thread_tx,
-                        imgui_context: imgui_state,
+                        imgui_context,
                         input_manager,
                         dispatch_actions,
                         action_receiver,
                         asset_manager,
 
+                        mesh_instances: SlotMap::with_key(),
+                        model_instances: SlotMap::with_key(),
+                        model_instances_index: HashMap::new(),
+
                         render_state_manager,
                         renderer,
+                        transform_manager: TransformManager::new(MAX_CONCURRENT_FRAMES),
 
                         player_orien: EulerAngles::new(0.0, 0.0, 0.0),
                         player_camera_enabled: false,
@@ -389,6 +406,9 @@ impl Application {
                         .expect("Failed to send command to logic thread!");
 
                 if let Some(render_state) = self.render_state_manager.get_render_state(self.target_ticktime) {
+                        self.transform_manager.on_update();
+                        self.update_instance_transforms(&render_state);
+
                         let imgui_ui = Self::build_imgui_ui(
                                 &mut self.imgui_context,
                                 &self.window,
@@ -397,11 +417,119 @@ impl Application {
                                 &mut self.player_transform,
                         )?;
 
-                        self.renderer
-                                .draw(&render_state, &self.player_orien.to_quat(), imgui_ui.render())?;
+                        self.renderer.draw(
+                                &self.mesh_instances,
+                                &self.model_instances,
+                                &self.model_instances_index,
+                                &self.transform_manager,
+                                &render_state,
+                                &self.player_orien.to_quat(),
+                                imgui_ui.render(),
+                        )?;
                 }
 
                 Ok(())
+        }
+
+        fn update_instance_transforms(&mut self, render_state: &RenderState) {
+                let mut matrix_stack = MatrixStack::new();
+
+                for (entity, (minstance_transform, minstance_model)) in &render_state.model_instances {
+                        let minstance_id = match self.model_instances_index.get(entity) {
+                                Some(&minstance_id) => minstance_id,
+                                None => {
+                                        let minstance_id = Self::create_model_instance(
+                                                &self.asset_manager,
+                                                &mut self.mesh_instances,
+                                                &mut self.model_instances,
+                                                minstance_model.0,
+                                                *minstance_transform,
+                                        );
+                                        self.model_instances_index.insert(*entity, minstance_id);
+
+                                        minstance_id
+                                },
+                        };
+
+                        self.model_instances[minstance_id].transform = *minstance_transform;
+                        let minstance = &self.model_instances[minstance_id];
+
+                        Self::process_model_instance(
+                                &mut matrix_stack,
+                                &mut self.transform_manager,
+                                &self.asset_manager,
+                                &self.model_instances,
+                                minstance,
+                        );
+                }
+        }
+
+        fn create_model_instance(
+                asset_manager: &AssetManager,
+                mesh_instances: &mut SlotMap<MeshInstanceId, MeshInstance>,
+                model_instances: &mut SlotMap<ModelInstanceId, ModelInstance>,
+                model_id: ModelId,
+                transform: TransformComponent,
+        ) -> ModelInstanceId {
+                let model = &asset_manager.models()[model_id];
+
+                let mut mesh_instance_ids = Vec::new();
+                for &mesh_id in &model.meshes {
+                        let mesh = &asset_manager.meshes()[mesh_id];
+                        let mesh_instance_id = mesh_instances.insert(MeshInstance {
+                                mesh_id,
+                                transform: TransformComponent::default(),
+                        });
+                        mesh_instance_ids.push(mesh_instance_id);
+                }
+
+                let mut child_model_instance_ids = Vec::new();
+                for &child_model_id in &model.children {
+                        child_model_instance_ids.push(Self::create_model_instance(
+                                asset_manager,
+                                mesh_instances,
+                                model_instances,
+                                child_model_id,
+                                TransformComponent::default(),
+                        ));
+                }
+
+                let model_instance = ModelInstance {
+                        model_id,
+                        mesh_instances: mesh_instance_ids,
+                        children: child_model_instance_ids,
+                        transform,
+                };
+
+                model_instances.insert(model_instance)
+        }
+
+        fn process_model_instance(
+                matrix_stack: &mut MatrixStack,
+                transform_manager: &mut TransformManager,
+                asset_manager: &AssetManager,
+                model_instances: &SlotMap<ModelInstanceId, ModelInstance>,
+                model_instance: &ModelInstance,
+        ) {
+                matrix_stack.push(model_instance.transform.to_matrix());
+                let transform = matrix_stack.push(asset_manager.models()[model_instance.model_id].base_transform);
+
+                for &mesh_instance_id in &model_instance.mesh_instances {
+                        transform_manager.set_transform(mesh_instance_id, &transform);
+                }
+
+                for &child_model_instance_id in &model_instance.children {
+                        Self::process_model_instance(
+                                matrix_stack,
+                                transform_manager,
+                                asset_manager,
+                                model_instances,
+                                &model_instances[child_model_instance_id],
+                        );
+                }
+
+                matrix_stack.pop();
+                matrix_stack.pop();
         }
 
         fn build_imgui_ui<'a>(
@@ -721,5 +849,30 @@ impl RenderStateManager {
                         (None, Some(new_render_state)) => Some(RenderState::clone(new_render_state)),
                         _ => None,
                 }
+        }
+}
+
+struct MatrixStack {
+        stack: Vec<Mat4>,
+}
+
+impl MatrixStack {
+        fn new() -> Self {
+                Self { stack: Vec::new() }
+        }
+
+        fn push(&mut self, matrix: Mat4) -> Mat4 {
+                let transformed = match self.stack.last() {
+                        Some(l) => l * matrix,
+                        None => matrix,
+                };
+
+                self.stack.push(transformed);
+
+                transformed
+        }
+
+        fn pop(&mut self) {
+                self.stack.pop().expect("Tried to pop matrix of empty MatrixStack!");
         }
 }
