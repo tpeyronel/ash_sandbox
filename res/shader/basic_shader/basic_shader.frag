@@ -37,11 +37,11 @@ void main() {
         float diffuse_angle = max(dot(-light_dir, normal), 0.0);
         vec4 diffuse = diffuse_angle * u_light.color;
 
-        float specular_strength = 0.5;
-        vec3 reflected_light_dir = reflect(light_dir, normal);
         vec3 camera_rdir = normalize(u_world_matrices.view_pos.xyz - i_frag_pos);
-        float specular_angle = max(dot(reflected_light_dir, camera_rdir), 0.0);
-        float specular_coefficient = pow(specular_angle, 32.0);
+        vec3 halfway = normalize(camera_rdir - light_dir);
+        float specular_strength = 0.5;
+        float specular_angle = max(dot(halfway, normal), 0.0);
+        float specular_coefficient = pow(specular_angle, 64.0);
         vec4 specular = (specular_strength * specular_coefficient) * u_light.color;
 
         vec4 texture = texture(sampler2D(u_texture, u_sampler), i_tex_coord);

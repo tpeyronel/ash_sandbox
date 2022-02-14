@@ -169,7 +169,7 @@ impl LogicThread {
                         .with(TransformComponent::from_pos(Vec3::new(1.0, 2.0, 0.0)))
                         .with(ModelComponent(params.asset_manager.get_model_by_name("icosphere")))
                         .with(LightEmitterComponent {
-                                color: Vec3::new(1.0, 0.8, 0.8),
+                                color: Vec3::new(0.9, 1.0, 0.9),
                         })
                         .with(ModelRotateComponent(45f32.to_radians()))
                         .build();
