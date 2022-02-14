@@ -6,12 +6,12 @@ use std::{
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
+use slotmap::SlotMap;
 use thiserror::Error;
 
 use crate::{
         hashmap::{GetOrInsert, HashMap},
         my_glm::*,
-        vec_map::{VecMap, VecMapKey},
 };
 
 /*enum ComponentType {
@@ -36,6 +36,8 @@ enum DataType {
 pub type ComponentType = gltf::accessor::DataType;
 pub type DataType = gltf::accessor::Dimensions;
 
+slotmap::new_key_type! { pub struct ModelId; }
+
 #[derive(Debug)]
 pub struct Model {
         pub name: Option<String>,
@@ -45,6 +47,8 @@ pub struct Model {
 }
 
 pub struct MeshGroup(Vec<MeshId>);
+
+slotmap::new_key_type! { pub struct MeshId; }
 
 #[derive(Debug)]
 pub struct Mesh {
@@ -57,6 +61,8 @@ pub struct Mesh {
         pub bounding_box: BoundingBox,
 }
 
+slotmap::new_key_type! { pub struct BufferViewId; }
+
 #[derive(Debug)]
 pub struct BufferView {
         pub buffer_id: BufferId,
@@ -67,11 +73,15 @@ pub struct BufferView {
         pub element_count: usize,
 }
 
+slotmap::new_key_type! { pub struct BufferId; }
+
 #[derive(Debug)]
 pub struct Buffer {
         pub bytes: Vec<u8>,
         pub byte_length: usize,
 }
+
+slotmap::new_key_type! { pub struct MaterialId; }
 
 #[derive(Debug)]
 pub struct Material {
@@ -88,6 +98,8 @@ pub struct Material {
         pub emissive_texture: Option<TextureId>,
 }
 
+slotmap::new_key_type! { pub struct TextureId; }
+
 #[derive(Debug)]
 pub struct Texture {
         pub name: Option<String>,
@@ -96,6 +108,9 @@ pub struct Texture {
 }
 
 pub type ImageFormat = gltf::image::Format;
+
+slotmap::new_key_type! { pub struct ImageId; }
+
 #[derive(Debug)]
 pub struct Image {
         //name: Option<String>,
@@ -108,6 +123,8 @@ pub struct Image {
 pub type MagFilter = gltf::texture::MagFilter;
 pub type MinFilter = gltf::texture::MinFilter;
 pub type WrappingMode = gltf::texture::WrappingMode;
+
+slotmap::new_key_type! { pub struct SamplerId; }
 
 #[derive(Debug)]
 pub struct Sampler {
@@ -135,6 +152,8 @@ pub struct ShaderDeclaration {
 }
 
 pub type ShaderResourceId = String;
+
+slotmap::new_key_type! { pub struct ShaderId; }
 
 #[derive(Debug)]
 pub struct Shader {
@@ -210,18 +229,6 @@ impl From<ShaderResourceElementType> for ash::vk::DescriptorType {
                 }
         }
 }
-
-new_vec_map_keys!(
-        ModelId,
-        MeshId,
-        BufferId,
-        BufferViewId,
-        MaterialId,
-        TextureId,
-        ImageId,
-        SamplerId,
-        ShaderId,
-);
 
 #[derive(Debug)]
 pub struct BoundingBox {
@@ -304,19 +311,19 @@ impl AssetManagerBuilder {
 } */
 
 pub struct AssetManager {
-        buffers: VecMap<BufferId, Buffer>,
-        buffer_views: VecMap<BufferViewId, BufferView>,
-        images: VecMap<ImageId, Image>,
+        buffers: SlotMap<BufferId, Buffer>,
+        buffer_views: SlotMap<BufferViewId, BufferView>,
+        images: SlotMap<ImageId, Image>,
         image_path_map: HashMap<PathBuf, ImageId>,
-        samplers: VecMap<SamplerId, Sampler>,
-        textures: VecMap<TextureId, Texture>,
-        materials: VecMap<MaterialId, Material>,
-        meshes: VecMap<MeshId, Mesh>,
-        models: VecMap<ModelId, Model>,
+        samplers: SlotMap<SamplerId, Sampler>,
+        textures: SlotMap<TextureId, Texture>,
+        materials: SlotMap<MaterialId, Material>,
+        meshes: SlotMap<MeshId, Mesh>,
+        models: SlotMap<ModelId, Model>,
         root_models: HashMap<String, ModelId>,
 
         shader_resources: HashMap<ShaderResourceId, ShaderResource>,
-        shaders: VecMap<ShaderId, Shader>,
+        shaders: SlotMap<ShaderId, Shader>,
         shader_names: HashMap<String, ShaderId>,
 
         default_sampler: SamplerId,
@@ -325,26 +332,26 @@ pub struct AssetManager {
 
 impl AssetManager {
         pub fn new(default_sampler: Sampler, default_material: Material) -> Self {
-                let mut samplers = VecMap::new();
+                let mut samplers = SlotMap::with_key();
                 let default_sampler = samplers.insert(default_sampler);
 
-                let mut materials = VecMap::new();
+                let mut materials = SlotMap::with_key();
                 let default_material = materials.insert(default_material);
 
                 Self {
-                        buffers: VecMap::new(),
-                        buffer_views: VecMap::new(),
-                        images: VecMap::new(),
+                        buffers: SlotMap::with_key(),
+                        buffer_views: SlotMap::with_key(),
+                        images: SlotMap::with_key(),
                         image_path_map: HashMap::new(),
                         samplers,
-                        textures: VecMap::new(),
-                        materials: VecMap::new(),
-                        meshes: VecMap::new(),
-                        models: VecMap::new(),
+                        textures: SlotMap::with_key(),
+                        materials: SlotMap::with_key(),
+                        meshes: SlotMap::with_key(),
+                        models: SlotMap::with_key(),
                         root_models: HashMap::new(),
 
                         shader_resources: HashMap::new(),
-                        shaders: VecMap::new(),
+                        shaders: SlotMap::with_key(),
                         shader_names: HashMap::new(),
 
                         default_sampler,
@@ -417,42 +424,42 @@ impl AssetManager {
         }
 
         #[allow(dead_code)]
-        pub fn buffers(&self) -> &VecMap<BufferId, Buffer> {
+        pub fn buffers(&self) -> &SlotMap<BufferId, Buffer> {
                 &self.buffers
         }
 
         #[allow(dead_code)]
-        pub fn buffer_views(&self) -> &VecMap<BufferViewId, BufferView> {
+        pub fn buffer_views(&self) -> &SlotMap<BufferViewId, BufferView> {
                 &self.buffer_views
         }
 
         #[allow(dead_code)]
-        pub fn images(&self) -> &VecMap<ImageId, Image> {
+        pub fn images(&self) -> &SlotMap<ImageId, Image> {
                 &self.images
         }
 
         #[allow(dead_code)]
-        pub fn samplers(&self) -> &VecMap<SamplerId, Sampler> {
+        pub fn samplers(&self) -> &SlotMap<SamplerId, Sampler> {
                 &self.samplers
         }
 
         #[allow(dead_code)]
-        pub fn textures(&self) -> &VecMap<TextureId, Texture> {
+        pub fn textures(&self) -> &SlotMap<TextureId, Texture> {
                 &self.textures
         }
 
         #[allow(dead_code)]
-        pub fn materials(&self) -> &VecMap<MaterialId, Material> {
+        pub fn materials(&self) -> &SlotMap<MaterialId, Material> {
                 &self.materials
         }
 
         #[allow(dead_code)]
-        pub fn meshes(&self) -> &VecMap<MeshId, Mesh> {
+        pub fn meshes(&self) -> &SlotMap<MeshId, Mesh> {
                 &self.meshes
         }
 
         #[allow(dead_code)]
-        pub fn models(&self) -> &VecMap<ModelId, Model> {
+        pub fn models(&self) -> &SlotMap<ModelId, Model> {
                 &self.models
         }
 
@@ -462,7 +469,7 @@ impl AssetManager {
         }
 
         #[allow(dead_code)]
-        pub fn shaders(&self) -> &VecMap<ShaderId, Shader> {
+        pub fn shaders(&self) -> &SlotMap<ShaderId, Shader> {
                 &self.shaders
         }
 
@@ -478,7 +485,7 @@ impl AssetManager {
 
         fn load_buffers(
                 buffers_data: Vec<gltf::buffer::Data>,
-                out_buffers: &mut VecMap<BufferId, Buffer>,
+                out_buffers: &mut SlotMap<BufferId, Buffer>,
         ) -> Vec<BufferId> {
                 buffers_data
                         .into_iter()
@@ -497,7 +504,7 @@ impl AssetManager {
         fn load_buffer_views(
                 doc: &gltf::Document,
                 buffer_ids: &Vec<BufferId>,
-                out_buffer_views: &mut VecMap<BufferViewId, BufferView>,
+                out_buffer_views: &mut SlotMap<BufferViewId, BufferView>,
         ) -> Result<Vec<BufferViewId>, GLTFImportError> {
                 doc.accessors()
                         .map(|a| {
@@ -528,7 +535,7 @@ impl AssetManager {
                 doc: &gltf::Document,
                 images: Vec<gltf::image::Data>,
                 image_path_map: &mut HashMap<PathBuf, ImageId>,
-                out_images: &mut VecMap<ImageId, Image>,
+                out_images: &mut SlotMap<ImageId, Image>,
         ) -> Result<Vec<ImageId>, GLTFImportError> {
                 images.into_iter()
                         .zip(doc.images())
@@ -579,7 +586,7 @@ impl AssetManager {
         fn load_samplers(
                 doc: &gltf::Document,
                 default_sampler: SamplerId,
-                out_samplers: &mut VecMap<SamplerId, Sampler>,
+                out_samplers: &mut SlotMap<SamplerId, Sampler>,
         ) -> Vec<SamplerId> {
                 doc.samplers()
                         .map(|s| {
@@ -601,7 +608,7 @@ impl AssetManager {
                 image_ids: &Vec<ImageId>,
                 sampler_ids: &Vec<SamplerId>,
                 default_sampler: SamplerId,
-                out_textures: &mut VecMap<TextureId, Texture>,
+                out_textures: &mut SlotMap<TextureId, Texture>,
         ) -> Vec<TextureId> {
                 doc.textures()
                         .map(|t| {
@@ -619,7 +626,7 @@ impl AssetManager {
         fn load_materials(
                 doc: &gltf::Document,
                 texture_ids: &Vec<TextureId>,
-                out_materials: &mut VecMap<MaterialId, Material>,
+                out_materials: &mut SlotMap<MaterialId, Material>,
         ) -> Vec<MaterialId> {
                 doc.materials()
                         .map(|m| {
@@ -657,7 +664,7 @@ impl AssetManager {
                 buffer_view_ids: &Vec<BufferViewId>,
                 material_ids: &Vec<MaterialId>,
                 default_material: MaterialId,
-                out_meshes: &mut VecMap<MeshId, Mesh>,
+                out_meshes: &mut SlotMap<MeshId, Mesh>,
         ) -> Result<Vec<MeshGroup>, GLTFImportError> {
                 let mut mesh_groups = Vec::new();
 
@@ -715,7 +722,7 @@ impl AssetManager {
         fn load_models(
                 doc: &gltf::Document,
                 mesh_groups: &Vec<MeshGroup>,
-                out_models: &mut VecMap<ModelId, Model>,
+                out_models: &mut SlotMap<ModelId, Model>,
         ) -> Vec<ModelId> {
                 let mut model_ids = Vec::new();
 
@@ -769,7 +776,7 @@ impl AssetManager {
         fn load_root_model(
                 doc: &gltf::Document,
                 model_ids: &Vec<ModelId>,
-                out_models: &mut VecMap<ModelId, Model>,
+                out_models: &mut SlotMap<ModelId, Model>,
                 out_root_models: &mut HashMap<String, ModelId>,
         ) -> Result<ModelId, GLTFImportError> {
                 if doc.scenes().len() > 1 {
@@ -810,7 +817,7 @@ impl AssetManager {
                 buffer_view_ids: &Vec<BufferViewID>,
                 material_ids: &Vec<MaterialID>,
                 default_material: MaterialID,
-                out_models: &mut VecMap<ModelID, Model>,
+                out_models: &mut SlotMap<ModelID, Model>,
         ) -> Option<Result<ModelID, GLTFImportError>> {
                 let m = match n.mesh() {
                         Some(m) => m,

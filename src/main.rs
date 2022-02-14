@@ -1,6 +1,4 @@
 #[macro_use]
-mod vec_map;
-#[macro_use]
 mod scoped_timer;
 mod actions;
 mod application;

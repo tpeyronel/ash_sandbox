@@ -3,6 +3,7 @@ use std::rc::Rc;
 use ash::vk;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
+use slotmap::{SecondaryMap, SlotMap};
 
 use crate::{
         asset_manager::{
@@ -12,14 +13,14 @@ use crate::{
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         hashmap::HashMap,
-        vec_map::VecMap,
+        util::RefIntoSlice,
         vk::{
                 vk_buffer::{BufferData, VkBuffer, VkImmutableBufferCreateInfo},
                 vk_command_buffer::VkReusableCommandBuffer,
                 vk_image::{MipLevels, VkImage, VkImageCreateFromDataInfo},
                 vk_wrapper::{VkCommandPool, VkDevice, VkImageView, VkPhysicalDevice, VkSampler},
         },
-        AnyResult, util::RefIntoSlice,
+        AnyResult,
 };
 
 use super::vk_wrapper::{VkDescriptorSetLayout, VkShaderModule, VmaAllocator};
@@ -47,12 +48,12 @@ pub struct VkShaderResource {
 }
 
 pub struct VkAssetManager {
-        pub buffer_views: VecMap<BufferViewId, VkModelBufferView>,
-        pub images: VecMap<ImageId, VkModelImage>,
-        pub samplers: VecMap<SamplerId, VkSampler>,
-        pub material_dst_sets: VecMap<MaterialId, vk::DescriptorSet>,
+        pub buffer_views: SecondaryMap<BufferViewId, VkModelBufferView>,
+        pub images: SecondaryMap<ImageId, VkModelImage>,
+        pub samplers: SecondaryMap<SamplerId, VkSampler>,
+        pub material_dst_sets: SecondaryMap<MaterialId, vk::DescriptorSet>,
         pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
-        pub shaders: VecMap<ShaderId, VkShader>,
+        pub shaders: SecondaryMap<ShaderId, VkShader>,
 }
 
 impl VkAssetManager {
@@ -165,18 +166,14 @@ impl VkAssetManager {
                 self.shaders.clear();
         }
 
-        fn discover_buffer_view_usages(meshes: &VecMap<MeshId, Mesh>) -> HashMap<BufferViewId, vk::BufferUsageFlags> {
+        fn discover_buffer_view_usages(meshes: &SlotMap<MeshId, Mesh>) -> HashMap<BufferViewId, vk::BufferUsageFlags> {
                 let mut vk_buffer_usages = HashMap::<BufferViewId, vk::BufferUsageFlags>::new();
 
                 for (_, mesh) in meshes {
-                        (*vk_buffer_usages.entry(mesh.positions).or_default()) |=
-                                vk::BufferUsageFlags::VERTEX_BUFFER;
-                        (*vk_buffer_usages.entry(mesh.tex_coords).or_default()) |=
-                                vk::BufferUsageFlags::VERTEX_BUFFER;
-                        (*vk_buffer_usages.entry(mesh.normals).or_default()) |=
-                                vk::BufferUsageFlags::VERTEX_BUFFER;
-                        (*vk_buffer_usages.entry(mesh.tangents).or_default()) |=
-                                vk::BufferUsageFlags::VERTEX_BUFFER;
+                        (*vk_buffer_usages.entry(mesh.positions).or_default()) |= vk::BufferUsageFlags::VERTEX_BUFFER;
+                        (*vk_buffer_usages.entry(mesh.tex_coords).or_default()) |= vk::BufferUsageFlags::VERTEX_BUFFER;
+                        (*vk_buffer_usages.entry(mesh.normals).or_default()) |= vk::BufferUsageFlags::VERTEX_BUFFER;
+                        (*vk_buffer_usages.entry(mesh.tangents).or_default()) |= vk::BufferUsageFlags::VERTEX_BUFFER;
                         (*vk_buffer_usages.entry(mesh.indices).or_default()) |= vk::BufferUsageFlags::INDEX_BUFFER;
                 }
 
@@ -188,11 +185,11 @@ impl VkAssetManager {
                 allocator: Rc<VmaAllocator>,
                 transfer_queue: vk::Queue,
                 cmd_buffer: &VkReusableCommandBuffer,
-                buffers: &VecMap<BufferId, Buffer>,
-                buffer_views: &VecMap<BufferViewId, BufferView>,
+                buffers: &SlotMap<BufferId, Buffer>,
+                buffer_views: &SlotMap<BufferViewId, BufferView>,
                 buffer_usages: &HashMap<BufferViewId, vk::BufferUsageFlags>,
-        ) -> AnyResult<VecMap<BufferViewId, VkModelBufferView>> {
-                let mut vk_buffer_views: VecMap<BufferViewId, VkModelBufferView> = VecMap::new();
+        ) -> AnyResult<SecondaryMap<BufferViewId, VkModelBufferView>> {
+                let mut vk_buffer_views = SecondaryMap::new();
 
                 for (bview_id, bview) in buffer_views {
                         let buffer = &buffers[bview.buffer_id];
@@ -224,14 +221,15 @@ impl VkAssetManager {
                                 _ => vk::IndexType::from_raw(i32::MAX),
                         };
 
-                        let vk_bview_id = vk_buffer_views.insert(VkModelBufferView {
-                                buffer: vk_buffer,
-                                format,
-                                index_type,
-                                element_count: bview.element_count,
-                        });
-
-                        assert_eq!(bview_id, vk_bview_id);
+                        vk_buffer_views.insert(
+                                bview_id,
+                                VkModelBufferView {
+                                        buffer: vk_buffer,
+                                        format,
+                                        index_type,
+                                        element_count: bview.element_count,
+                                },
+                        );
                 }
 
                 Ok(vk_buffer_views)
@@ -244,9 +242,9 @@ impl VkAssetManager {
                 allocator: Rc<VmaAllocator>,
                 transfer_queue: vk::Queue,
                 cmd_buffer: &VkReusableCommandBuffer,
-                images: &VecMap<ImageId, Image>,
-        ) -> AnyResult<VecMap<ImageId, VkModelImage>> {
-                let mut vk_images: VecMap<ImageId, VkModelImage> = VecMap::new();
+                images: &SlotMap<ImageId, Image>,
+        ) -> AnyResult<SecondaryMap<ImageId, VkModelImage>> {
+                let mut vk_images = SecondaryMap::new();
 
                 for (image_id, image) in images {
                         let vk_image_cinfo = VkImageCreateFromDataInfo {
@@ -281,12 +279,13 @@ impl VkAssetManager {
 
                         let vk_image_view = unsafe { VkImageView::new(Rc::clone(&device), &vk_image_view_cinfo)? };
 
-                        let vk_image_id = vk_images.insert(VkModelImage {
-                                image: vk_image,
-                                image_view: vk_image_view,
-                        });
-
-                        assert_eq!(image_id, vk_image_id);
+                        vk_images.insert(
+                                image_id,
+                                VkModelImage {
+                                        image: vk_image,
+                                        image_view: vk_image_view,
+                                },
+                        );
                 }
 
                 Ok(vk_images)
@@ -295,9 +294,9 @@ impl VkAssetManager {
         fn create_vk_samplers_from_samplers(
                 pdevice: &VkPhysicalDevice,
                 device: Rc<VkDevice>,
-                samplers: &VecMap<SamplerId, Sampler>,
-        ) -> AnyResult<VecMap<SamplerId, VkSampler>> {
-                let mut vk_samplers = VecMap::<SamplerId, VkSampler>::new();
+                samplers: &SlotMap<SamplerId, Sampler>,
+        ) -> AnyResult<SecondaryMap<SamplerId, VkSampler>> {
+                let mut vk_samplers = SecondaryMap::new();
 
                 for (sampler_id, sampler) in samplers {
                         let vk_sampler_cinfo = vk::SamplerCreateInfo {
@@ -319,10 +318,9 @@ impl VkAssetManager {
                                 ..Default::default()
                         };
 
-                        let vk_sampler = unsafe { VkSampler::new(Rc::clone(&device), &vk_sampler_cinfo)? };
-                        let vk_sampler_id = vk_samplers.insert(vk_sampler);
-
-                        assert_eq!(sampler_id, vk_sampler_id);
+                        vk_samplers.insert(sampler_id, unsafe {
+                                VkSampler::new(Rc::clone(&device), &vk_sampler_cinfo)?
+                        });
                 }
 
                 Ok(vk_samplers)
@@ -332,18 +330,18 @@ impl VkAssetManager {
                 device: &VkDevice,
                 dst_pool: vk::DescriptorPool,
                 material_dst_set_layout: vk::DescriptorSetLayout,
-                textures: &VecMap<TextureId, Texture>,
-                materials: &VecMap<MaterialId, Material>,
-                vk_images: &VecMap<ImageId, VkModelImage>,
-                vk_samplers: &VecMap<SamplerId, VkSampler>,
-        ) -> AnyResult<VecMap<MaterialId, vk::DescriptorSet>> {
+                textures: &SlotMap<TextureId, Texture>,
+                materials: &SlotMap<MaterialId, Material>,
+                vk_images: &SecondaryMap<ImageId, VkModelImage>,
+                vk_samplers: &SecondaryMap<SamplerId, VkSampler>,
+        ) -> AnyResult<SecondaryMap<MaterialId, vk::DescriptorSet>> {
                 let material_dst_set_layouts = vec![material_dst_set_layout; materials.len()];
                 let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
                         .descriptor_pool(dst_pool)
                         .set_layouts(&material_dst_set_layouts);
                 let material_dst_sets = unsafe { device.allocate_descriptor_sets(&dst_set_ainfo)? };
 
-                let mut material_dst_sets_map = VecMap::<MaterialId, vk::DescriptorSet>::new();
+                let mut material_dst_sets_map = SecondaryMap::new();
 
                 for ((mat_id, mat), &material_dst_set) in materials.iter().zip(&material_dst_sets) {
                         let color_texture = &textures[mat.base_color_texture.unwrap()];
@@ -377,8 +375,7 @@ impl VkAssetManager {
 
                         unsafe { device.update_descriptor_sets(&[image_dst_set_write, sampler_dst_set_write], &[]) };
 
-                        let dst_set_id = material_dst_sets_map.insert(material_dst_set);
-                        assert_eq!(mat_id, dst_set_id);
+                        material_dst_sets_map.insert(mat_id, material_dst_set);
                 }
 
                 Ok(material_dst_sets_map)
@@ -433,20 +430,18 @@ impl VkAssetManager {
 
         fn create_vk_shaders_from_shaders(
                 device: &Rc<VkDevice>,
-                shaders: &VecMap<ShaderId, Shader>,
-        ) -> AnyResult<VecMap<ShaderId, VkShader>> {
-                let mut vk_shaders = VecMap::<ShaderId, VkShader>::new();
+                shaders: &SlotMap<ShaderId, Shader>,
+        ) -> AnyResult<SecondaryMap<ShaderId, VkShader>> {
+                let mut vk_shaders = SecondaryMap::new();
 
                 for (shader_id, shader) in shaders {
                         let vert_module = VkShaderModule::from_code(device, &shader.vert_module.bin)?;
                         let frag_module = VkShaderModule::from_code(device, &shader.frag_module.bin)?;
 
-                        let vk_shader_id = vk_shaders.insert(VkShader {
+                        vk_shaders.insert(shader_id, VkShader {
                                 vert_module,
                                 frag_module,
                         });
-
-                        assert_eq!(shader_id, vk_shader_id);
                 }
 
                 Ok(vk_shaders)

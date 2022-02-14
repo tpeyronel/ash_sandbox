@@ -213,10 +213,12 @@ impl VkBuffer {
                 Ok(staging_buffer)
         }
 
+        #[allow(dead_code)]
         pub fn write<T: 'static>(&self, value: &T) -> VkResult<()> {
                 self.write_offsetted(value, 0)
         }
 
+        #[allow(dead_code)]
         pub fn write_offsetted<T: 'static>(&self, value: &T, offset: usize) -> VkResult<()> {
                 let data = value as *const _ as *const u8;
                 let len = std::mem::size_of::<T>();
@@ -225,10 +227,12 @@ impl VkBuffer {
                 self.write_bytes_offsetted(bytes, offset)
         }
 
+        #[allow(dead_code)]
         pub fn write_slice<T: 'static>(&self, data: &[T]) -> VkResult<()> {
                 self.write_slice_offsetted(data, 0)
         }
 
+        #[allow(dead_code)]
         pub fn write_slice_offsetted<T: 'static>(&self, data: &[T], offset: usize) -> VkResult<()> {
                 let data_bytes = data.as_ptr() as *const u8;
                 let len = data.len() * std::mem::size_of::<T>();
@@ -237,10 +241,12 @@ impl VkBuffer {
                 self.write_bytes_offsetted(bytes, offset)
         }
 
+        #[allow(dead_code)]
         pub fn write_bytes(&self, bytes: &[u8]) -> VkResult<()> {
                 self.write_bytes_offsetted(bytes, 0)
         }
 
+        #[allow(dead_code)]
         pub fn write_bytes_offsetted(&self, bytes: &[u8], offset: usize) -> VkResult<()> {
                 assert!(
                         offset + bytes.len() <= self.ainfo.size(),
