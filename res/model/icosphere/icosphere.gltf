@@ -65,7 +65,7 @@
         {
             "bufferView" : 0,
             "componentType" : 5126,
-            "count" : 61440,
+            "count" : 10593,
             "max" : [
                 0.25,
                 0.25,
@@ -81,19 +81,19 @@
         {
             "bufferView" : 1,
             "componentType" : 5126,
-            "count" : 61440,
+            "count" : 10593,
             "type" : "VEC3"
         },
         {
             "bufferView" : 2,
             "componentType" : 5126,
-            "count" : 61440,
+            "count" : 10593,
             "type" : "VEC4"
         },
         {
             "bufferView" : 3,
             "componentType" : 5126,
-            "count" : 61440,
+            "count" : 10593,
             "type" : "VEC2"
         },
         {
@@ -106,28 +106,28 @@
     "bufferViews" : [
         {
             "buffer" : 0,
-            "byteLength" : 737280,
+            "byteLength" : 127116,
             "byteOffset" : 0
         },
         {
             "buffer" : 0,
-            "byteLength" : 737280,
-            "byteOffset" : 737280
+            "byteLength" : 127116,
+            "byteOffset" : 127116
         },
         {
             "buffer" : 0,
-            "byteLength" : 983040,
-            "byteOffset" : 1474560
+            "byteLength" : 169488,
+            "byteOffset" : 254232
         },
         {
             "buffer" : 0,
-            "byteLength" : 491520,
-            "byteOffset" : 2457600
+            "byteLength" : 84744,
+            "byteOffset" : 423720
         },
         {
             "buffer" : 0,
             "byteLength" : 122880,
-            "byteOffset" : 2949120
+            "byteOffset" : 508464
         }
     ],
     "samplers" : [
@@ -138,7 +138,7 @@
     ],
     "buffers" : [
         {
-            "byteLength" : 3072000,
+            "byteLength" : 631344,
             "uri" : "icosphere.bin"
         }
     ]
