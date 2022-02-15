@@ -156,7 +156,7 @@ dependencies = [
  "specs",
  "stb_image",
  "thiserror",
- "tps_counter",
+ "tps-counter",
  "vk-mem",
  "winit",
 ]
@@ -1904,8 +1904,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "tps_counter"
+name = "tps-counter"
 version = "0.1.0"
+source = "git+https://github.com/TorvalHG/tps-counter#b1a795b26638e5d60a0a90a1cfaaf4bf98ac7509"
 
 [[package]]
 name = "ttf-parser"
@@ -1970,6 +1971,7 @@ checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
 [[package]]
 name = "vk-mem"
 version = "0.2.3"
+source = "git+https://github.com/TorvalHG/vk-mem-rs#87441b6a6867b13eff19d68531ba9fdc0b41e9b2"
 dependencies = [
  "ash",
  "bindgen",
