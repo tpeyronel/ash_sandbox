@@ -384,7 +384,7 @@ impl VkAssetManager {
                         let image_dst_set_write = vk::WriteDescriptorSet::builder()
                                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                                 .dst_set(material_dst_set)
-                                .dst_binding(0)
+                                .dst_binding(1)
                                 .dst_array_element(0)
                                 .image_info(image_info.ref_into_slice())
                                 .build();
@@ -396,7 +396,7 @@ impl VkAssetManager {
                         let sampler_dst_set_write = vk::WriteDescriptorSet::builder()
                                 .descriptor_type(vk::DescriptorType::SAMPLER)
                                 .dst_set(material_dst_set)
-                                .dst_binding(1)
+                                .dst_binding(2)
                                 .dst_array_element(0)
                                 .image_info(sampler_info.ref_into_slice())
                                 .build();

@@ -12,12 +12,14 @@ layout (set = 0, binding = 1) uniform WorldLight {
         vec4 color;
 } u_light;
 
-layout (set = 1, binding = 0) uniform texture2D u_texture;
-layout (set = 1, binding = 1) uniform sampler u_sampler;
-layout (set = 1, binding = 2) uniform MaterialData {
+layout (set = 1, binding = 0) uniform MaterialData {
         vec4 ambient_color;
         vec4 diffuse_color;
+        vec4 specular_color;
+        float shininess;
 } u_material;
+layout (set = 1, binding = 1) uniform texture2D u_texture;
+layout (set = 1, binding = 2) uniform sampler u_sampler;
 
 
 layout (location = 0) in vec3 i_frag_pos;

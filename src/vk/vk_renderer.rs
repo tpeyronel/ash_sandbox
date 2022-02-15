@@ -709,8 +709,16 @@ impl VkRenderer {
 
         fn create_descriptor_set_layouts(device: &Rc<VkDevice>) -> VkResult<VkDescriptorSetLayout> {
                 let material_dst_set_layout = {
-                        let tex_binding = vk::DescriptorSetLayoutBinding {
+                        let mat_data_binding = vk::DescriptorSetLayoutBinding {
                                 binding: 0,
+                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
+                                descriptor_count: 1,
+                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                                p_immutable_samplers: std::ptr::null(),
+                        };
+
+                        let tex_binding = vk::DescriptorSetLayoutBinding {
+                                binding: 1,
                                 descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
                                 descriptor_count: 1,
                                 stage_flags: vk::ShaderStageFlags::FRAGMENT,
@@ -718,14 +726,14 @@ impl VkRenderer {
                         };
 
                         let sampler_binding = vk::DescriptorSetLayoutBinding {
-                                binding: 1,
+                                binding: 2,
                                 descriptor_type: vk::DescriptorType::SAMPLER,
                                 descriptor_count: 1,
                                 stage_flags: vk::ShaderStageFlags::FRAGMENT,
                                 p_immutable_samplers: std::ptr::null(),
                         };
 
-                        let mat_bindings = [tex_binding, sampler_binding];
+                        let mat_bindings = [mat_data_binding, tex_binding, sampler_binding];
                         let mat_set_layout_cinfo = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&mat_bindings);
 
                         unsafe { VkDescriptorSetLayout::new(device, &mat_set_layout_cinfo)? }
@@ -1000,7 +1008,7 @@ impl VkRenderer {
                                 pipeline_layout,
                                 1,
                                 &[material_dst_set, object_dst_set],
-                                &[object_matrices_buffer_offset as u32],
+                                &[0, object_matrices_buffer_offset as u32],
                         );
                         device.cmd_bind_vertex_buffers(
                                 draw_cmd_buffer,
@@ -1050,6 +1058,8 @@ struct WorldResources {
 struct MaterialData {
         ambient_color: Vec4,
         diffuse_color: Vec4,
+        specular_color: Vec4,
+        shininess: f32,
 }
 
 #[allow(dead_code)]

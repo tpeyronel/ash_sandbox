@@ -1,12 +1,12 @@
 {
     "asset" : {
-        "generator" : "Khronos glTF Blender I/O v0.9.36",
+        "generator" : "Khronos glTF Blender I/O v1.6.16",
         "version" : "2.0"
     },
     "scene" : 0,
     "scenes" : [
         {
-            "name" : "Ground",
+            "name" : "grass-plane",
             "nodes" : [
                 0
             ]
@@ -24,8 +24,7 @@
             "name" : "Material.001",
             "pbrMetallicRoughness" : {
                 "baseColorTexture" : {
-                    "index" : 0,
-                    "texCoord" : 0
+                    "index" : 0
                 },
                 "metallicFactor" : 0,
                 "roughnessFactor" : 0.5
@@ -51,6 +50,7 @@
     ],
     "textures" : [
         {
+            "sampler" : 0,
             "source" : 0
         }
     ],
@@ -130,10 +130,16 @@
             "byteOffset" : 192
         }
     ],
+    "samplers" : [
+        {
+            "magFilter" : 9729,
+            "minFilter" : 9987
+        }
+    ],
     "buffers" : [
         {
             "byteLength" : 204,
-            "uri" : "GrassPlane.bin"
+            "uri" : "grass-plane.bin"
         }
     ]
 }

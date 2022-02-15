@@ -208,7 +208,7 @@ impl Application {
                 let _model_colt =
                         asset_manager.import_gltf_file(std::path::Path::new("res/model/new-colt/colt.gltf"))?;
                 let _model_grass_plane =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/GrassPlane/GrassPlane.gltf"))?;
+                        asset_manager.import_gltf_file(std::path::Path::new("res/model/grass-plane/grass-plane.gltf"))?;
                 let _model_sphere =
                         asset_manager.import_gltf_file(std::path::Path::new("res/model/sphere/sphere.gltf"))?;
                 let _model_icosphere =

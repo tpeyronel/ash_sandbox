@@ -165,6 +165,12 @@ impl LogicThread {
                         .with(ModelRotateComponent(0f32.to_radians()))
                         .build();
 
+                let _grass_plane = world
+                        .create_entity()
+                        .with(TransformComponent::from_pos(Vec3::new(0.0, -1.0, 0.0)))
+                        .with(ModelComponent(params.asset_manager.get_model_by_name("grass-plane")))
+                        .build();
+
                 let _light = world
                         .create_entity()
                         .with(TransformComponent {
