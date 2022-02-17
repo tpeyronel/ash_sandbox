@@ -265,7 +265,7 @@ impl VkAssetManager {
 
                 for (image_id, image) in images {
                         let vk_image_cinfo = VkImageCreateFromDataInfo {
-                                data: &image.pixels,
+                                data: &image.pixels.bytes,
                                 width: image.width,
                                 height: image.height,
                                 format: Self::vk_format_from_image_format(image.format),

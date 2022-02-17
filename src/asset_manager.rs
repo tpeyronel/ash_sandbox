@@ -10,10 +10,7 @@ use log::{debug, error, info, trace, warn};
 use slotmap::SlotMap;
 use thiserror::Error;
 
-use crate::{
-        hashmap::{GetOrInsert, HashMap},
-        my_glm::*,
-};
+use crate::{hashmap::HashMap, my_glm::*};
 
 /*enum ComponentType {
         I8 = 1,
@@ -39,7 +36,7 @@ pub type DataType = gltf::accessor::Dimensions;
 
 slotmap::new_key_type! { pub struct ModelId; }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Model {
         pub name: Option<String>,
         pub base_transform: Mat4,
@@ -51,7 +48,7 @@ pub struct MeshGroup(Vec<MeshId>);
 
 slotmap::new_key_type! { pub struct MeshId; }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Mesh {
         pub positions: BufferViewId,
         pub tex_coords: BufferViewId,
@@ -64,7 +61,7 @@ pub struct Mesh {
 
 slotmap::new_key_type! { pub struct BufferViewId; }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BufferView {
         pub buffer: Arc<Buffer>,
         pub byte_length: usize,
@@ -74,17 +71,23 @@ pub struct BufferView {
         pub element_count: usize,
 }
 
-slotmap::new_key_type! { pub struct BufferId; }
-
 #[derive(Debug)]
 pub struct Buffer {
         pub bytes: Vec<u8>,
         pub byte_length: usize,
 }
 
+impl Buffer {
+        fn new(bytes: Vec<u8>) -> Self {
+                let byte_length = bytes.len();
+
+                Self { bytes, byte_length }
+        }
+}
+
 slotmap::new_key_type! { pub struct MaterialId; }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Material {
         pub name: Option<String>,
 
@@ -104,7 +107,7 @@ pub struct Material {
 
 slotmap::new_key_type! { pub struct TextureId; }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Texture {
         pub name: Option<String>,
         pub image: ImageId,
@@ -115,10 +118,10 @@ pub type ImageFormat = gltf::image::Format;
 
 slotmap::new_key_type! { pub struct ImageId; }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Image {
-        //name: Option<String>,
-        pub pixels: Vec<u8>,
+        // name: Option<String>,
+        pub pixels: Arc<Buffer>,
         pub width: u32,
         pub height: u32,
         pub format: ImageFormat,
@@ -130,7 +133,7 @@ pub type WrappingMode = gltf::texture::WrappingMode;
 
 slotmap::new_key_type! { pub struct SamplerId; }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Sampler {
         pub name: Option<String>,
         pub mag_filter: MagFilter,
@@ -159,11 +162,11 @@ pub type ShaderResourceId = String;
 
 slotmap::new_key_type! { pub struct ShaderId; }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Shader {
         pub name: String,
-        pub vert_module: ShaderModule,
-        pub frag_module: ShaderModule,
+        pub vert_module: Arc<ShaderModule>,
+        pub frag_module: Arc<ShaderModule>,
         pub resources: Vec<ShaderResourceId>,
         pub vertex_inputs: Vec<String>,
 }
@@ -198,10 +201,12 @@ impl ShaderModule {
         }
 }
 
+#[derive(Debug, Clone)]
 pub struct ShaderResource {
         pub elements: Vec<ShaderResourceElement>,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct ShaderResourceElement {
         pub element_type: ShaderResourceElementType,
         pub shader_stage_flags: ash::vk::ShaderStageFlags,
@@ -234,7 +239,7 @@ impl From<ShaderResourceElementType> for ash::vk::DescriptorType {
         }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BoundingBox {
         pub min: Vec3,
         pub max: Vec3,
@@ -314,10 +319,10 @@ impl AssetManagerBuilder {
         }
 } */
 
+#[derive(Debug, Clone)]
 pub struct AssetManager {
         buffer_views: SlotMap<BufferViewId, BufferView>,
         images: SlotMap<ImageId, Image>,
-        image_path_map: HashMap<PathBuf, ImageId>,
         samplers: SlotMap<SamplerId, Sampler>,
         textures: SlotMap<TextureId, Texture>,
         materials: SlotMap<MaterialId, Material>,
@@ -344,7 +349,6 @@ impl AssetManager {
                 Self {
                         buffer_views: SlotMap::with_key(),
                         images: SlotMap::with_key(),
-                        image_path_map: HashMap::new(),
                         samplers,
                         textures: SlotMap::with_key(),
                         materials: SlotMap::with_key(),
@@ -383,8 +387,8 @@ impl AssetManager {
 
                 let shader = Shader {
                         name: declaration.name.clone(),
-                        vert_module: ShaderModule::from_glsl_file(directory.join(&declaration.vert_shader))?,
-                        frag_module: ShaderModule::from_glsl_file(directory.join(&declaration.frag_shader))?,
+                        vert_module: Arc::new(ShaderModule::from_glsl_file(directory.join(&declaration.vert_shader))?),
+                        frag_module: Arc::new(ShaderModule::from_glsl_file(directory.join(&declaration.frag_shader))?),
                         resources: declaration.uniforms,
                         vertex_inputs: declaration.vertex_inputs,
                 };
@@ -403,7 +407,7 @@ impl AssetManager {
 
                 let buffers = Self::load_buffers(buffers);
                 let buffer_view_ids = Self::load_buffer_views(&doc, &buffers, &mut self.buffer_views)?;
-                let image_ids = Self::load_images(gltf_path, &doc, images, &mut self.image_path_map, &mut self.images)?;
+                let image_ids = Self::load_images(gltf_path, &doc, images, &mut self.images)?;
                 let sampler_ids = Self::load_samplers(&doc, self.default_sampler, &mut self.samplers);
                 let texture_ids =
                         Self::load_textures(&doc, &image_ids, &sampler_ids, self.default_sampler, &mut self.textures);
@@ -485,10 +489,7 @@ impl AssetManager {
                         .into_iter()
                         .map(|buffer| {
                                 let buffer = buffer.0;
-                                Arc::new(Buffer {
-                                        byte_length: buffer.len(),
-                                        bytes: buffer,
-                                })
+                                Arc::new(Buffer::new(buffer))
                         })
                         .collect()
         }
@@ -526,7 +527,6 @@ impl AssetManager {
                 gltf_path: &Path,
                 doc: &gltf::Document,
                 images: Vec<gltf::image::Data>,
-                image_path_map: &mut HashMap<PathBuf, ImageId>,
                 out_images: &mut SlotMap<ImageId, Image>,
         ) -> Result<Vec<ImageId>, GLTFImportError> {
                 images.into_iter()
@@ -537,7 +537,7 @@ impl AssetManager {
                                 }
 
                                 // Image path relative to working directory
-                                let image_relative_path = match json_image.source() {
+                                let _image_relative_path = match json_image.source() {
                                         gltf::image::Source::Uri { uri, .. } => {
                                                 if uri.contains(":") {
                                                         error!("Trying to import image with non relative uri!");
@@ -552,13 +552,11 @@ impl AssetManager {
                                         },
                                 };
 
-                                let image_id = *image_path_map.get_or_insert_with(&image_relative_path, || {
-                                        out_images.insert(Image {
-                                                pixels: image.pixels,
-                                                width: image.width,
-                                                height: image.height,
-                                                format: image.format,
-                                        })
+                                let image_id = out_images.insert(Image {
+                                        pixels: Arc::new(Buffer::new(image.pixels)),
+                                        width: image.width,
+                                        height: image.height,
+                                        format: image.format,
                                 });
 
                                 Some(Ok(image_id))
