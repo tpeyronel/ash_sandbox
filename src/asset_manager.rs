@@ -63,7 +63,7 @@ slotmap::new_key_type! { pub struct BufferViewId; }
 
 #[derive(Debug, Clone)]
 pub struct BufferView {
-        pub buffer: Arc<Buffer>,
+        pub buffer: BufferId,
         pub byte_length: usize,
         pub byte_offset: usize,
         pub component_type: ComponentType,
@@ -71,17 +71,16 @@ pub struct BufferView {
         pub element_count: usize,
 }
 
-#[derive(Debug)]
+slotmap::new_key_type! { pub struct BufferId; }
+
+#[derive(Debug, Clone)]
 pub struct Buffer {
-        pub bytes: Vec<u8>,
-        pub byte_length: usize,
+        pub bytes: Arc<Vec<u8>>,
 }
 
 impl Buffer {
         fn new(bytes: Vec<u8>) -> Self {
-                let byte_length = bytes.len();
-
-                Self { bytes, byte_length }
+                Self { bytes: Arc::new(bytes) }
         }
 }
 
@@ -321,6 +320,7 @@ impl AssetManagerBuilder {
 
 #[derive(Debug, Clone)]
 pub struct AssetManager {
+        buffers: SlotMap<BufferId, Buffer>,
         buffer_views: SlotMap<BufferViewId, BufferView>,
         images: SlotMap<ImageId, Image>,
         samplers: SlotMap<SamplerId, Sampler>,
@@ -347,6 +347,7 @@ impl AssetManager {
                 let default_material = materials.insert(default_material);
 
                 Self {
+                        buffers: SlotMap::with_key(),
                         buffer_views: SlotMap::with_key(),
                         images: SlotMap::with_key(),
                         samplers,
@@ -405,7 +406,7 @@ impl AssetManager {
 
                 let (doc, buffers, images) = gltf::import(gltf_path).map_err(|e| GLTFImportError::GLTFCrateError(e))?;
 
-                let buffers = Self::load_buffers(buffers);
+                let buffers = Self::load_buffers(buffers, &mut self.buffers);
                 let buffer_view_ids = Self::load_buffer_views(&doc, &buffers, &mut self.buffer_views)?;
                 let image_ids = Self::load_images(gltf_path, &doc, images, &mut self.images)?;
                 let sampler_ids = Self::load_samplers(&doc, self.default_sampler, &mut self.samplers);
@@ -427,6 +428,11 @@ impl AssetManager {
 
         pub fn get_model_by_name(&self, name: &str) -> ModelId {
                 *self.root_models.get(name).unwrap()
+        }
+
+        #[allow(dead_code)]
+        pub fn buffers(&self) -> &SlotMap<BufferId, Buffer> {
+                &self.buffers
         }
 
         #[allow(dead_code)]
@@ -484,19 +490,19 @@ impl AssetManager {
                 &self.shader_resources
         }
 
-        fn load_buffers(buffers_data: Vec<gltf::buffer::Data>) -> Vec<Arc<Buffer>> {
+        fn load_buffers(
+                buffers_data: Vec<gltf::buffer::Data>,
+                out_buffers: &mut SlotMap<BufferId, Buffer>,
+        ) -> Vec<BufferId> {
                 buffers_data
                         .into_iter()
-                        .map(|buffer| {
-                                let buffer = buffer.0;
-                                Arc::new(Buffer::new(buffer))
-                        })
+                        .map(|b| out_buffers.insert(Buffer::new(b.0)))
                         .collect()
         }
 
         fn load_buffer_views(
                 doc: &gltf::Document,
-                buffers: &Vec<Arc<Buffer>>,
+                buffers: &Vec<BufferId>,
                 out_buffer_views: &mut SlotMap<BufferViewId, BufferView>,
         ) -> Result<Vec<BufferViewId>, GLTFImportError> {
                 doc.accessors()
@@ -510,7 +516,7 @@ impl AssetManager {
                                 };
 
                                 let buffer_view_id = out_buffer_views.insert(BufferView {
-                                        buffer: Arc::clone(&buffers[bview.buffer().index()]),
+                                        buffer: buffers[bview.buffer().index()],
                                         byte_length: bview.length(),
                                         byte_offset: bview.offset() + a.offset(),
                                         component_type: a.data_type(),

@@ -7,9 +7,9 @@ use slotmap::{SecondaryMap, SlotMap};
 
 use crate::{
         asset_manager::{
-                AssetManager, BufferView, BufferViewId, ComponentType, DataType, Image, ImageFormat, ImageId,
-                MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, Sampler, SamplerId, Shader, ShaderId,
-                ShaderResource, ShaderResourceId, Texture, TextureId, WrappingMode,
+                AssetManager, Buffer, BufferId, BufferView, BufferViewId, ComponentType, DataType, Image, ImageFormat,
+                ImageId, MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, Sampler, SamplerId, Shader,
+                ShaderId, ShaderResource, ShaderResourceId, Texture, TextureId, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         hashmap::HashMap,
@@ -86,6 +86,7 @@ impl VkAssetManager {
                         Rc::clone(&allocator),
                         transfer_queue,
                         &cmd_buffer,
+                        asset_manager.buffers(),
                         asset_manager.buffer_views(),
                         &Self::discover_buffer_view_usages(asset_manager.meshes()),
                 )?;
@@ -205,13 +206,16 @@ impl VkAssetManager {
                 allocator: Rc<VmaAllocator>,
                 transfer_queue: vk::Queue,
                 cmd_buffer: &VkReusableCommandBuffer,
+                buffers: &SlotMap<BufferId, Buffer>,
                 buffer_views: &SlotMap<BufferViewId, BufferView>,
                 buffer_usages: &HashMap<BufferViewId, vk::BufferUsageFlags>,
         ) -> AnyResult<SecondaryMap<BufferViewId, VkModelBufferView>> {
                 let mut vk_buffer_views = SecondaryMap::new();
 
                 for (bview_id, bview) in buffer_views {
-                        assert!(bview.buffer.byte_length >= (bview.byte_offset + bview.byte_length));
+                        let buffer = &buffers[bview.buffer];
+
+                        assert!(buffer.bytes.len() >= (bview.byte_offset + bview.byte_length));
 
                         let vk_buffer_cinfo = VkImmutableBufferCreateInfo {
                                 device,
@@ -221,7 +225,7 @@ impl VkAssetManager {
                                 // TODO: accurate buffer usage flags
                                 buffer_usage: buffer_usages[&bview_id],
                                 data: BufferData::OffsetLength {
-                                        data: bview.buffer.bytes.as_slice(),
+                                        data: buffer.bytes.as_slice(),
                                         offset: bview.byte_offset,
                                         length: bview.byte_length,
                                 },
