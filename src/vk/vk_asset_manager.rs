@@ -99,6 +99,7 @@ impl VkAssetManager {
                         allocator,
                         transfer_queue,
                         &cmd_buffer,
+                        asset_manager.buffers(),
                         asset_manager.images(),
                 )?;
 
@@ -263,13 +264,14 @@ impl VkAssetManager {
                 allocator: Rc<VmaAllocator>,
                 transfer_queue: vk::Queue,
                 cmd_buffer: &VkReusableCommandBuffer,
+                buffers: &SlotMap<BufferId, Buffer>,
                 images: &SlotMap<ImageId, Image>,
         ) -> AnyResult<SecondaryMap<ImageId, VkModelImage>> {
                 let mut vk_images = SecondaryMap::new();
 
                 for (image_id, image) in images {
                         let vk_image_cinfo = VkImageCreateFromDataInfo {
-                                data: &image.pixels.bytes,
+                                data: &buffers[image.pixels].bytes,
                                 width: image.width,
                                 height: image.height,
                                 format: Self::vk_format_from_image_format(image.format),

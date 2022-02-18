@@ -120,7 +120,7 @@ slotmap::new_key_type! { pub struct ImageId; }
 #[derive(Debug, Clone)]
 pub struct Image {
         // name: Option<String>,
-        pub pixels: Arc<Buffer>,
+        pub pixels: BufferId,
         pub width: u32,
         pub height: u32,
         pub format: ImageFormat,
@@ -408,7 +408,7 @@ impl AssetManager {
 
                 let buffers = Self::load_buffers(buffers, &mut self.buffers);
                 let buffer_view_ids = Self::load_buffer_views(&doc, &buffers, &mut self.buffer_views)?;
-                let image_ids = Self::load_images(gltf_path, &doc, images, &mut self.images)?;
+                let image_ids = Self::load_images(gltf_path, &doc, images, &mut self.buffers, &mut self.images)?;
                 let sampler_ids = Self::load_samplers(&doc, self.default_sampler, &mut self.samplers);
                 let texture_ids =
                         Self::load_textures(&doc, &image_ids, &sampler_ids, self.default_sampler, &mut self.textures);
@@ -533,6 +533,7 @@ impl AssetManager {
                 gltf_path: &Path,
                 doc: &gltf::Document,
                 images: Vec<gltf::image::Data>,
+                out_buffers: &mut SlotMap<BufferId, Buffer>,
                 out_images: &mut SlotMap<ImageId, Image>,
         ) -> Result<Vec<ImageId>, GLTFImportError> {
                 images.into_iter()
@@ -558,8 +559,10 @@ impl AssetManager {
                                         },
                                 };
 
+                                let pixels_buffer_id = out_buffers.insert(Buffer::new(image.pixels));
+
                                 let image_id = out_images.insert(Image {
-                                        pixels: Arc::new(Buffer::new(image.pixels)),
+                                        pixels: pixels_buffer_id,
                                         width: image.width,
                                         height: image.height,
                                         format: image.format,
