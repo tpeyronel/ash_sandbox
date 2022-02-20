@@ -36,7 +36,7 @@ pub struct VkContext {
 
         pub surface: Rc<VkSurface>,
 
-        pub pdevice: VkPhysicalDevice,
+        pub pdevice: Rc<VkPhysicalDevice>,
 
         pub device: Rc<VkDevice>,
 
@@ -84,6 +84,7 @@ impl VkContext {
                 trace!("Created VkSurface");
 
                 let (pdevice, qfamilyi) = VkPhysicalDevice::new(&instance, &surface)?;
+                let pdevice = Rc::new(pdevice);
 
                 trace!("Chose VkPhysicalDevice");
                 info!("Chosen physical device: {:?}", unsafe {
@@ -91,10 +92,10 @@ impl VkContext {
                 });
                 info!("Queue family indices: {:?}", &qfamilyi);
 
-                let (device, queues) = Self::create_device(&instance, *pdevice, &qfamilyi)?;
+                let (device, queues) = Self::create_device(&instance, **pdevice, &qfamilyi)?;
                 trace!("Created VkDevice");
 
-                let allocator = Self::create_allocator(&instance, *pdevice, &device, vulkan_api_version)?;
+                let allocator = Self::create_allocator(&instance, **pdevice, &device, vulkan_api_version)?;
                 trace!("Created VmaAllocator");
 
                 let cmd_pool = Self::create_command_pool(&device, &qfamilyi)?;

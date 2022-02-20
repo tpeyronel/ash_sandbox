@@ -7,9 +7,9 @@ use slotmap::{SecondaryMap, SlotMap};
 
 use crate::{
         asset_manager::{
-                AssetManager, Buffer, BufferId, BufferView, BufferViewId, ComponentType, DataType, Image, ImageFormat,
-                ImageId, MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, Sampler, SamplerId, Shader,
-                ShaderId, ShaderResource, ShaderResourceId, Texture, TextureId, WrappingMode,
+                AssetManager, AssetManagerEvent, Buffer, BufferId, BufferView, BufferViewId, ComponentType, DataType,
+                Image, ImageFormat, ImageId, MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, Sampler,
+                SamplerId, Shader, ShaderId, ShaderResource, ShaderResourceId, Texture, TextureId, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         hashmap::HashMap,
@@ -24,7 +24,9 @@ use crate::{
         AnyResult,
 };
 
-use super::vk_wrapper::{VkDescriptorSetLayout, VkPipeline, VkShaderModule, VmaAllocator};
+use super::vk_wrapper::{
+        VkDescriptorPool, VkDescriptorSetLayout, VkInstance, VkPipeline, VkShaderModule, VmaAllocator,
+};
 
 pub struct VkModelBufferView {
         pub buffer: VkBuffer,
@@ -51,155 +53,496 @@ pub struct VkShaderResource {
 }
 
 pub struct VkAssetManager {
+        instance: Rc<VkInstance>,
+        pdevice: Rc<VkPhysicalDevice>,
+        device: Rc<VkDevice>,
+        allocator: Rc<VmaAllocator>,
+        transfer_queue: vk::Queue,
+        dst_pool: VkDescriptorPool,
+        cmd_buffer: VkReusableCommandBuffer,
+
+        material_dst_set_layout: VkDescriptorSetLayout,
+
+        swapchain_samples: vk::SampleCountFlags,
+        render_pass: vk::RenderPass,
+        pipeline_layout: vk::PipelineLayout,
+
         pub buffer_views: SecondaryMap<BufferViewId, VkModelBufferView>,
         pub images: SecondaryMap<ImageId, VkModelImage>,
         pub samplers: SecondaryMap<SamplerId, VkSampler>,
         pub material_dst_sets: SecondaryMap<MaterialId, vk::DescriptorSet>,
-        pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
+        // pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
         pub shaders: SecondaryMap<ShaderId, VkShader>,
         pub pipelines: SecondaryMap<ShaderId, VkPipeline>,
 }
 
 impl VkAssetManager {
         pub fn new(
-                instance: &ash::Instance,
-                pdevice: &VkPhysicalDevice,
+                instance: Rc<VkInstance>,
+                pdevice: Rc<VkPhysicalDevice>,
                 device: Rc<VkDevice>,
                 allocator: Rc<VmaAllocator>,
                 transfer_queue: vk::Queue,
                 cmd_pool: Rc<VkCommandPool>,
-                dst_pool: vk::DescriptorPool,
-                material_dst_set_layout: vk::DescriptorSetLayout,
                 swapchain_samples: vk::SampleCountFlags,
                 render_pass: vk::RenderPass,
                 pipeline_layout: vk::PipelineLayout,
-                asset_manager: &AssetManager,
                 frames_in_flight: usize,
         ) -> AnyResult<Self> {
                 assert!(frames_in_flight > 0, "Frames in flight must be greater to zero");
 
+                let dst_pool = Self::create_dst_pool(&device)?;
                 let cmd_buffer = VkReusableCommandBuffer::new(Rc::clone(&device), cmd_pool)?;
+                let material_dst_set_layout = Self::create_material_dst_set_layout(&device)?;
 
-                trace!("Creating VkBuffers...");
-                let vk_buffer_views = Self::create_vk_buffers_from_buffers(
-                        &device,
-                        Rc::clone(&allocator),
-                        transfer_queue,
-                        &cmd_buffer,
-                        asset_manager.buffers(),
-                        asset_manager.buffer_views(),
-                        &Self::discover_buffer_view_usages(asset_manager.meshes()),
-                )?;
+                // trace!("Creating VkShaderResources...");
+                // let vk_shader_resources = Self::create_vk_shaders_resources_from_shader_resources(
+                //         &device,
+                //         dst_pool,
+                //         asset_manager.shader_resources(),
+                //         frames_in_flight,
+                // )?;
 
-                trace!("Creating VkImages...");
-                let vk_images = Self::create_vk_images_from_images(
+                Ok(Self {
                         instance,
                         pdevice,
-                        Rc::clone(&device),
+                        device,
                         allocator,
                         transfer_queue,
-                        &cmd_buffer,
-                        asset_manager.buffers(),
-                        asset_manager.images(),
-                )?;
-
-                trace!("Creating VkSamplers...");
-                let vk_samplers =
-                        Self::create_vk_samplers_from_samplers(pdevice, Rc::clone(&device), asset_manager.samplers())?;
-
-                trace!("Creating material VkDescriptorSets...");
-                let vk_material_dst_sets = Self::create_vk_material_dst_sets_from_materials(
-                        &device,
                         dst_pool,
+                        cmd_buffer,
+
                         material_dst_set_layout,
-                        asset_manager.textures(),
-                        asset_manager.materials(),
-                        &vk_images,
-                        &vk_samplers,
-                )?;
 
-                trace!("Creating VkShaderResources...");
-                let vk_shader_resources = Self::create_vk_shaders_resources_from_shader_resources(
-                        &device,
-                        dst_pool,
-                        asset_manager.shader_resources(),
-                        frames_in_flight,
-                )?;
-
-                trace!("Creating VkShaders...");
-                let vk_shaders = Self::create_vk_shaders_from_shaders(&device, asset_manager.shaders())?;
-
-                trace!("Creating VkPipelines...");
-                let vk_pipelines = Self::create_vk_pipelines_from_vk_shaders(
-                        &device,
                         swapchain_samples,
                         render_pass,
                         pipeline_layout,
-                        &vk_shaders,
-                )?;
 
-                unsafe { cmd_buffer.destroy() };
-
-                Ok(Self {
-                        buffer_views: vk_buffer_views,
-                        images: vk_images,
-                        samplers: vk_samplers,
-                        material_dst_sets: vk_material_dst_sets,
-                        shader_resources: vk_shader_resources,
-                        shaders: vk_shaders,
-                        pipelines: vk_pipelines,
+                        buffer_views: SecondaryMap::new(),
+                        images: SecondaryMap::new(),
+                        samplers: SecondaryMap::new(),
+                        material_dst_sets: SecondaryMap::new(),
+                        // shader_resources: HashMap::new(),
+                        shaders: SecondaryMap::new(),
+                        pipelines: SecondaryMap::new(),
                 })
         }
 
-        pub fn destroy(&mut self) {
-                for (_, bv) in &self.buffer_views {
-                        unsafe { bv.buffer.destroy() };
-                }
-                self.buffer_views.clear();
-
-                for (_, i) in &self.images {
-                        unsafe {
-                                i.image.destroy();
-                                i.image_view.destroy();
+        pub fn process_asset_manager_events(&mut self, asset_manager: &AssetManager) -> AnyResult<()> {
+                for e in asset_manager.events() {
+                        match *e {
+                                AssetManagerEvent::BufferViewUpdated(buffer_view_id) => {
+                                        self.on_buffer_view_updated(asset_manager, buffer_view_id)?;
+                                },
+                                AssetManagerEvent::BufferViewDeleted(_) => todo!(),
+                                AssetManagerEvent::ImageUpdated(image_id) => {
+                                        self.on_image_updated(asset_manager, image_id)?;
+                                },
+                                AssetManagerEvent::ImageDeleted(_) => todo!(),
+                                AssetManagerEvent::SamplerUpdated(sampler_id) => {
+                                        self.on_sampler_updated(asset_manager, sampler_id)?;
+                                },
+                                AssetManagerEvent::SamplerDeleted(_) => todo!(),
+                                AssetManagerEvent::MaterialUpdated(material_id) => {
+                                        self.on_material_updated(asset_manager, material_id)?;
+                                },
+                                AssetManagerEvent::MaterialDeleted(_) => todo!(),
+                                AssetManagerEvent::ShaderUpdated(shader_id) => {
+                                        self.on_shader_updated(asset_manager, shader_id)?;
+                                },
+                                AssetManagerEvent::ShaderDeleted(_) => todo!(),
+                                // AssetManagerEvent::TextureUpdated(texture_id) => todo!(),
+                                // AssetManagerEvent::TextureDeleted(_) => todo!(),
+                                // AssetManagerEvent::MeshUpdated(mid) => todo!(),
+                                // AssetManagerEvent::MeshDeleted(_) => todo!(),
+                                // AssetManagerEvent::ModelUpdated(mid) => todo!(),
+                                // AssetManagerEvent::ModelDeleted(_) => todo!(),
                         }
                 }
-                self.images.clear();
 
-                for (_, s) in &self.samplers {
-                        unsafe { s.destroy() };
-                }
-                self.samplers.clear();
-
-                for (_, sr) in &self.shader_resources {
-                        unsafe { sr.dst_set_layout.destroy() };
-                }
-                self.shader_resources.clear();
-
-                for (_, s) in &self.shaders {
-                        unsafe {
-                                s.vert_module.destroy();
-                                s.frag_module.destroy();
-                        }
-                }
-                self.shaders.clear();
-
-                self.pipelines.drain().for_each(|(_, pipeline)| {
-                        unsafe { pipeline.destroy() };
-                });
+                Ok(())
         }
 
-        fn discover_buffer_view_usages(meshes: &SlotMap<MeshId, Mesh>) -> HashMap<BufferViewId, vk::BufferUsageFlags> {
-                let mut vk_buffer_usages = HashMap::<BufferViewId, vk::BufferUsageFlags>::new();
+        fn on_buffer_view_updated(
+                &mut self,
+                asset_manager: &AssetManager,
+                buffer_view_id: BufferViewId,
+        ) -> AnyResult<()> {
+                if self.buffer_views.contains_key(buffer_view_id) {
+                        // TODO: handle buffer update.
+                        todo!();
+                } else {
+                        let mut vk_buffer = self.create_vk_buffer_from_buffer_view(asset_manager, buffer_view_id)?;
 
-                for (_, mesh) in meshes {
-                        (*vk_buffer_usages.entry(mesh.positions).or_default()) |= vk::BufferUsageFlags::VERTEX_BUFFER;
-                        (*vk_buffer_usages.entry(mesh.tex_coords).or_default()) |= vk::BufferUsageFlags::VERTEX_BUFFER;
-                        (*vk_buffer_usages.entry(mesh.normals).or_default()) |= vk::BufferUsageFlags::VERTEX_BUFFER;
-                        (*vk_buffer_usages.entry(mesh.tangents).or_default()) |= vk::BufferUsageFlags::VERTEX_BUFFER;
-                        (*vk_buffer_usages.entry(mesh.indices).or_default()) |= vk::BufferUsageFlags::INDEX_BUFFER;
+                        if let Some(vk_buffer) = vk_buffer.take() {
+                                self.buffer_views.insert(buffer_view_id, vk_buffer);
+                        }
                 }
 
-                vk_buffer_usages
+                Ok(())
+        }
+
+        fn on_image_updated(&mut self, asset_manager: &AssetManager, image_id: ImageId) -> AnyResult<()> {
+                let image = match asset_manager.images().get(image_id) {
+                        Some(image) => image,
+                        None => return Ok(()),
+                };
+
+                let vk_image_cinfo = VkImageCreateFromDataInfo {
+                        data: &asset_manager.buffers()[image.pixels].bytes,
+                        width: image.width,
+                        height: image.height,
+                        format: Self::vk_format_from_image_format(image.format),
+                        mip_levels: MipLevels::Log2,
+                        samples: vk::SampleCountFlags::TYPE_1,
+                        setup_cmd_buffer: &self.cmd_buffer,
+                        transfer_queue: self.transfer_queue,
+                };
+
+                let vk_image = unsafe {
+                        VkImage::from_data(
+                                &self.instance,
+                                &self.pdevice,
+                                &self.device,
+                                Rc::clone(&self.allocator),
+                                &vk_image_cinfo,
+                        )?
+                };
+
+                let vk_image_view_cinfo = vk::ImageViewCreateInfo {
+                        image: *vk_image,
+                        view_type: vk::ImageViewType::TYPE_2D,
+                        format: vk_image_cinfo.format,
+                        components: Default::default(),
+                        subresource_range: vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: vk_image.mip_levels,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                        },
+                        ..Default::default()
+                };
+
+                let vk_image_view = unsafe { VkImageView::new(Rc::clone(&self.device), &vk_image_view_cinfo)? };
+
+                self.images.insert(
+                        image_id,
+                        VkModelImage {
+                                image: vk_image,
+                                image_view: vk_image_view,
+                        },
+                );
+
+                Ok(())
+        }
+
+        fn on_sampler_updated(&mut self, asset_manager: &AssetManager, sampler_id: SamplerId) -> AnyResult<()> {
+                let sampler = match asset_manager.samplers().get(sampler_id) {
+                        Some(sampler) => sampler,
+                        None => return Ok(()),
+                };
+
+                let vk_sampler_cinfo = vk::SamplerCreateInfo {
+                        mag_filter: Self::vk_filter_from_mag_filter(sampler.mag_filter),
+                        min_filter: Self::vk_filter_from_min_filter(sampler.min_filter),
+                        mipmap_mode: Self::vk_sampler_mipmap_mode_from_min_filter(sampler.min_filter),
+                        address_mode_u: Self::vk_sampler_address_mode_from_wrapping_mode(sampler.wrap_s),
+                        address_mode_v: Self::vk_sampler_address_mode_from_wrapping_mode(sampler.wrap_t),
+                        address_mode_w: vk::SamplerAddressMode::REPEAT,
+                        mip_lod_bias: 0.0,
+                        anisotropy_enable: ENABLE_ANISOTROPY as vk::Bool32,
+                        max_anisotropy: self.pdevice.max_sampler_anisotropy,
+                        compare_enable: vk::FALSE,
+                        compare_op: vk::CompareOp::ALWAYS,
+                        min_lod: 0.0,
+                        max_lod: LOD_CLAMP_NONE,
+                        border_color: vk::BorderColor::INT_OPAQUE_BLACK,
+                        unnormalized_coordinates: vk::FALSE,
+                        ..Default::default()
+                };
+
+                self.samplers.insert(sampler_id, unsafe {
+                        VkSampler::new(Rc::clone(&self.device), &vk_sampler_cinfo)?
+                });
+
+                Ok(())
+        }
+
+        fn on_material_updated(&mut self, asset_manager: &AssetManager, material_id: MaterialId) -> AnyResult<()> {
+                let material = match asset_manager.materials().get(material_id) {
+                        Some(material) => material,
+                        None => return Ok(()),
+                };
+
+                let [material_dst_set] = unsafe {
+                        self.device
+                                .allocate_descriptor_sets_array(*self.dst_pool, &[*self.material_dst_set_layout])?
+                };
+
+                self.material_dst_sets.insert(material_id, material_dst_set);
+
+                let base_color_texture = match material.base_color_texture {
+                        Some(t) => t,
+                        None => return Ok(()),
+                };
+
+                let color_texture = &asset_manager.textures()[base_color_texture];
+                let color_vk_image_view = &self.images[color_texture.image].image_view;
+                let color_vk_sampler = &self.samplers[color_texture.sampler];
+
+                let image_info = vk::DescriptorImageInfo {
+                        image_view: **color_vk_image_view,
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        ..Default::default()
+                };
+                let image_dst_set_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .dst_set(material_dst_set)
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .image_info(image_info.ref_into_slice())
+                        .build();
+
+                let sampler_info = vk::DescriptorImageInfo {
+                        sampler: **color_vk_sampler,
+                        ..Default::default()
+                };
+                let sampler_dst_set_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                        .dst_set(material_dst_set)
+                        .dst_binding(2)
+                        .dst_array_element(0)
+                        .image_info(sampler_info.ref_into_slice())
+                        .build();
+
+                unsafe {
+                        self.device
+                                .update_descriptor_sets(&[image_dst_set_write, sampler_dst_set_write], &[])
+                };
+
+                Ok(())
+        }
+
+        pub fn on_shader_updated(&mut self, asset_manager: &AssetManager, shader_id: ShaderId) -> AnyResult<()> {
+                let shader = match asset_manager.shaders().get(shader_id) {
+                        Some(shader) => shader,
+                        None => return Ok(()),
+                };
+
+                let vert_module = VkShaderModule::from_code(&self.device, &shader.vert_module.bin)?;
+                let frag_module = VkShaderModule::from_code(&self.device, &shader.frag_module.bin)?;
+
+                let mut vertex_input_bindings = Vec::new();
+                let mut vertex_input_attributes = Vec::new();
+
+                for (i, vertex_input) in shader.vertex_inputs.iter().enumerate() {
+                        let mut binding = vk::VertexInputBindingDescription::builder().binding(i as u32);
+                        let mut attribute = vk::VertexInputAttributeDescription::builder()
+                                .binding(i as u32)
+                                .location(i as u32)
+                                .offset(0);
+
+                        match vertex_input.as_str() {
+                                "positions" => {
+                                        binding = binding.stride(std::mem::size_of::<Vec3>() as u32);
+                                        binding = binding.input_rate(vk::VertexInputRate::VERTEX);
+                                        attribute = attribute.format(vk::Format::R32G32B32_SFLOAT);
+                                },
+                                "normals" => {
+                                        binding = binding.stride(std::mem::size_of::<Vec3>() as u32);
+                                        binding = binding.input_rate(vk::VertexInputRate::VERTEX);
+                                        attribute = attribute.format(vk::Format::R32G32B32_SFLOAT);
+                                },
+                                "texture-coordinates" => {
+                                        binding = binding.stride(std::mem::size_of::<Vec2>() as u32);
+                                        binding = binding.input_rate(vk::VertexInputRate::VERTEX);
+                                        attribute = attribute.format(vk::Format::R32G32_SFLOAT);
+                                },
+                                _ => panic!("Invalid shader vertex input: {}", vertex_input),
+                        }
+
+                        vertex_input_bindings.push(binding.build());
+                        vertex_input_attributes.push(attribute.build());
+                }
+
+                let vk_shader = VkShader {
+                        vert_module,
+                        frag_module,
+                        vertex_input_bindings,
+                        vertex_input_attributes,
+                };
+
+                let vk_pipeline = Self::create_graphics_pipeline_from_vk_shader(
+                        &self.device,
+                        self.swapchain_samples,
+                        self.render_pass,
+                        self.pipeline_layout,
+                        &vk_shader,
+                )?;
+
+                self.shaders.insert(shader_id, vk_shader);
+                self.pipelines.insert(shader_id, vk_pipeline);
+
+                Ok(())
+        }
+
+        pub fn destroy(&mut self) {
+                self.pipelines.drain().for_each(|(_, pipeline)| unsafe {
+                        pipeline.destroy();
+                });
+
+                self.shaders.drain().for_each(|(_, shader)| unsafe {
+                        shader.vert_module.destroy();
+                        shader.frag_module.destroy();
+                });
+
+                // self.shader_resources.drain().for_each(|(_, shader_resource)| unsafe {
+                //         shader_resource.dst_set_layout.destroy()
+                // });
+
+                self.samplers.drain().for_each(|(_, sampler)| unsafe {
+                        sampler.destroy();
+                });
+
+                self.images.drain().for_each(|(_, image)| unsafe {
+                        image.image.destroy();
+                        image.image_view.destroy();
+                });
+
+                self.buffer_views.drain().for_each(|(_, buffer_view)| unsafe {
+                        buffer_view.buffer.destroy();
+                });
+
+                unsafe { self.material_dst_set_layout.destroy() };
+                unsafe { self.cmd_buffer.destroy() };
+                unsafe { self.dst_pool.destroy() };
+        }
+
+        fn create_dst_pool(device: &Rc<VkDevice>) -> VkResult<VkDescriptorPool> {
+                let pool_sizes = [
+                        vk::DescriptorPoolSize {
+                                ty: vk::DescriptorType::UNIFORM_BUFFER,
+                                descriptor_count: 100,
+                        },
+                        vk::DescriptorPoolSize {
+                                ty: vk::DescriptorType::SAMPLED_IMAGE,
+                                descriptor_count: 100,
+                        },
+                ];
+
+                let dst_pool_cinfo = vk::DescriptorPoolCreateInfo::builder()
+                        .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+                        .pool_sizes(&pool_sizes)
+                        .max_sets(1000);
+
+                unsafe { VkDescriptorPool::new(device, &dst_pool_cinfo) }
+        }
+
+        fn create_material_dst_set_layout(device: &Rc<VkDevice>) -> VkResult<VkDescriptorSetLayout> {
+                let mat_data_binding = vk::DescriptorSetLayoutBinding {
+                        binding: 0,
+                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
+                        descriptor_count: 1,
+                        stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                        p_immutable_samplers: std::ptr::null(),
+                };
+
+                let tex_binding = vk::DescriptorSetLayoutBinding {
+                        binding: 1,
+                        descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
+                        descriptor_count: 1,
+                        stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                        p_immutable_samplers: std::ptr::null(),
+                };
+
+                let sampler_binding = vk::DescriptorSetLayoutBinding {
+                        binding: 2,
+                        descriptor_type: vk::DescriptorType::SAMPLER,
+                        descriptor_count: 1,
+                        stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                        p_immutable_samplers: std::ptr::null(),
+                };
+
+                let mat_bindings = [mat_data_binding, tex_binding, sampler_binding];
+                let mat_set_layout_cinfo = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&mat_bindings);
+
+                Ok(unsafe { VkDescriptorSetLayout::new(device, &mat_set_layout_cinfo)? })
+        }
+
+        fn create_vk_buffer_from_buffer_view(
+                &self,
+                asset_manager: &AssetManager,
+                buffer_view_id: BufferViewId,
+        ) -> AnyResult<Option<VkModelBufferView>> {
+                let buffer_view = match asset_manager.buffer_views().get(buffer_view_id) {
+                        Some(buffer_view) => buffer_view,
+                        None => return Ok(None),
+                };
+
+                let buffer = match asset_manager.buffers().get(buffer_view.buffer) {
+                        Some(buffer) => buffer,
+                        None => panic!(), // return Ok(()),
+                };
+
+                assert!(buffer.bytes.len() >= (buffer_view.byte_offset + buffer_view.byte_length));
+
+                let buffer_usage = Self::discover_buffer_view_usage_flags(buffer_view_id, asset_manager.meshes());
+
+                let vk_buffer_cinfo = VkImmutableBufferCreateInfo {
+                        device: &self.device,
+                        allocator: Rc::clone(&self.allocator),
+                        cmd_buffer: &self.cmd_buffer,
+                        transfer_queue: self.transfer_queue,
+                        buffer_usage,
+                        data: BufferData::OffsetLength {
+                                data: buffer.bytes.as_slice(),
+                                offset: buffer_view.byte_offset,
+                                length: buffer_view.byte_length,
+                        },
+                };
+
+                let vk_buffer = VkBuffer::new_immutable(vk_buffer_cinfo)?;
+
+                let format =
+                        Self::vk_format_from_component_and_data_type(buffer_view.component_type, buffer_view.data_type);
+
+                let index_type = match buffer_view.component_type {
+                        ComponentType::U16 => vk::IndexType::UINT16,
+                        ComponentType::U32 => vk::IndexType::UINT32,
+                        _ => vk::IndexType::from_raw(i32::MAX),
+                };
+
+                Ok(Some(VkModelBufferView {
+                        buffer: vk_buffer,
+                        format,
+                        index_type,
+                        element_count: buffer_view.element_count,
+                }))
+        }
+
+        fn discover_buffer_view_usage_flags(
+                buffer_view_id: BufferViewId,
+                meshes: &SlotMap<MeshId, Mesh>,
+        ) -> vk::BufferUsageFlags {
+                let mut usage_flags = vk::BufferUsageFlags::empty();
+
+                for (_, mesh) in meshes {
+                        if mesh.positions == buffer_view_id
+                                || mesh.tex_coords == buffer_view_id
+                                || mesh.normals == buffer_view_id
+                                || mesh.tangents == buffer_view_id
+                                || mesh.tex_coords == buffer_view_id
+                        {
+                                usage_flags |= vk::BufferUsageFlags::VERTEX_BUFFER
+                        }
+
+                        if mesh.indices == buffer_view_id {
+                                usage_flags |= vk::BufferUsageFlags::INDEX_BUFFER
+                        }
+                }
+
+                usage_flags
         }
 
         fn create_vk_buffers_from_buffers(
@@ -258,10 +601,10 @@ impl VkAssetManager {
         }
 
         fn create_vk_images_from_images(
-                instance: &ash::Instance,
-                pdevice: &VkPhysicalDevice,
-                device: Rc<VkDevice>,
-                allocator: Rc<VmaAllocator>,
+                instance: &Rc<VkInstance>,
+                pdevice: &Rc<VkPhysicalDevice>,
+                device: &Rc<VkDevice>,
+                allocator: &Rc<VmaAllocator>,
                 transfer_queue: vk::Queue,
                 cmd_buffer: &VkReusableCommandBuffer,
                 buffers: &SlotMap<BufferId, Buffer>,

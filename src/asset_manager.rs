@@ -320,6 +320,7 @@ impl AssetManagerBuilder {
 
 #[derive(Debug, Clone)]
 pub struct AssetManager {
+        events: Vec<AssetManagerEvent>,
         buffers: SlotMap<BufferId, Buffer>,
         buffer_views: SlotMap<BufferViewId, BufferView>,
         images: SlotMap<ImageId, Image>,
@@ -347,6 +348,7 @@ impl AssetManager {
                 let default_material = materials.insert(default_material);
 
                 Self {
+                        events: Vec::new(),
                         buffers: SlotMap::with_key(),
                         buffer_views: SlotMap::with_key(),
                         images: SlotMap::with_key(),
@@ -364,6 +366,14 @@ impl AssetManager {
                         default_sampler,
                         default_material,
                 }
+        }
+
+        pub fn events(&self) -> &Vec<AssetManagerEvent> {
+                &self.events
+        }
+
+        pub fn clear_events(&mut self) {
+                self.events.clear();
         }
 
         pub fn register_shader_resource(
@@ -398,6 +408,9 @@ impl AssetManager {
 
                 let shader_id = self.shaders.insert(shader);
                 self.shader_names.insert(declaration.name, shader_id);
+
+                self.events.push(AssetManagerEvent::ShaderUpdated(shader_id));
+
                 Ok(shader_id)
         }
 
@@ -407,12 +420,26 @@ impl AssetManager {
                 let (doc, buffers, images) = gltf::import(gltf_path).map_err(|e| GLTFImportError::GLTFCrateError(e))?;
 
                 let buffers = Self::load_buffers(buffers, &mut self.buffers);
-                let buffer_view_ids = Self::load_buffer_views(&doc, &buffers, &mut self.buffer_views)?;
-                let image_ids = Self::load_images(gltf_path, &doc, images, &mut self.buffers, &mut self.images)?;
-                let sampler_ids = Self::load_samplers(&doc, self.default_sampler, &mut self.samplers);
+                let buffer_view_ids =
+                        Self::load_buffer_views(&doc, &buffers, &mut self.events, &mut self.buffer_views)?;
+                let image_ids = Self::load_images(
+                        gltf_path,
+                        &doc,
+                        images,
+                        &mut self.events,
+                        &mut self.buffers,
+                        &mut self.images,
+                )?;
+                let sampler_ids = Self::load_samplers(&doc, self.default_sampler, &mut self.events, &mut self.samplers);
                 let texture_ids =
                         Self::load_textures(&doc, &image_ids, &sampler_ids, self.default_sampler, &mut self.textures);
-                let material_ids = Self::load_materials(&doc, &self.shader_names, &texture_ids, &mut self.materials);
+                let material_ids = Self::load_materials(
+                        &doc,
+                        &self.shader_names,
+                        &texture_ids,
+                        &mut self.events,
+                        &mut self.materials,
+                );
                 let mesh_groups = Self::load_meshes(
                         &doc,
                         &buffer_view_ids,
@@ -503,6 +530,7 @@ impl AssetManager {
         fn load_buffer_views(
                 doc: &gltf::Document,
                 buffers: &Vec<BufferId>,
+                out_events: &mut Vec<AssetManagerEvent>,
                 out_buffer_views: &mut SlotMap<BufferViewId, BufferView>,
         ) -> Result<Vec<BufferViewId>, GLTFImportError> {
                 doc.accessors()
@@ -523,6 +551,7 @@ impl AssetManager {
                                         data_type: a.dimensions(),
                                         element_count: a.count(),
                                 });
+                                out_events.push(AssetManagerEvent::BufferViewUpdated(buffer_view_id));
 
                                 Ok(buffer_view_id)
                         })
@@ -533,6 +562,7 @@ impl AssetManager {
                 gltf_path: &Path,
                 doc: &gltf::Document,
                 images: Vec<gltf::image::Data>,
+                out_events: &mut Vec<AssetManagerEvent>,
                 out_buffers: &mut SlotMap<BufferId, Buffer>,
                 out_images: &mut SlotMap<ImageId, Image>,
         ) -> Result<Vec<ImageId>, GLTFImportError> {
@@ -567,6 +597,7 @@ impl AssetManager {
                                         height: image.height,
                                         format: image.format,
                                 });
+                                out_events.push(AssetManagerEvent::ImageUpdated(image_id));
 
                                 Some(Ok(image_id))
                         })
@@ -585,6 +616,7 @@ impl AssetManager {
         fn load_samplers(
                 doc: &gltf::Document,
                 default_sampler: SamplerId,
+                out_events: &mut Vec<AssetManagerEvent>,
                 out_samplers: &mut SlotMap<SamplerId, Sampler>,
         ) -> Vec<SamplerId> {
                 doc.samplers()
@@ -596,6 +628,8 @@ impl AssetManager {
                                         wrap_s: s.wrap_s(),
                                         wrap_t: s.wrap_t(),
                                 });
+
+                                out_events.push(AssetManagerEvent::SamplerUpdated(sampler_id));
 
                                 sampler_id
                         })
@@ -626,6 +660,7 @@ impl AssetManager {
                 doc: &gltf::Document,
                 shader_names: &HashMap<String, ShaderId>,
                 texture_ids: &Vec<TextureId>,
+                out_events: &mut Vec<AssetManagerEvent>,
                 out_materials: &mut SlotMap<MaterialId, Material>,
         ) -> Vec<MaterialId> {
                 doc.materials()
@@ -665,6 +700,8 @@ impl AssetManager {
                                         emissive_texture,
                                         emissive_factor,
                                 });
+
+                                out_events.push(AssetManagerEvent::MaterialUpdated(mat_id));
 
                                 mat_id
                         })
@@ -897,4 +934,26 @@ impl AssetManager {
 
                 Some(Ok(model_id))
         } */
+}
+
+#[derive(Debug, Clone)]
+pub enum AssetManagerEvent {
+        // BufferCreated(BufferId),
+        // BufferDeleted(BufferId),
+        BufferViewUpdated(BufferViewId),
+        BufferViewDeleted(BufferViewId),
+        ImageUpdated(ImageId),
+        ImageDeleted(ImageId),
+        SamplerUpdated(SamplerId),
+        SamplerDeleted(SamplerId),
+        // TextureUpdated(TextureId),
+        // TextureDeleted(TextureId),
+        MaterialUpdated(MaterialId),
+        MaterialDeleted(MaterialId),
+        // MeshUpdated(MeshId),
+        // MeshDeleted(MeshId),
+        // ModelUpdated(ModelId),
+        // ModelDeleted(ModelId),
+        ShaderUpdated(ShaderId),
+        ShaderDeleted(ShaderId),
 }

@@ -182,7 +182,6 @@ impl Drop for VkFrameData {
 
 pub struct VkRenderer {
         window: Rc<Window>,
-        asset_manager: Arc<AssetManager>,
 
         vk_context: VkContext,
         vk_asset_manager: VkAssetManager,
@@ -210,18 +209,14 @@ pub struct VkRenderer {
 }
 
 impl VkRenderer {
-        pub fn new(
-                window: Rc<Window>,
-                imguic: &mut imgui::Context,
-                asset_manager: Arc<AssetManager>,
-        ) -> AnyResult<Self> {
+        pub fn new(window: Rc<Window>, imguic: &mut imgui::Context) -> AnyResult<Self> {
                 let vk_context = VkContext::new(Rc::clone(&window))?;
 
                 let mut swapchain = VkSwapchain::new(
                         Rc::clone(&window),
                         Rc::clone(&vk_context.instance),
                         Rc::clone(&vk_context.surface),
-                        *vk_context.pdevice,
+                        **vk_context.pdevice,
                         Rc::clone(&vk_context.device),
                         Rc::clone(&vk_context.allocator),
                         DESIRED_SWAPCHAIN_IMG_COUNT,
@@ -262,18 +257,15 @@ impl VkRenderer {
                 trace!("Created VkGraphicsPipelineLayout");
 
                 let vk_asset_manager = VkAssetManager::new(
-                        &vk_context.instance,
-                        &vk_context.pdevice,
+                        Rc::clone(&vk_context.instance),
+                        Rc::clone(&vk_context.pdevice),
                         Rc::clone(&vk_context.device),
                         Rc::clone(&vk_context.allocator),
                         vk_context.queues.graphics,
                         Rc::clone(&vk_context.cmd_pool),
-                        *vk_context.dst_pool,
-                        *material_dst_set_layout,
                         swapchain.samples,
                         *render_pass,
                         *graphics_pipeline_layout,
-                        &asset_manager,
                         swapchain.img_count as usize,
                 )?;
                 trace!("Created VkAssetManager");
@@ -287,7 +279,7 @@ impl VkRenderer {
 
                 let imgui_renderer = Some(imgui_rs_vulkan_renderer::Renderer::with_default_allocator(
                         &**vk_context.instance,
-                        *vk_context.pdevice,
+                        **vk_context.pdevice,
                         (**vk_context.device).clone(),
                         vk_context.queues.graphics,
                         **vk_context.cmd_pool,
@@ -298,7 +290,6 @@ impl VkRenderer {
 
                 Ok(Self {
                         window,
-                        asset_manager,
 
                         vk_context,
                         vk_asset_manager,
@@ -337,6 +328,9 @@ impl Renderer for VkRenderer {
                 player_orien: &UnitQuat,
                 imgui_draw_data: &imgui::DrawData,
         ) -> AnyResult<()> {
+                self.vk_asset_manager
+                        .process_asset_manager_events(render_state.asset_manager.as_ref().unwrap())?;
+
                 let object_matrices_padded_size = self.vk_context.pdevice.padded_size_of::<ObjectMatrices>();
                 for (mesh_instance_id, mesh_transform) in transform_manager.iter() {
                         let buffer_idx = mesh_instance_id.data().as_ffi() as u32 as usize;
@@ -415,7 +409,7 @@ impl Renderer for VkRenderer {
                                         *frame_data.draw_cmd_buffer,
                                         frame_data.object_dst_set,
                                         *self.graphics_pipeline_layout,
-                                        &self.asset_manager,
+                                        render_state.asset_manager.as_ref().unwrap(),
                                         &self.vk_asset_manager,
                                         mesh_instances,
                                         model_instances,

@@ -1,5 +1,6 @@
 use std::{
         collections::VecDeque,
+        path::Path,
         sync::{Arc, Mutex},
         time::{Duration, Instant},
 };
@@ -16,12 +17,13 @@ use log::{error, info, trace, warn};
 use crate::{
         actions::*,
         application::{CursorState, WindowMode, WindowThreadCommand, WindowThreadMessage},
-        asset_manager::{AssetManager, ModelId},
+        asset_manager::{AssetManager, MagFilter, Material, MinFilter, ModelId, Sampler, ShaderId, WrappingMode},
         constants::PLAYER_MOVEMENT_SPEED,
         input_manager::ActionReceiver,
-        my_glm::{Mat4, Quat, UnitQuat, Vec3},
+        my_glm::{Mat4, Quat, UnitQuat, Vec3, Vec4},
         render_state_switcher::RenderStateSwitcher,
         renderer::{LightColor, LightPos, RenderState},
+        AnyResult,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -47,7 +49,6 @@ pub struct LogicThreadSpawnParams {
         pub logic_thread_rx: std::sync::mpsc::Receiver<LogicThreadMessage>,
         pub window_thread_tx: std::sync::mpsc::Sender<WindowThreadMessage>,
         pub action_receiver: ActionReceiver,
-        pub asset_manager: Arc<AssetManager>,
         pub render_state_switcher: Arc<Mutex<RenderStateSwitcher>>,
         pub systems: Vec<Box<dyn FnOnce(&mut DispatcherBuilder) + Send + Sync>>,
 }
@@ -61,7 +62,7 @@ impl LogicThread {
                 Self {
                         handle: std::thread::Builder::new()
                                 .name("Logic".to_string())
-                                .spawn(|| Self::run(params))
+                                .spawn(|| Self::run(params).expect("Error ocurred in logic thread!"))
                                 .expect("Failed to spawn logic thread!"),
                 }
         }
@@ -71,8 +72,10 @@ impl LogicThread {
                 self.handle.join()
         }
 
-        fn run(mut params: LogicThreadSpawnParams) {
+        fn run(mut params: LogicThreadSpawnParams) -> AnyResult<()> {
                 let mut world = World::new();
+
+                let asset_manager = Self::init_asset_manager()?;
 
                 let target_ticktime = Duration::from_secs_f64(1.0 / params.target_tps as f64);
                 world.insert(TargetTpsResource(params.target_tps));
@@ -154,21 +157,21 @@ impl LogicThread {
                 let _colt = world
                         .create_entity()
                         .with(TransformComponent::from_pos(Vec3::new(2.5, 0.0, 0.0)))
-                        .with(ModelComponent(params.asset_manager.get_model_by_name("colt")))
+                        .with(ModelComponent(asset_manager.get_model_by_name("colt")))
                         .with(ModelRotateComponent(-22.5f32.to_radians()))
                         .build();
 
                 let _icosphere = world
                         .create_entity()
                         .with(TransformComponent::from_scale(Vec3::new(4.0, 4.0, 4.0)))
-                        .with(ModelComponent(params.asset_manager.get_model_by_name("icosphere")))
+                        .with(ModelComponent(asset_manager.get_model_by_name("icosphere")))
                         .with(ModelRotateComponent(0f32.to_radians()))
                         .build();
 
                 let _grass_plane = world
                         .create_entity()
                         .with(TransformComponent::from_pos(Vec3::new(0.0, -1.0, 0.0)))
-                        .with(ModelComponent(params.asset_manager.get_model_by_name("grass-plane")))
+                        .with(ModelComponent(asset_manager.get_model_by_name("grass-plane")))
                         .build();
 
                 let _light = world
@@ -178,12 +181,14 @@ impl LogicThread {
                                 orien: UnitQuat::identity(),
                                 scale: Vec3::from_element(0.25),
                         })
-                        .with(ModelComponent(params.asset_manager.get_model_by_name("lit-icosphere")))
+                        .with(ModelComponent(asset_manager.get_model_by_name("lit-icosphere")))
                         .with(LightEmitterComponent {
                                 color: Vec3::new(0.9, 1.0, 0.9),
                         })
                         .with(ModelRotateComponent(45f32.to_radians()))
                         .build();
+
+                world.insert(asset_manager);
 
                 'main: loop {
                         let begin = Instant::now();
@@ -207,6 +212,84 @@ impl LogicThread {
 
                         while (Instant::now() - begin) < target_ticktime {}
                 }
+
+                Ok(())
+        }
+
+        fn init_asset_manager() -> AnyResult<AssetManager> {
+                let dsampler = Sampler {
+                        name: Some(String::from("Default Sampler")),
+                        mag_filter: MagFilter::Linear,
+                        min_filter: MinFilter::LinearMipmapLinear,
+                        wrap_s: WrappingMode::Repeat,
+                        wrap_t: WrappingMode::Repeat,
+                };
+
+                // TODO: improve default shader.
+                let dmaterial = Material {
+                        name: Some(String::from("Default Material")),
+                        shader: ShaderId::from(slotmap::KeyData::default()),
+                        base_color_factor: Vec4::new(0.8, 0.8, 0.8, 1.0),
+                        metallic_factor: 0.0,
+                        roughness_factor: 1.0,
+                        base_color_texture: None,
+                        metallic_roughness_texture: None,
+                        normal_texture: None,
+                        occlusion_texture: None,
+                        emissive_texture: None,
+                        emissive_factor: Vec3::from_element(0.0),
+                };
+
+                let mut asset_manager = AssetManager::new(dsampler, dmaterial);
+
+                // asset_manager.register_shader_resource(
+                //         "matrices".to_string(),
+                //         ShaderResource {
+                //                 elements: vec![
+                //                         ShaderResourceElement {
+                //                                 element_type: ShaderResourceElementType::UniformBuffer,
+                //                                 shader_stage_flags: ash::vk::ShaderStageFlags::VERTEX,
+                //                         },
+                //                         ShaderResourceElement {
+                //                                 element_type: ShaderResourceElementType::UniformBufferDynamic,
+                //                                 shader_stage_flags: ash::vk::ShaderStageFlags::VERTEX,
+                //                         },
+                //                 ],
+                //         },
+                // );
+
+                // asset_manager.register_shader_resource(
+                //         "material-texture-sampler".to_string(),
+                //         ShaderResource {
+                //                 elements: vec![
+                //                         ShaderResourceElement {
+                //                                 element_type: ShaderResourceElementType::SampledImage,
+                //                                 shader_stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+                //                         },
+                //                         ShaderResourceElement {
+                //                                 element_type: ShaderResourceElementType::Sampler,
+                //                                 shader_stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+                //                         },
+                //                 ],
+                //         },
+                // );
+
+                let _basic_shader =
+                        asset_manager.load_shader_from_yaml(Path::new("res/shader/basic_shader/basic_shader.yaml"))?;
+                let _color_shader =
+                        asset_manager.load_shader_from_yaml(Path::new("res/shader/color_shader/color_shader.yaml"))?;
+
+                let _model_colt = asset_manager.import_gltf_file(Path::new("res/model/new-colt/colt.gltf"))?;
+                let _model_grass_plane =
+                        asset_manager.import_gltf_file(Path::new("res/model/grass-plane/grass-plane.gltf"))?;
+                let _model_sphere = asset_manager.import_gltf_file(Path::new("res/model/sphere/sphere.gltf"))?;
+                let _model_icosphere =
+                        asset_manager.import_gltf_file(Path::new("res/model/icosphere/icosphere.gltf"))?;
+                let _model_lit_icosphere = asset_manager
+                        .import_gltf_file(std::path::Path::new("res/model/lit-icosphere/lit-icosphere.gltf"))?;
+
+                trace!("Initialized AssetManager");
+                Ok(asset_manager)
         }
 }
 
@@ -586,6 +669,7 @@ struct RenderStateGeneratorSystem {
 
 impl<'a> specs::System<'a> for RenderStateGeneratorSystem {
         type SystemData = (
+                WriteExpect<'a, AssetManager>,
                 ReadExpect<'a, ActiveCameraResource>,
                 Entities<'a>,
                 ReadStorage<'a, ProjectionCameraComponent>,
@@ -594,8 +678,14 @@ impl<'a> specs::System<'a> for RenderStateGeneratorSystem {
                 ReadStorage<'a, LightEmitterComponent>,
         );
 
-        fn run(&mut self, (active_cam, entities, proj_cams, mdl_strg, transforms, light_strg): Self::SystemData) {
+        fn run(
+                &mut self,
+                (mut asset_manager, active_cam, entities, proj_cams, mdl_strg, transforms, light_strg): Self::SystemData,
+        ) {
                 let mut render_state = self.render_state.take().unwrap_or_else(|| Box::new(RenderState::new()));
+
+                render_state.asset_manager = Some(asset_manager.clone());
+                asset_manager.clear_events();
 
                 render_state.camera_pos = transforms.get(active_cam.0).unwrap().pos;
                 render_state.proj_camera = proj_cams.get(active_cam.0).unwrap().clone();

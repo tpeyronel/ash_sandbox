@@ -2,7 +2,7 @@ use slotmap::{SecondaryMap, SlotMap};
 use specs::Entity;
 
 use crate::{
-        asset_manager::{MeshId, ModelId},
+        asset_manager::{AssetManager, MeshId, ModelId},
         hashmap::HashMap,
         logic_thread::{ModelComponent, ProjectionCameraComponent, TransformComponent},
         my_glm::*,
@@ -57,6 +57,7 @@ pub trait Renderer {
 
 #[derive(Debug, Clone)]
 pub struct RenderState {
+        pub asset_manager: Option<AssetManager>,
         pub camera_pos: Vec3,
         pub proj_camera: ProjectionCameraComponent,
         pub model_instances: HashMap<Entity, (TransformComponent, ModelComponent)>,
@@ -66,6 +67,7 @@ pub struct RenderState {
 impl RenderState {
         pub fn new() -> Self {
                 Self {
+                        asset_manager: None,
                         camera_pos: Default::default(),
                         proj_camera: Default::default(),
                         model_instances: HashMap::new(),
@@ -100,6 +102,7 @@ impl RenderState {
                 }
 
                 Self {
+                        asset_manager: new.asset_manager.clone(),
                         camera_pos,
                         proj_camera: new.proj_camera,
                         model_instances,

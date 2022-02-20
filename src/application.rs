@@ -54,7 +54,6 @@ pub struct Application {
         input_manager: InputManager,
         dispatch_actions: bool,
         action_receiver: ActionReceiver,
-        asset_manager: Arc<AssetManager>,
 
         mesh_instances: SlotMap<MeshInstanceId, MeshInstance>,
         model_instances: SlotMap<ModelInstanceId, ModelInstance>,
@@ -142,92 +141,10 @@ impl Application {
                 input_manager.push_input_binding_map(input_map);
                 trace!("Initialized InputManager");
 
-                let dsampler = Sampler {
-                        name: Some(String::from("Default Sampler")),
-                        mag_filter: MagFilter::Linear,
-                        min_filter: MinFilter::LinearMipmapLinear,
-                        wrap_s: WrappingMode::Repeat,
-                        wrap_t: WrappingMode::Repeat,
-                };
-
-                // TODO: improve default shader.
-                let dmaterial = Material {
-                        name: Some(String::from("Default Material")),
-                        shader: ShaderId::from(slotmap::KeyData::default()),
-                        base_color_factor: Vec4::new(0.8, 0.8, 0.8, 1.0),
-                        metallic_factor: 0.0,
-                        roughness_factor: 1.0,
-                        base_color_texture: None,
-                        metallic_roughness_texture: None,
-                        normal_texture: None,
-                        occlusion_texture: None,
-                        emissive_texture: None,
-                        emissive_factor: Vec3::from_element(0.0),
-                };
-
-                let mut asset_manager = AssetManager::new(dsampler, dmaterial);
-
-                asset_manager.register_shader_resource(
-                        "matrices".to_string(),
-                        ShaderResource {
-                                elements: vec![
-                                        ShaderResourceElement {
-                                                element_type: ShaderResourceElementType::UniformBuffer,
-                                                shader_stage_flags: ash::vk::ShaderStageFlags::VERTEX,
-                                        },
-                                        ShaderResourceElement {
-                                                element_type: ShaderResourceElementType::UniformBufferDynamic,
-                                                shader_stage_flags: ash::vk::ShaderStageFlags::VERTEX,
-                                        },
-                                ],
-                        },
-                );
-
-                asset_manager.register_shader_resource(
-                        "material-texture-sampler".to_string(),
-                        ShaderResource {
-                                elements: vec![
-                                        ShaderResourceElement {
-                                                element_type: ShaderResourceElementType::SampledImage,
-                                                shader_stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
-                                        },
-                                        ShaderResourceElement {
-                                                element_type: ShaderResourceElementType::Sampler,
-                                                shader_stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
-                                        },
-                                ],
-                        },
-                );
-
-                let _basic_shader =
-                        asset_manager.load_shader_from_yaml(Path::new("res/shader/basic_shader/basic_shader.yaml"))?;
-                let _color_shader =
-                        asset_manager.load_shader_from_yaml(Path::new("res/shader/color_shader/color_shader.yaml"))?;
-
-
-                let _model_colt =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/new-colt/colt.gltf"))?;
-                let _model_grass_plane =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/grass-plane/grass-plane.gltf"))?;
-                let _model_sphere =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/sphere/sphere.gltf"))?;
-                let _model_icosphere =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/icosphere/icosphere.gltf"))?;
-                let _model_lit_icosphere = asset_manager
-                        .import_gltf_file(std::path::Path::new("res/model/lit-icosphere/lit-icosphere.gltf"))?;
-
-
-                let asset_manager = Arc::new(asset_manager);
-                trace!("Initialized AssetManager");
-
                 let render_state_switcher = Arc::new(Mutex::new(RenderStateSwitcher::new()));
                 let render_state_manager = RenderStateManager::new(Arc::clone(&render_state_switcher));
 
-                let renderer = VkRenderer::new(
-                        Rc::clone(&window),
-                        &mut imgui_context.context,
-                        Arc::clone(&asset_manager),
-                )?;
+                let renderer = VkRenderer::new(Rc::clone(&window), &mut imgui_context.context)?;
 
                 let (logic_thread_tx, logic_thread_rx) = std::sync::mpsc::channel();
                 let (window_thread_tx, window_thread_rx) = std::sync::mpsc::channel();
@@ -251,7 +168,6 @@ impl Application {
                         logic_thread_rx,
                         window_thread_tx,
                         action_receiver: input_manager.create_action_receiver(),
-                        asset_manager: Arc::clone(&asset_manager),
                         render_state_switcher,
                         systems,
                 };
@@ -271,7 +187,6 @@ impl Application {
                         input_manager,
                         dispatch_actions,
                         action_receiver,
-                        asset_manager,
 
                         mesh_instances: SlotMap::with_key(),
                         model_instances: SlotMap::with_key(),
@@ -447,7 +362,7 @@ impl Application {
                                 Some(&minstance_id) => minstance_id,
                                 None => {
                                         let minstance_id = Self::create_model_instance(
-                                                &self.asset_manager,
+                                                render_state.asset_manager.as_ref().unwrap(),
                                                 &mut self.mesh_instances,
                                                 &mut self.model_instances,
                                                 minstance_model.0,
@@ -465,7 +380,7 @@ impl Application {
                         Self::process_model_instance(
                                 &mut matrix_stack,
                                 &mut self.transform_manager,
-                                &self.asset_manager,
+                                render_state.asset_manager.as_ref().unwrap(),
                                 &self.model_instances,
                                 minstance,
                         );
@@ -843,6 +758,10 @@ impl RenderStateManager {
                 if let Some(new_render_state) = render_state_switcher.try_exchange(&mut self.old_render_state) {
                         self.old_render_state = self.new_render_state.replace(new_render_state);
                         self.latest_render_state_switch = Instant::now();
+                } else {
+                        if let Some(new_render_state) = &mut self.new_render_state {
+                                new_render_state.asset_manager.as_mut().unwrap().clear_events();
+                        }
                 }
         }
 
