@@ -7,12 +7,10 @@ use slotmap::{SecondaryMap, SlotMap};
 
 use crate::{
         asset_manager::{
-                AssetManager, AssetManagerEvent, Buffer, BufferId, BufferView, BufferViewId, ComponentType, DataType,
-                Image, ImageFormat, ImageId, MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, Sampler,
-                SamplerId, Shader, ShaderId, ShaderResource, ShaderResourceId, Texture, TextureId, WrappingMode,
+                AssetManager, AssetManagerEvent, BufferViewId, ComponentType, DataType, ImageFormat, ImageId,
+                MagFilter, MaterialId, Mesh, MeshId, MinFilter, SamplerId, ShaderId, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
-        hashmap::HashMap,
         my_glm::{Vec2, Vec3},
         util::RefIntoSlice,
         vk::{
@@ -47,10 +45,10 @@ pub struct VkShader {
         pub vertex_input_attributes: Vec<vk::VertexInputAttributeDescription>,
 }
 
-pub struct VkShaderResource {
-        pub dst_set_layout: VkDescriptorSetLayout,
-        pub descriptor_sets: Vec<vk::DescriptorSet>,
-}
+// pub struct VkShaderResource {
+//         pub dst_set_layout: VkDescriptorSetLayout,
+//         pub descriptor_sets: Vec<vk::DescriptorSet>,
+// }
 
 pub struct VkAssetManager {
         instance: Rc<VkInstance>,
@@ -96,7 +94,7 @@ impl VkAssetManager {
                 let material_dst_set_layout = Self::create_material_dst_set_layout(&device)?;
 
                 // trace!("Creating VkShaderResources...");
-                // let vk_shader_resources = Self::create_vk_shaders_resources_from_shader_resources(
+                // let vk_shader_resources = Self::create_vk_shader_resources_from_shader_resources(
                 //         &device,
                 //         dst_pool,
                 //         asset_manager.shader_resources(),
@@ -159,230 +157,6 @@ impl VkAssetManager {
                                 // AssetManagerEvent::ModelDeleted(_) => todo!(),
                         }
                 }
-
-                Ok(())
-        }
-
-        fn on_buffer_view_updated(
-                &mut self,
-                asset_manager: &AssetManager,
-                buffer_view_id: BufferViewId,
-        ) -> AnyResult<()> {
-                if self.buffer_views.contains_key(buffer_view_id) {
-                        // TODO: handle buffer update.
-                        todo!();
-                } else {
-                        let mut vk_buffer = self.create_vk_buffer_from_buffer_view(asset_manager, buffer_view_id)?;
-
-                        if let Some(vk_buffer) = vk_buffer.take() {
-                                self.buffer_views.insert(buffer_view_id, vk_buffer);
-                        }
-                }
-
-                Ok(())
-        }
-
-        fn on_image_updated(&mut self, asset_manager: &AssetManager, image_id: ImageId) -> AnyResult<()> {
-                let image = match asset_manager.images().get(image_id) {
-                        Some(image) => image,
-                        None => return Ok(()),
-                };
-
-                let vk_image_cinfo = VkImageCreateFromDataInfo {
-                        data: &asset_manager.buffers()[image.pixels].bytes,
-                        width: image.width,
-                        height: image.height,
-                        format: Self::vk_format_from_image_format(image.format),
-                        mip_levels: MipLevels::Log2,
-                        samples: vk::SampleCountFlags::TYPE_1,
-                        setup_cmd_buffer: &self.cmd_buffer,
-                        transfer_queue: self.transfer_queue,
-                };
-
-                let vk_image = unsafe {
-                        VkImage::from_data(
-                                &self.instance,
-                                &self.pdevice,
-                                &self.device,
-                                Rc::clone(&self.allocator),
-                                &vk_image_cinfo,
-                        )?
-                };
-
-                let vk_image_view_cinfo = vk::ImageViewCreateInfo {
-                        image: *vk_image,
-                        view_type: vk::ImageViewType::TYPE_2D,
-                        format: vk_image_cinfo.format,
-                        components: Default::default(),
-                        subresource_range: vk::ImageSubresourceRange {
-                                aspect_mask: vk::ImageAspectFlags::COLOR,
-                                base_mip_level: 0,
-                                level_count: vk_image.mip_levels,
-                                base_array_layer: 0,
-                                layer_count: 1,
-                        },
-                        ..Default::default()
-                };
-
-                let vk_image_view = unsafe { VkImageView::new(Rc::clone(&self.device), &vk_image_view_cinfo)? };
-
-                self.images.insert(
-                        image_id,
-                        VkModelImage {
-                                image: vk_image,
-                                image_view: vk_image_view,
-                        },
-                );
-
-                Ok(())
-        }
-
-        fn on_sampler_updated(&mut self, asset_manager: &AssetManager, sampler_id: SamplerId) -> AnyResult<()> {
-                let sampler = match asset_manager.samplers().get(sampler_id) {
-                        Some(sampler) => sampler,
-                        None => return Ok(()),
-                };
-
-                let vk_sampler_cinfo = vk::SamplerCreateInfo {
-                        mag_filter: Self::vk_filter_from_mag_filter(sampler.mag_filter),
-                        min_filter: Self::vk_filter_from_min_filter(sampler.min_filter),
-                        mipmap_mode: Self::vk_sampler_mipmap_mode_from_min_filter(sampler.min_filter),
-                        address_mode_u: Self::vk_sampler_address_mode_from_wrapping_mode(sampler.wrap_s),
-                        address_mode_v: Self::vk_sampler_address_mode_from_wrapping_mode(sampler.wrap_t),
-                        address_mode_w: vk::SamplerAddressMode::REPEAT,
-                        mip_lod_bias: 0.0,
-                        anisotropy_enable: ENABLE_ANISOTROPY as vk::Bool32,
-                        max_anisotropy: self.pdevice.max_sampler_anisotropy,
-                        compare_enable: vk::FALSE,
-                        compare_op: vk::CompareOp::ALWAYS,
-                        min_lod: 0.0,
-                        max_lod: LOD_CLAMP_NONE,
-                        border_color: vk::BorderColor::INT_OPAQUE_BLACK,
-                        unnormalized_coordinates: vk::FALSE,
-                        ..Default::default()
-                };
-
-                self.samplers.insert(sampler_id, unsafe {
-                        VkSampler::new(Rc::clone(&self.device), &vk_sampler_cinfo)?
-                });
-
-                Ok(())
-        }
-
-        fn on_material_updated(&mut self, asset_manager: &AssetManager, material_id: MaterialId) -> AnyResult<()> {
-                let material = match asset_manager.materials().get(material_id) {
-                        Some(material) => material,
-                        None => return Ok(()),
-                };
-
-                let [material_dst_set] = unsafe {
-                        self.device
-                                .allocate_descriptor_sets_array(*self.dst_pool, &[*self.material_dst_set_layout])?
-                };
-
-                self.material_dst_sets.insert(material_id, material_dst_set);
-
-                let base_color_texture = match material.base_color_texture {
-                        Some(t) => t,
-                        None => return Ok(()),
-                };
-
-                let color_texture = &asset_manager.textures()[base_color_texture];
-                let color_vk_image_view = &self.images[color_texture.image].image_view;
-                let color_vk_sampler = &self.samplers[color_texture.sampler];
-
-                let image_info = vk::DescriptorImageInfo {
-                        image_view: **color_vk_image_view,
-                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                        ..Default::default()
-                };
-                let image_dst_set_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                        .dst_set(material_dst_set)
-                        .dst_binding(1)
-                        .dst_array_element(0)
-                        .image_info(image_info.ref_into_slice())
-                        .build();
-
-                let sampler_info = vk::DescriptorImageInfo {
-                        sampler: **color_vk_sampler,
-                        ..Default::default()
-                };
-                let sampler_dst_set_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::SAMPLER)
-                        .dst_set(material_dst_set)
-                        .dst_binding(2)
-                        .dst_array_element(0)
-                        .image_info(sampler_info.ref_into_slice())
-                        .build();
-
-                unsafe {
-                        self.device
-                                .update_descriptor_sets(&[image_dst_set_write, sampler_dst_set_write], &[])
-                };
-
-                Ok(())
-        }
-
-        pub fn on_shader_updated(&mut self, asset_manager: &AssetManager, shader_id: ShaderId) -> AnyResult<()> {
-                let shader = match asset_manager.shaders().get(shader_id) {
-                        Some(shader) => shader,
-                        None => return Ok(()),
-                };
-
-                let vert_module = VkShaderModule::from_code(&self.device, &shader.vert_module.bin)?;
-                let frag_module = VkShaderModule::from_code(&self.device, &shader.frag_module.bin)?;
-
-                let mut vertex_input_bindings = Vec::new();
-                let mut vertex_input_attributes = Vec::new();
-
-                for (i, vertex_input) in shader.vertex_inputs.iter().enumerate() {
-                        let mut binding = vk::VertexInputBindingDescription::builder().binding(i as u32);
-                        let mut attribute = vk::VertexInputAttributeDescription::builder()
-                                .binding(i as u32)
-                                .location(i as u32)
-                                .offset(0);
-
-                        match vertex_input.as_str() {
-                                "positions" => {
-                                        binding = binding.stride(std::mem::size_of::<Vec3>() as u32);
-                                        binding = binding.input_rate(vk::VertexInputRate::VERTEX);
-                                        attribute = attribute.format(vk::Format::R32G32B32_SFLOAT);
-                                },
-                                "normals" => {
-                                        binding = binding.stride(std::mem::size_of::<Vec3>() as u32);
-                                        binding = binding.input_rate(vk::VertexInputRate::VERTEX);
-                                        attribute = attribute.format(vk::Format::R32G32B32_SFLOAT);
-                                },
-                                "texture-coordinates" => {
-                                        binding = binding.stride(std::mem::size_of::<Vec2>() as u32);
-                                        binding = binding.input_rate(vk::VertexInputRate::VERTEX);
-                                        attribute = attribute.format(vk::Format::R32G32_SFLOAT);
-                                },
-                                _ => panic!("Invalid shader vertex input: {}", vertex_input),
-                        }
-
-                        vertex_input_bindings.push(binding.build());
-                        vertex_input_attributes.push(attribute.build());
-                }
-
-                let vk_shader = VkShader {
-                        vert_module,
-                        frag_module,
-                        vertex_input_bindings,
-                        vertex_input_attributes,
-                };
-
-                let vk_pipeline = Self::create_graphics_pipeline_from_vk_shader(
-                        &self.device,
-                        self.swapchain_samples,
-                        self.render_pass,
-                        self.pipeline_layout,
-                        &vk_shader,
-                )?;
-
-                self.shaders.insert(shader_id, vk_shader);
-                self.pipelines.insert(shader_id, vk_pipeline);
 
                 Ok(())
         }
@@ -470,6 +244,167 @@ impl VkAssetManager {
                 Ok(unsafe { VkDescriptorSetLayout::new(device, &mat_set_layout_cinfo)? })
         }
 
+        fn on_buffer_view_updated(
+                &mut self,
+                asset_manager: &AssetManager,
+                buffer_view_id: BufferViewId,
+        ) -> AnyResult<()> {
+                if self.buffer_views.contains_key(buffer_view_id) {
+                        // TODO: handle buffer update.
+                        todo!();
+                } else {
+                        if let Some(vk_buffer) =
+                                self.create_vk_buffer_from_buffer_view(asset_manager, buffer_view_id)?
+                        {
+                                self.buffer_views.insert(buffer_view_id, vk_buffer);
+                        }
+                }
+
+                Ok(())
+        }
+
+        fn on_image_updated(&mut self, asset_manager: &AssetManager, image_id: ImageId) -> AnyResult<()> {
+                if self.images.contains_key(image_id) {
+                        todo!();
+                } else {
+                        if let Some(vk_image) = self.create_vk_image_from_image(asset_manager, image_id)? {
+                                self.images.insert(image_id, vk_image);
+                        }
+                }
+
+                Ok(())
+        }
+
+        fn on_sampler_updated(&mut self, asset_manager: &AssetManager, sampler_id: SamplerId) -> AnyResult<()> {
+                if self.samplers.contains_key(sampler_id) {
+                        todo!();
+                } else {
+                        if let Some(vk_sampler) = self.create_vk_sampler_from_sampler(asset_manager, sampler_id)? {
+                                self.samplers.insert(sampler_id, vk_sampler);
+                        }
+                }
+
+                Ok(())
+        }
+
+        fn on_material_updated(&mut self, asset_manager: &AssetManager, material_id: MaterialId) -> AnyResult<()> {
+                let material = match asset_manager.materials().get(material_id) {
+                        Some(material) => material,
+                        None => return Ok(()),
+                };
+
+                let [material_dst_set] = unsafe {
+                        self.device
+                                .allocate_descriptor_sets_array(*self.dst_pool, &[*self.material_dst_set_layout])?
+                };
+
+                self.material_dst_sets.insert(material_id, material_dst_set);
+
+                let base_color_texture = match material.base_color_texture {
+                        Some(t) => t,
+                        None => return Ok(()),
+                };
+
+                let color_texture = &asset_manager.textures()[base_color_texture];
+                let color_vk_image_view = &self.images[color_texture.image].image_view;
+                let color_vk_sampler = &self.samplers[color_texture.sampler];
+
+                let image_info = vk::DescriptorImageInfo {
+                        image_view: **color_vk_image_view,
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        ..Default::default()
+                };
+                let image_dst_set_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .dst_set(material_dst_set)
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .image_info(image_info.ref_into_slice())
+                        .build();
+
+                let sampler_info = vk::DescriptorImageInfo {
+                        sampler: **color_vk_sampler,
+                        ..Default::default()
+                };
+                let sampler_dst_set_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                        .dst_set(material_dst_set)
+                        .dst_binding(2)
+                        .dst_array_element(0)
+                        .image_info(sampler_info.ref_into_slice())
+                        .build();
+
+                unsafe {
+                        self.device
+                                .update_descriptor_sets(&[image_dst_set_write, sampler_dst_set_write], &[])
+                };
+
+                Ok(())
+        }
+
+        fn on_shader_updated(&mut self, asset_manager: &AssetManager, shader_id: ShaderId) -> AnyResult<()> {
+                let shader = match asset_manager.shaders().get(shader_id) {
+                        Some(shader) => shader,
+                        None => return Ok(()),
+                };
+
+                let vert_module = VkShaderModule::from_code(&self.device, &shader.vert_module.bin)?;
+                let frag_module = VkShaderModule::from_code(&self.device, &shader.frag_module.bin)?;
+
+                let mut vertex_input_bindings = Vec::new();
+                let mut vertex_input_attributes = Vec::new();
+
+                for (i, vertex_input) in shader.vertex_inputs.iter().enumerate() {
+                        let mut binding = vk::VertexInputBindingDescription::builder().binding(i as u32);
+                        let mut attribute = vk::VertexInputAttributeDescription::builder()
+                                .binding(i as u32)
+                                .location(i as u32)
+                                .offset(0);
+
+                        match vertex_input.as_str() {
+                                "positions" => {
+                                        binding = binding.stride(std::mem::size_of::<Vec3>() as u32);
+                                        binding = binding.input_rate(vk::VertexInputRate::VERTEX);
+                                        attribute = attribute.format(vk::Format::R32G32B32_SFLOAT);
+                                },
+                                "normals" => {
+                                        binding = binding.stride(std::mem::size_of::<Vec3>() as u32);
+                                        binding = binding.input_rate(vk::VertexInputRate::VERTEX);
+                                        attribute = attribute.format(vk::Format::R32G32B32_SFLOAT);
+                                },
+                                "texture-coordinates" => {
+                                        binding = binding.stride(std::mem::size_of::<Vec2>() as u32);
+                                        binding = binding.input_rate(vk::VertexInputRate::VERTEX);
+                                        attribute = attribute.format(vk::Format::R32G32_SFLOAT);
+                                },
+                                _ => panic!("Invalid shader vertex input: {}", vertex_input),
+                        }
+
+                        vertex_input_bindings.push(binding.build());
+                        vertex_input_attributes.push(attribute.build());
+                }
+
+                let vk_shader = VkShader {
+                        vert_module,
+                        frag_module,
+                        vertex_input_bindings,
+                        vertex_input_attributes,
+                };
+
+                let vk_pipeline = Self::create_graphics_pipeline_from_vk_shader(
+                        &self.device,
+                        self.swapchain_samples,
+                        self.render_pass,
+                        self.pipeline_layout,
+                        &vk_shader,
+                )?;
+
+                self.shaders.insert(shader_id, vk_shader);
+                self.pipelines.insert(shader_id, vk_pipeline);
+
+                Ok(())
+        }
+
         fn create_vk_buffer_from_buffer_view(
                 &self,
                 asset_manager: &AssetManager,
@@ -545,340 +480,92 @@ impl VkAssetManager {
                 usage_flags
         }
 
-        fn create_vk_buffers_from_buffers(
-                device: &ash::Device,
-                allocator: Rc<VmaAllocator>,
-                transfer_queue: vk::Queue,
-                cmd_buffer: &VkReusableCommandBuffer,
-                buffers: &SlotMap<BufferId, Buffer>,
-                buffer_views: &SlotMap<BufferViewId, BufferView>,
-                buffer_usages: &HashMap<BufferViewId, vk::BufferUsageFlags>,
-        ) -> AnyResult<SecondaryMap<BufferViewId, VkModelBufferView>> {
-                let mut vk_buffer_views = SecondaryMap::new();
+        fn create_vk_image_from_image(
+                &self,
+                asset_manager: &AssetManager,
+                image_id: ImageId,
+        ) -> AnyResult<Option<VkModelImage>> {
+                let image = match asset_manager.images().get(image_id) {
+                        Some(image) => image,
+                        None => return Ok(None),
+                };
 
-                for (bview_id, bview) in buffer_views {
-                        let buffer = &buffers[bview.buffer];
+                let vk_image_cinfo = VkImageCreateFromDataInfo {
+                        data: &asset_manager.buffers()[image.pixels].bytes,
+                        width: image.width,
+                        height: image.height,
+                        format: Self::vk_format_from_image_format(image.format),
+                        mip_levels: MipLevels::Log2,
+                        samples: vk::SampleCountFlags::TYPE_1,
+                        setup_cmd_buffer: &self.cmd_buffer,
+                        transfer_queue: self.transfer_queue,
+                };
 
-                        assert!(buffer.bytes.len() >= (bview.byte_offset + bview.byte_length));
+                let vk_image = unsafe {
+                        VkImage::from_data(
+                                &self.instance,
+                                &self.pdevice,
+                                &self.device,
+                                Rc::clone(&self.allocator),
+                                &vk_image_cinfo,
+                        )?
+                };
 
-                        let vk_buffer_cinfo = VkImmutableBufferCreateInfo {
-                                device,
-                                allocator: Rc::clone(&allocator),
-                                cmd_buffer,
-                                transfer_queue,
-                                // TODO: accurate buffer usage flags
-                                buffer_usage: buffer_usages[&bview_id],
-                                data: BufferData::OffsetLength {
-                                        data: buffer.bytes.as_slice(),
-                                        offset: bview.byte_offset,
-                                        length: bview.byte_length,
-                                },
-                        };
+                let vk_image_view_cinfo = vk::ImageViewCreateInfo {
+                        image: *vk_image,
+                        view_type: vk::ImageViewType::TYPE_2D,
+                        format: vk_image_cinfo.format,
+                        components: Default::default(),
+                        subresource_range: vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: vk_image.mip_levels,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                        },
+                        ..Default::default()
+                };
 
-                        let vk_buffer = VkBuffer::new_immutable(vk_buffer_cinfo)?;
+                let vk_image_view = unsafe { VkImageView::new(Rc::clone(&self.device), &vk_image_view_cinfo)? };
 
-                        let format =
-                                Self::vk_format_from_component_and_data_type(bview.component_type, bview.data_type);
-
-                        let index_type = match bview.component_type {
-                                ComponentType::U16 => vk::IndexType::UINT16,
-                                ComponentType::U32 => vk::IndexType::UINT32,
-                                _ => vk::IndexType::from_raw(i32::MAX),
-                        };
-
-                        vk_buffer_views.insert(
-                                bview_id,
-                                VkModelBufferView {
-                                        buffer: vk_buffer,
-                                        format,
-                                        index_type,
-                                        element_count: bview.element_count,
-                                },
-                        );
-                }
-
-                Ok(vk_buffer_views)
+                Ok(Some(VkModelImage {
+                        image: vk_image,
+                        image_view: vk_image_view,
+                }))
         }
 
-        fn create_vk_images_from_images(
-                instance: &Rc<VkInstance>,
-                pdevice: &Rc<VkPhysicalDevice>,
-                device: &Rc<VkDevice>,
-                allocator: &Rc<VmaAllocator>,
-                transfer_queue: vk::Queue,
-                cmd_buffer: &VkReusableCommandBuffer,
-                buffers: &SlotMap<BufferId, Buffer>,
-                images: &SlotMap<ImageId, Image>,
-        ) -> AnyResult<SecondaryMap<ImageId, VkModelImage>> {
-                let mut vk_images = SecondaryMap::new();
+        fn create_vk_sampler_from_sampler(
+                &self,
+                asset_manager: &AssetManager,
+                sampler_id: SamplerId,
+        ) -> AnyResult<Option<VkSampler>> {
+                let sampler = match asset_manager.samplers().get(sampler_id) {
+                        Some(sampler) => sampler,
+                        None => return Ok(None),
+                };
 
-                for (image_id, image) in images {
-                        let vk_image_cinfo = VkImageCreateFromDataInfo {
-                                data: &buffers[image.pixels].bytes,
-                                width: image.width,
-                                height: image.height,
-                                format: Self::vk_format_from_image_format(image.format),
-                                mip_levels: MipLevels::Log2,
-                                samples: vk::SampleCountFlags::TYPE_1,
-                                setup_cmd_buffer: &cmd_buffer,
-                                transfer_queue,
-                        };
+                let vk_sampler_cinfo = vk::SamplerCreateInfo {
+                        mag_filter: Self::vk_filter_from_mag_filter(sampler.mag_filter),
+                        min_filter: Self::vk_filter_from_min_filter(sampler.min_filter),
+                        mipmap_mode: Self::vk_sampler_mipmap_mode_from_min_filter(sampler.min_filter),
+                        address_mode_u: Self::vk_sampler_address_mode_from_wrapping_mode(sampler.wrap_s),
+                        address_mode_v: Self::vk_sampler_address_mode_from_wrapping_mode(sampler.wrap_t),
+                        address_mode_w: vk::SamplerAddressMode::REPEAT,
+                        mip_lod_bias: 0.0,
+                        anisotropy_enable: ENABLE_ANISOTROPY as vk::Bool32,
+                        max_anisotropy: self.pdevice.max_sampler_anisotropy,
+                        compare_enable: vk::FALSE,
+                        compare_op: vk::CompareOp::ALWAYS,
+                        min_lod: 0.0,
+                        max_lod: LOD_CLAMP_NONE,
+                        border_color: vk::BorderColor::INT_OPAQUE_BLACK,
+                        unnormalized_coordinates: vk::FALSE,
+                        ..Default::default()
+                };
 
-                        let vk_image = unsafe {
-                                VkImage::from_data(instance, pdevice, &device, Rc::clone(&allocator), &vk_image_cinfo)?
-                        };
+                let vk_sampler = unsafe { VkSampler::new(Rc::clone(&self.device), &vk_sampler_cinfo)? };
 
-                        let vk_image_view_cinfo = vk::ImageViewCreateInfo {
-                                image: *vk_image,
-                                view_type: vk::ImageViewType::TYPE_2D,
-                                format: vk_image_cinfo.format,
-                                components: Default::default(),
-                                subresource_range: vk::ImageSubresourceRange {
-                                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                                        base_mip_level: 0,
-                                        level_count: vk_image.mip_levels,
-                                        base_array_layer: 0,
-                                        layer_count: 1,
-                                },
-                                ..Default::default()
-                        };
-
-                        let vk_image_view = unsafe { VkImageView::new(Rc::clone(&device), &vk_image_view_cinfo)? };
-
-                        vk_images.insert(
-                                image_id,
-                                VkModelImage {
-                                        image: vk_image,
-                                        image_view: vk_image_view,
-                                },
-                        );
-                }
-
-                Ok(vk_images)
-        }
-
-        fn create_vk_samplers_from_samplers(
-                pdevice: &VkPhysicalDevice,
-                device: Rc<VkDevice>,
-                samplers: &SlotMap<SamplerId, Sampler>,
-        ) -> AnyResult<SecondaryMap<SamplerId, VkSampler>> {
-                let mut vk_samplers = SecondaryMap::new();
-
-                for (sampler_id, sampler) in samplers {
-                        let vk_sampler_cinfo = vk::SamplerCreateInfo {
-                                mag_filter: Self::vk_filter_from_mag_filter(sampler.mag_filter),
-                                min_filter: Self::vk_filter_from_min_filter(sampler.min_filter),
-                                mipmap_mode: Self::vk_sampler_mipmap_mode_from_min_filter(sampler.min_filter),
-                                address_mode_u: Self::vk_sampler_address_mode_from_wrapping_mode(sampler.wrap_s),
-                                address_mode_v: Self::vk_sampler_address_mode_from_wrapping_mode(sampler.wrap_t),
-                                address_mode_w: vk::SamplerAddressMode::REPEAT,
-                                mip_lod_bias: 0.0,
-                                anisotropy_enable: ENABLE_ANISOTROPY as vk::Bool32,
-                                max_anisotropy: pdevice.max_sampler_anisotropy,
-                                compare_enable: vk::FALSE,
-                                compare_op: vk::CompareOp::ALWAYS,
-                                min_lod: 0.0,
-                                max_lod: LOD_CLAMP_NONE,
-                                border_color: vk::BorderColor::INT_OPAQUE_BLACK,
-                                unnormalized_coordinates: vk::FALSE,
-                                ..Default::default()
-                        };
-
-                        vk_samplers.insert(sampler_id, unsafe {
-                                VkSampler::new(Rc::clone(&device), &vk_sampler_cinfo)?
-                        });
-                }
-
-                Ok(vk_samplers)
-        }
-
-        fn create_vk_material_dst_sets_from_materials(
-                device: &VkDevice,
-                dst_pool: vk::DescriptorPool,
-                material_dst_set_layout: vk::DescriptorSetLayout,
-                textures: &SlotMap<TextureId, Texture>,
-                materials: &SlotMap<MaterialId, Material>,
-                vk_images: &SecondaryMap<ImageId, VkModelImage>,
-                vk_samplers: &SecondaryMap<SamplerId, VkSampler>,
-        ) -> AnyResult<SecondaryMap<MaterialId, vk::DescriptorSet>> {
-                let material_dst_set_layouts = vec![material_dst_set_layout; materials.len()];
-                let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
-                        .descriptor_pool(dst_pool)
-                        .set_layouts(&material_dst_set_layouts);
-                let material_dst_sets = unsafe { device.allocate_descriptor_sets(&dst_set_ainfo)? };
-
-                let mut material_dst_sets_map = SecondaryMap::new();
-
-                for ((mat_id, mat), &material_dst_set) in materials.iter().zip(&material_dst_sets) {
-                        material_dst_sets_map.insert(mat_id, material_dst_set);
-
-                        let base_color_texture = match mat.base_color_texture {
-                                Some(t) => t,
-                                None => continue,
-                        };
-
-                        let color_texture = &textures[base_color_texture];
-                        let color_vk_image_view = &vk_images[color_texture.image].image_view;
-                        let color_vk_sampler = &vk_samplers[color_texture.sampler];
-
-                        let image_info = vk::DescriptorImageInfo {
-                                image_view: **color_vk_image_view,
-                                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                                ..Default::default()
-                        };
-                        let image_dst_set_write = vk::WriteDescriptorSet::builder()
-                                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                                .dst_set(material_dst_set)
-                                .dst_binding(1)
-                                .dst_array_element(0)
-                                .image_info(image_info.ref_into_slice())
-                                .build();
-
-                        let sampler_info = vk::DescriptorImageInfo {
-                                sampler: **color_vk_sampler,
-                                ..Default::default()
-                        };
-                        let sampler_dst_set_write = vk::WriteDescriptorSet::builder()
-                                .descriptor_type(vk::DescriptorType::SAMPLER)
-                                .dst_set(material_dst_set)
-                                .dst_binding(2)
-                                .dst_array_element(0)
-                                .image_info(sampler_info.ref_into_slice())
-                                .build();
-
-                        unsafe { device.update_descriptor_sets(&[image_dst_set_write, sampler_dst_set_write], &[]) };
-                }
-
-                Ok(material_dst_sets_map)
-        }
-
-        fn create_vk_shaders_resources_from_shader_resources(
-                device: &Rc<VkDevice>,
-                dst_pool: vk::DescriptorPool,
-                shader_resources: &HashMap<ShaderResourceId, ShaderResource>,
-                frames_in_flight: usize,
-        ) -> AnyResult<HashMap<ShaderResourceId, VkShaderResource>> {
-                let mut vk_shader_resources = HashMap::<ShaderResourceId, VkShaderResource>::new();
-
-                for (resource_id, shader_resource) in shader_resources {
-                        let bindings: Vec<vk::DescriptorSetLayoutBinding> = shader_resource
-                                .elements
-                                .iter()
-                                .enumerate()
-                                .map(|(i, e)| vk::DescriptorSetLayoutBinding {
-                                        binding: i as u32,
-                                        descriptor_type: vk::DescriptorType::from(e.element_type),
-                                        descriptor_count: 1,
-                                        stage_flags: e.shader_stage_flags,
-                                        p_immutable_samplers: std::ptr::null(),
-                                })
-                                .collect();
-
-                        let matrices_dst_set_layout_cinfo =
-                                vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings);
-
-                        let dst_set_layout =
-                                unsafe { VkDescriptorSetLayout::new(device, &matrices_dst_set_layout_cinfo)? };
-
-                        let dst_set_layouts = vec![*dst_set_layout; frames_in_flight];
-
-                        let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
-                                .descriptor_pool(dst_pool)
-                                .set_layouts(&dst_set_layouts);
-
-                        let descriptor_sets = unsafe { device.allocate_descriptor_sets(&dst_set_ainfo)? };
-
-                        let vk_shader_resource = VkShaderResource {
-                                dst_set_layout,
-                                descriptor_sets,
-                        };
-
-                        vk_shader_resources.insert(resource_id.clone(), vk_shader_resource);
-                }
-
-                Ok(vk_shader_resources)
-        }
-
-        fn create_vk_shaders_from_shaders(
-                device: &Rc<VkDevice>,
-                shaders: &SlotMap<ShaderId, Shader>,
-        ) -> AnyResult<SecondaryMap<ShaderId, VkShader>> {
-                let mut vk_shaders = SecondaryMap::new();
-
-                for (shader_id, shader) in shaders {
-                        let vert_module = VkShaderModule::from_code(device, &shader.vert_module.bin)?;
-                        let frag_module = VkShaderModule::from_code(device, &shader.frag_module.bin)?;
-
-                        let mut vertex_input_bindings = Vec::new();
-                        let mut vertex_input_attributes = Vec::new();
-
-                        for (i, vertex_input) in shader.vertex_inputs.iter().enumerate() {
-                                let mut binding = vk::VertexInputBindingDescription::builder().binding(i as u32);
-                                let mut attribute = vk::VertexInputAttributeDescription::builder()
-                                        .binding(i as u32)
-                                        .location(i as u32)
-                                        .offset(0);
-
-                                match vertex_input.as_str() {
-                                        "positions" => {
-                                                binding = binding.stride(std::mem::size_of::<Vec3>() as u32);
-                                                binding = binding.input_rate(vk::VertexInputRate::VERTEX);
-                                                attribute = attribute.format(vk::Format::R32G32B32_SFLOAT);
-                                        },
-                                        "normals" => {
-                                                binding = binding.stride(std::mem::size_of::<Vec3>() as u32);
-                                                binding = binding.input_rate(vk::VertexInputRate::VERTEX);
-                                                attribute = attribute.format(vk::Format::R32G32B32_SFLOAT);
-                                        },
-                                        "texture-coordinates" => {
-                                                binding = binding.stride(std::mem::size_of::<Vec2>() as u32);
-                                                binding = binding.input_rate(vk::VertexInputRate::VERTEX);
-                                                attribute = attribute.format(vk::Format::R32G32_SFLOAT);
-                                        },
-                                        _ => panic!("Invalid shader vertex input: {}", vertex_input),
-                                }
-
-                                vertex_input_bindings.push(binding.build());
-                                vertex_input_attributes.push(attribute.build());
-                        }
-
-                        vk_shaders.insert(
-                                shader_id,
-                                VkShader {
-                                        vert_module,
-                                        frag_module,
-                                        vertex_input_bindings,
-                                        vertex_input_attributes,
-                                },
-                        );
-                }
-
-                Ok(vk_shaders)
-        }
-
-        fn create_vk_pipelines_from_vk_shaders(
-                device: &Rc<VkDevice>,
-                swapchain_samples: vk::SampleCountFlags,
-                render_pass: vk::RenderPass,
-                pipeline_layout: vk::PipelineLayout,
-                vk_shaders: &SecondaryMap<ShaderId, VkShader>,
-        ) -> AnyResult<SecondaryMap<ShaderId, VkPipeline>> {
-                let mut vk_pipelines = SecondaryMap::new();
-
-                for (shader_id, vk_shader) in vk_shaders {
-                        vk_pipelines.insert(
-                                shader_id,
-                                Self::create_graphics_pipeline_from_vk_shader(
-                                        device,
-                                        swapchain_samples,
-                                        render_pass,
-                                        pipeline_layout,
-                                        vk_shader,
-                                )?,
-                        );
-                }
-
-                Ok(vk_pipelines)
+                Ok(Some(vk_sampler))
         }
 
         fn create_graphics_pipeline_from_vk_shader(
@@ -1068,4 +755,51 @@ impl VkAssetManager {
                         WrappingMode::Repeat => vk::SamplerAddressMode::REPEAT,
                 }
         }
+
+        // fn create_vk_shader_resources_from_shader_resources(
+        //         device: &Rc<VkDevice>,
+        //         dst_pool: vk::DescriptorPool,
+        //         shader_resources: &HashMap<ShaderResourceId, ShaderResource>,
+        //         frames_in_flight: usize,
+        // ) -> AnyResult<HashMap<ShaderResourceId, VkShaderResource>> {
+        //         let mut vk_shader_resources = HashMap::<ShaderResourceId, VkShaderResource>::new();
+
+        //         for (resource_id, shader_resource) in shader_resources {
+        //                 let bindings: Vec<vk::DescriptorSetLayoutBinding> = shader_resource
+        //                         .elements
+        //                         .iter()
+        //                         .enumerate()
+        //                         .map(|(i, e)| vk::DescriptorSetLayoutBinding {
+        //                                 binding: i as u32,
+        //                                 descriptor_type: vk::DescriptorType::from(e.element_type),
+        //                                 descriptor_count: 1,
+        //                                 stage_flags: e.shader_stage_flags,
+        //                                 p_immutable_samplers: std::ptr::null(),
+        //                         })
+        //                         .collect();
+
+        //                 let matrices_dst_set_layout_cinfo =
+        //                         vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings);
+
+        //                 let dst_set_layout =
+        //                         unsafe { VkDescriptorSetLayout::new(device, &matrices_dst_set_layout_cinfo)? };
+
+        //                 let dst_set_layouts = vec![*dst_set_layout; frames_in_flight];
+
+        //                 let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
+        //                         .descriptor_pool(dst_pool)
+        //                         .set_layouts(&dst_set_layouts);
+
+        //                 let descriptor_sets = unsafe { device.allocate_descriptor_sets(&dst_set_ainfo)? };
+
+        //                 let vk_shader_resource = VkShaderResource {
+        //                         dst_set_layout,
+        //                         descriptor_sets,
+        //                 };
+
+        //                 vk_shader_resources.insert(resource_id.clone(), vk_shader_resource);
+        //         }
+
+        //         Ok(vk_shader_resources)
+        // }
 }
