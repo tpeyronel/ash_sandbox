@@ -1,8 +1,12 @@
 use bevy_ecs::prelude::*;
 
-use crate::{asset_manager::ModelId, my_glm::*};
+use crate::my_glm::*;
+
+pub struct Player(pub Entity);
 
 pub struct ActiveCamera(pub Entity);
+
+pub struct DeltaTime(pub f32);
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Transform {

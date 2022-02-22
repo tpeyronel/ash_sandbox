@@ -6,7 +6,7 @@ use std::{
 };
 
 use slotmap::SlotMap;
-use specs::{DispatcherBuilder, ReadExpect, WriteStorage};
+use specs::{ReadExpect, WriteStorage};
 use tps_counter::TPSCounter;
 
 use crate::{
@@ -14,22 +14,19 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         components::{
-                ActiveCamera, LightEmitter, OrbitalVelocity, Parent, ProjectionCamera, RelativeTransform, Transform,
+                ActiveCamera, DeltaTime, LightEmitter, OrbitalVelocity, Parent, Player, ProjectionCamera,
+                RelativeTransform, Transform,
         },
-        constants::{FONT_SIZE, MAX_CONCURRENT_FRAMES, ROTATION_PER_SECOND},
+        constants::{FONT_SIZE, MAX_CONCURRENT_FRAMES, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
-        hashmap::HashMap,
         input_manager::{
                 ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType,
         },
-        logic_thread::{
-                LogicThread, LogicThreadCommand, LogicThreadMessage, LogicThreadSpawnParams, PlayerResource,
-                TransformComponent,
-        },
+        logic_thread::{PlayerResource, TransformComponent},
         model_instance_manager::{ModelInstance, ModelInstanceManager, TransformManager},
         my_glm::*,
         render_state_switcher::RenderStateSwitcher,
-        renderer::{MeshInstance, MeshInstanceId, ModelInstanceId, RenderState, Renderer},
+        renderer::{ModelInstanceId, RenderState, Renderer},
         vk::vk_renderer::VkRenderer,
         AnyResult,
 };
@@ -50,22 +47,16 @@ pub struct Application {
 
         target_ticktime: f32,
         world: World,
+        schedule: Schedule,
+        accumulator: f32,
         window: Rc<Window>,
         window_state: WindowState,
-        window_thread_rx: std::sync::mpsc::Receiver<WindowThreadMessage>,
-        logic_thread_tx: std::sync::mpsc::Sender<LogicThreadMessage>,
         imgui_context: ImguiContext,
         input_manager: InputManager,
         dispatch_actions: bool,
         action_receiver: ActionReceiver,
 
-        mesh_instances: SlotMap<MeshInstanceId, MeshInstance>,
-        model_instances: SlotMap<ModelInstanceId, crate::renderer::ModelInstance>,
-        model_instances_index: HashMap<specs::Entity, ModelInstanceId>,
-
-        render_state_manager: RenderStateManager,
         renderer: VkRenderer,
-        transform_manager: TransformManager,
 
         player_orien: EulerAngles,
         player_camera_enabled: bool,
@@ -73,8 +64,6 @@ pub struct Application {
         tps_counter: TPSCounter,
         frame_begin: Instant,
         delta_time: f32,
-
-        player_transform: SharedValueSlave<TransformComponent>,
 }
 
 impl Application {
@@ -89,8 +78,7 @@ impl Application {
                                 WindowMode::Borderless => Some(Fullscreen::Borderless(None)),
                                 WindowMode::Fullscreen => Some(Fullscreen::Exclusive(fullscreen_video_mode.clone())),
                         })
-                        // .with_visible(false)
-                        .with_visible(true)
+                        .with_visible(false)
                         .with_always_on_top(false)
                         .with_min_inner_size(winit::dpi::PhysicalSize::<u32> {
                                 width: 144,
@@ -111,12 +99,14 @@ impl Application {
                 trace!("Initialized ImGui");
 
                 let mut world = World::default();
+                world.insert_resource(DeltaTime(1.0 / config.tps as f32));
 
                 let asset_manager = Self::init_asset_manager()?;
                 let mut transform_manager = TransformManager::new(MAX_CONCURRENT_FRAMES);
                 let model_instance_manager = ModelInstanceManager::new();
 
                 let player = world.spawn().insert(Transform::from_pos(Vec3::new(0.0, 0.0, 2.0))).id();
+                world.insert_resource(Player(player));
 
                 let camera = world
                         .spawn()
@@ -125,7 +115,6 @@ impl Application {
                         .insert(RelativeTransform(Transform::from_pos(Vec3::new(0.0, 1.0, 0.0))))
                         .insert(ProjectionCamera::new(90.0f32.to_radians(), 1.0, 0.1, 100.0))
                         .id();
-
                 world.insert_resource(ActiveCamera(camera));
 
                 let _colt = world
@@ -190,60 +179,16 @@ impl Application {
                 world.insert_resource(asset_manager);
                 world.insert_resource(transform_manager);
 
-                fn update_transforms(
-                        query: Query<(Entity, &Transform, &ModelInstance), Changed<Transform>>,
-                        asset_manager: Res<AssetManager>,
-                        mut transform_manager: ResMut<TransformManager>,
-                ) {
-                        transform_manager.on_update();
-
-                        let mut matrix_stack = MatrixStack::new();
-                        for (e, transform, model_instance) in query.iter() {
-                                matrix_stack.push(transform.to_matrix());
-                                process_model_instance(
-                                        &mut matrix_stack,
-                                        &mut transform_manager,
-                                        &asset_manager,
-                                        model_instance,
-                                );
-                                matrix_stack.pop();
-                        }
-                }
-
-                fn process_model_instance(
-                        matrix_stack: &mut MatrixStack,
-                        transform_manager: &mut TransformManager,
-                        asset_manager: &AssetManager,
-                        model_instance: &ModelInstance,
-                ) {
-                        let model = &asset_manager.models()[model_instance.model];
-
-                        let transform = matrix_stack.push(model.base_transform);
-                        transform_manager.set_transform(model_instance.transform, &transform);
-
-                        for child_model_instance in &model_instance.children {
-                                process_model_instance(
-                                        matrix_stack,
-                                        transform_manager,
-                                        asset_manager,
-                                        child_model_instance,
-                                );
-                        }
-
-                        matrix_stack.pop();
-                }
-
                 let mut schedule = Schedule::default();
 
-                schedule.add_stage("update", SystemStage::single_threaded().with_system(update_transforms));
+                let update = SystemStage::single_threaded()
+                        .with_system(process_actions)
+                        .with_system(relative_transform_updater)
+                        .with_system(update_transforms);
 
-                let mut renderer = VkRenderer::new(Rc::clone(&window), &mut imgui_context.context)?;
+                schedule.add_stage("update", update);
 
-                loop {
-                        schedule.run(&mut world);
-
-                        renderer.draw_world(&mut world)?;
-                }
+                let renderer = VkRenderer::new(Rc::clone(&window), &mut imgui_context.context)?;
 
                 let dispatch_actions = true;
                 let mut input_manager = InputManager::new(dispatch_actions);
@@ -280,68 +225,30 @@ impl Application {
                 input_manager.push_input_binding_map(input_map);
                 trace!("Initialized InputManager");
 
-                let render_state_switcher = Arc::new(Mutex::new(RenderStateSwitcher::new()));
-                let render_state_manager = RenderStateManager::new(Arc::clone(&render_state_switcher));
-
-                let (logic_thread_tx, logic_thread_rx) = std::sync::mpsc::channel();
-                let (window_thread_tx, window_thread_rx) = std::sync::mpsc::channel();
-
-                let (player_transform_master, player_transform_slave) =
-                        SharedValueMaster::new(TransformComponent::default());
-
-                let systems: Vec<Box<dyn FnOnce(&mut DispatcherBuilder) + Send + Sync>> =
-                        vec![Box::new(|builder: &mut DispatcherBuilder| {
-                                builder.add(
-                                        LoggerSystem {
-                                                player_transform: player_transform_master,
-                                        },
-                                        "logger-system",
-                                        &[],
-                                )
-                        })];
-
-                let logic_thread_params = LogicThreadSpawnParams {
-                        target_tps: config.tps,
-                        logic_thread_rx,
-                        window_thread_tx,
-                        action_receiver: input_manager.create_action_receiver(),
-                        render_state_switcher,
-                        systems,
-                };
-
-                let logic_thread = LogicThread::spawn(logic_thread_params);
-
+                world.insert_non_send(input_manager.create_action_receiver());
                 let action_receiver = input_manager.create_action_receiver();
 
                 Ok(Self {
                         event_loop: Some(event_loop),
                         target_ticktime: 1.0 / config.tps as f32,
                         world,
+                        schedule,
+                        accumulator: 0.0,
                         window,
                         window_state,
-                        window_thread_rx,
-                        logic_thread_tx,
                         imgui_context,
                         input_manager,
                         dispatch_actions,
                         action_receiver,
 
-                        mesh_instances: SlotMap::with_key(),
-                        model_instances: SlotMap::with_key(),
-                        model_instances_index: HashMap::new(),
-
-                        render_state_manager,
                         renderer,
-                        transform_manager: TransformManager::new(MAX_CONCURRENT_FRAMES),
 
                         player_orien: EulerAngles::new(0.0, 0.0, 0.0),
                         player_camera_enabled: false,
 
-                        tps_counter: TPSCounter::new(5),
+                        tps_counter: TPSCounter::new(20),
                         frame_begin: Instant::now(),
                         delta_time: 0.0,
-
-                        player_transform: player_transform_slave,
                 })
         }
 
@@ -517,8 +424,6 @@ impl Application {
         }
 
         fn update(&mut self, control_flow: &mut ControlFlow) -> AnyResult<()> {
-                self.process_logic_thread_messages(control_flow);
-
                 self.input_manager
                         .set_dispatch_actions(self.window_state.has_focus && self.dispatch_actions);
 
@@ -538,107 +443,48 @@ impl Application {
                         }
                 }
 
-                self.logic_thread_tx
-                        .send(LogicThreadMessage::SetPlayerOrien(self.player_orien.to_quat()))
-                        .expect("Failed to send command to logic thread!");
+                let player = self.world.get_resource::<Player>().unwrap().0;
+                let mut player_transform = self.world.entity_mut(player).get_mut::<Transform>().unwrap();
+                player_transform.orien = self.player_orien.to_quat();
 
-                if let Some(render_state) = self.render_state_manager.get_render_state(self.target_ticktime) {
-                        self.transform_manager.on_update();
-                        self.update_instance_transforms(&render_state);
+                self.accumulator += self.delta_time;
+                if self.accumulator > self.target_ticktime {
+                        self.schedule.run(&mut self.world);
+                        self.accumulator -= self.target_ticktime;
 
-                        let imgui_ui = Self::build_imgui_ui(
-                                &mut self.imgui_context,
-                                &self.window,
-                                &mut self.dispatch_actions,
-                                &mut self.player_orien,
-                                &mut self.player_transform,
-                        )?;
-
-                        // self.renderer.draw(
-                        //         &self.mesh_instances,
-                        //         &self.model_instances,
-                        //         &self.model_instances_index,
-                        //         &self.transform_manager,
-                        //         &render_state,
-                        //         &self.player_orien.to_quat(),
-                        //         imgui_ui.render(),
-                        // )?;
+                        // self.tps_counter.tick_and_map(|t| info!("TPS: {}", t));
                 }
+
+                self.renderer.draw_world(&mut self.world)?;
+
+                // self.logic_thread_tx
+                //         .send(LogicThreadMessage::SetPlayerOrien(self.player_orien.to_quat()))
+                //         .expect("Failed to send command to logic thread!");
+
+                // if let Some(render_state) = self.render_state_manager.get_render_state(self.target_ticktime) {
+                //         self.transform_manager.on_update();
+                //         self.update_instance_transforms(&render_state);
+
+                //         let imgui_ui = Self::build_imgui_ui(
+                //                 &mut self.imgui_context,
+                //                 &self.window,
+                //                 &mut self.dispatch_actions,
+                //                 &mut self.player_orien,
+                //                 &mut self.player_transform,
+                //         )?;
+
+                //         // self.renderer.draw(
+                //         //         &self.mesh_instances,
+                //         //         &self.model_instances,
+                //         //         &self.model_instances_index,
+                //         //         &self.transform_manager,
+                //         //         &render_state,
+                //         //         &self.player_orien.to_quat(),
+                //         //         imgui_ui.render(),
+                //         // )?;
+                // }
 
                 Ok(())
-        }
-
-        fn update_instance_transforms(&mut self, render_state: &RenderState) {
-                let mut matrix_stack = MatrixStack::new();
-
-                for (entity, (minstance_transform, minstance_model)) in &render_state.model_instances {
-                        let minstance_id = match self.model_instances_index.get(entity) {
-                                Some(&minstance_id) => minstance_id,
-                                None => {
-                                        let minstance_id = Self::create_model_instance(
-                                                render_state.asset_manager.as_ref().unwrap(),
-                                                &mut self.mesh_instances,
-                                                &mut self.model_instances,
-                                                minstance_model.0,
-                                                *minstance_transform,
-                                        );
-                                        self.model_instances_index.insert(*entity, minstance_id);
-
-                                        minstance_id
-                                },
-                        };
-
-                        self.model_instances[minstance_id].transform = *minstance_transform;
-                        let minstance = &self.model_instances[minstance_id];
-
-                        Self::process_model_instance(
-                                &mut matrix_stack,
-                                &mut self.transform_manager,
-                                render_state.asset_manager.as_ref().unwrap(),
-                                &self.model_instances,
-                                minstance,
-                        );
-                }
-        }
-
-        fn create_model_instance(
-                asset_manager: &AssetManager,
-                mesh_instances: &mut SlotMap<MeshInstanceId, MeshInstance>,
-                model_instances: &mut SlotMap<ModelInstanceId, crate::renderer::ModelInstance>,
-                model_id: ModelId,
-                transform: TransformComponent,
-        ) -> ModelInstanceId {
-                let model = &asset_manager.models()[model_id];
-
-                let mut mesh_instance_ids = Vec::new();
-                for &mesh_id in &model.meshes {
-                        let mesh = &asset_manager.meshes()[mesh_id];
-                        let mesh_instance_id = mesh_instances.insert(MeshInstance {
-                                mesh_id,
-                                transform: TransformComponent::default(),
-                        });
-                        mesh_instance_ids.push(mesh_instance_id);
-                }
-
-                let mut child_model_instance_ids = Vec::new();
-                for &child_model_id in &model.children {
-                        child_model_instance_ids.push(Self::create_model_instance(
-                                asset_manager,
-                                mesh_instances,
-                                model_instances,
-                                child_model_id,
-                                TransformComponent::default(),
-                        ));
-                }
-
-                let model_instance = crate::renderer::ModelInstance {
-                        model_id,
-                        mesh_instances: mesh_instance_ids,
-                        children: child_model_instance_ids,
-                        transform,
-                };
-
-                model_instances.insert(model_instance)
         }
 
         fn process_model_instance(
@@ -738,20 +584,20 @@ impl Application {
                 Ok(ui)
         }
 
-        fn process_logic_thread_messages(&mut self, control_flow: &mut ControlFlow) {
-                for message in self.window_thread_rx.try_iter() {
-                        match message {
-                                WindowThreadMessage::Command(command) => Self::process_command(
-                                        command,
-                                        control_flow,
-                                        &self.window,
-                                        &mut self.imgui_context.context.io_mut(),
-                                        &mut self.window_state,
-                                        &mut self.player_camera_enabled,
-                                ),
-                        }
-                }
-        }
+        // fn process_logic_thread_messages(&mut self, control_flow: &mut ControlFlow) {
+        //         for message in self.window_thread_rx.try_iter() {
+        //                 match message {
+        //                         WindowThreadMessage::Command(command) => Self::process_command(
+        //                                 command,
+        //                                 control_flow,
+        //                                 &self.window,
+        //                                 &mut self.imgui_context.context.io_mut(),
+        //                                 &mut self.window_state,
+        //                                 &mut self.player_camera_enabled,
+        //                         ),
+        //                 }
+        //         }
+        // }
 
         fn process_command(
                 command: WindowThreadCommand,
@@ -777,10 +623,6 @@ impl Application {
 
         fn on_quit(&mut self) {
                 self.renderer.destroy().unwrap();
-
-                let _ = self
-                        .logic_thread_tx
-                        .send(LogicThreadMessage::Command(LogicThreadCommand::Exit));
         }
 }
 
@@ -1015,5 +857,132 @@ impl MatrixStack {
 
         fn pop(&mut self) {
                 self.stack.pop().expect("Tried to pop matrix of empty MatrixStack!");
+        }
+}
+
+fn update_transforms(
+        query: Query<(Entity, &Transform, &ModelInstance), Changed<Transform>>,
+        asset_manager: Res<AssetManager>,
+        mut transform_manager: ResMut<TransformManager>,
+) {
+        transform_manager.on_update();
+
+        let mut matrix_stack = MatrixStack::new();
+        for (e, transform, model_instance) in query.iter() {
+                matrix_stack.push(transform.to_matrix());
+                process_model_instance(
+                        &mut matrix_stack,
+                        &mut transform_manager,
+                        &asset_manager,
+                        model_instance,
+                );
+                matrix_stack.pop();
+        }
+}
+
+fn process_model_instance(
+        matrix_stack: &mut MatrixStack,
+        transform_manager: &mut TransformManager,
+        asset_manager: &AssetManager,
+        model_instance: &ModelInstance,
+) {
+        let model = &asset_manager.models()[model_instance.model];
+
+        let transform = matrix_stack.push(model.base_transform);
+        transform_manager.set_transform(model_instance.transform, &transform);
+
+        for child_model_instance in &model_instance.children {
+                process_model_instance(matrix_stack, transform_manager, asset_manager, child_model_instance);
+        }
+
+        matrix_stack.pop();
+}
+
+fn process_actions(
+        mut commands: Commands,
+        delta_time: Res<DeltaTime>,
+        player: Res<Player>,
+        action_receiver: NonSend<ActionReceiver>,
+        // window: Res<Window>,
+        // window_state: NonSend<WindowState>,
+        // cursor_state: ResMut<CursorState>,
+        mut transforms: Query<&mut Transform>,
+) {
+        let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
+
+        for (action_id, strength) in action_receiver.receive() {
+                match action_id {
+                        MOVE_FORWARD => desired_dir.z -= strength.0,
+                        MOVE_BACKWARD => desired_dir.z += strength.0,
+                        MOVE_RIGHTWARD => desired_dir.x += strength.0,
+                        MOVE_LEFTWARD => desired_dir.x -= strength.0,
+                        MOVE_UPWARD => desired_dir.y += strength.0,
+                        MOVE_DOWNARD => desired_dir.y -= strength.0,
+                        // EXIT => {
+                        //         let command = WindowThreadMessage::Command(WindowThreadCommand::Exit);
+                        //         queued_window_thread_messages.0.push_back(command);
+                        // },
+                        // TOGGLE_CURSOR => {
+                        //         *cursor_state = match *cursor_state {
+                        //                 CursorState::Normal => CursorState::Hidden,
+                        //                 CursorState::Hidden => CursorState::Normal,
+                        //         };
+
+                        //         window_state.set_cursor_state(window, imgui_io, *cursor_state);
+
+                        //         queued_window_thread_messages.0.push_back(WindowThreadMessage::Command(
+                        //                 WindowThreadCommand::SetCursorState(*cursor_state),
+                        //         ));
+
+                        //         queued_window_thread_messages.0.push_back(WindowThreadMessage::Command(
+                        //                 WindowThreadCommand::SetPlayerCameraEnabled(
+                        //                         self.last_cursor_state == CursorState::Hidden,
+                        //                 ),
+                        //         ));
+                        // },
+                        // CYCLE_WINDOW_MODE => {
+                        //         self.last_window_mode = match self.last_window_mode {
+                        //                 WindowMode::Windowed => WindowMode::Borderless,
+                        //                 WindowMode::Borderless => WindowMode::Fullscreen,
+                        //                 WindowMode::Fullscreen => WindowMode::Windowed,
+                        //         };
+
+                        //         queued_window_thread_messages.0.push_back(WindowThreadMessage::Command(
+                        //                 WindowThreadCommand::SetWindowMode(self.last_window_mode),
+                        //         ));
+                        // },
+                        _ => (),
+                }
+        }
+
+        if desired_dir.norm_squared() > f32::EPSILON {
+                let mut player_transform = transforms.get_mut(player.0).unwrap();
+
+                let player_hor_orien = UnitQuat::new_normalize(Quat::new(
+                        player_transform.orien.as_vector().w,
+                        0.0,
+                        player_transform.orien.as_vector().y,
+                        0.0,
+                ));
+
+                let move_amount = PLAYER_MOVEMENT_SPEED * delta_time.0;
+                let move_vector = player_hor_orien * desired_dir.normalize() * move_amount;
+
+                player_transform.pos += move_vector;
+        }
+}
+
+fn relative_transform_updater(
+        mut commands: Commands,
+        children: Query<(Entity, &RelativeTransform, &Parent)>,
+        transforms: Query<&Transform>,
+) {
+        for (child, rel_transform, parent) in children.iter() {
+                let parent_transform = transforms.get(parent.0).unwrap();
+                let mut new_child_transform = parent_transform.clone();
+                new_child_transform.pos += rel_transform.0.pos;
+                new_child_transform.orien *= rel_transform.0.orien;
+                new_child_transform.scale += rel_transform.0.scale;
+                commands.entity(child).insert(new_child_transform);
         }
 }
