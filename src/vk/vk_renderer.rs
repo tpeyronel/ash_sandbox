@@ -2,6 +2,7 @@ use std::{rc::Rc, slice, sync::Arc, time::Instant};
 
 use ash::{prelude::VkResult, vk};
 
+use bevy_ecs::{prelude::World, system::Res};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use slotmap::{Key, SlotMap};
@@ -17,7 +18,9 @@ use super::{
         vk_wrapper::{VkDescriptorSetLayout, VkDevice, VkPhysicalDevice, VkPipelineLayout, VkRenderPass, VkSemaphore},
 };
 use crate::{
-        asset_manager::AssetManager,
+        asset_manager::{AssetManager, MeshId},
+        components::{ActiveCamera, LightEmitter, ProjectionCamera, Transform},
+        model_instance_manager::TransformId,
         my_glm::*,
         renderer::{RenderState, Renderer},
 };
@@ -318,6 +321,128 @@ impl VkRenderer {
 }
 
 impl Renderer for VkRenderer {
+        fn draw_world(&mut self, world: &mut World) -> AnyResult<()> {
+                self.vk_asset_manager
+                        .process_asset_manager_events(world.get_resource::<AssetManager>().unwrap())?;
+                world.get_resource_mut::<AssetManager>().unwrap().clear_events();
+
+                let transform_manager = world
+                        .get_resource::<crate::model_instance_manager::TransformManager>()
+                        .unwrap();
+
+                let object_matrices_padded_size = self.vk_context.pdevice.padded_size_of::<ObjectMatrices>();
+                for (mesh_instance_id, mesh_transform) in transform_manager.iter_transform_updates() {
+                        let buffer_idx = mesh_instance_id.data().as_ffi() as u32 as usize;
+                        let buffer_offset = object_matrices_padded_size * buffer_idx;
+
+                        self.frames_data[self.framei]
+                                .object_matrices_buffer
+                                .write_offsetted(mesh_transform, buffer_offset)?;
+                }
+
+                if !self.should_render() {
+                        return Ok(());
+                }
+
+                let imagei = match unsafe { self.begin_frame()? } {
+                        BeginFrameResult::Draw { imagei } => imagei,
+                        BeginFrameResult::Skip => return Ok(()),
+                };
+
+                let frame_data = &mut self.frames_data[self.framei];
+
+                let PhysicalSize { width, height } = self.window.inner_size();
+                let aspect_ratio = width as f32 / height as f32;
+
+                let camera = world.get_resource::<ActiveCamera>().unwrap().0;
+
+                let camera_transform = world.get::<Transform>(camera).unwrap();
+                let camera_projection = world.get::<ProjectionCamera>(camera).unwrap();
+
+                let inverted_view_mat =
+                        Mat4::new_translation(&camera_transform.pos) * camera_transform.orien.to_homogeneous();
+                let view_mat = inverted_view_mat
+                        .try_inverse()
+                        .expect("Couldn't invert camera ViewMatrix!");
+
+                let proj_mat = camera_projection.calc_proj_matrix(aspect_ratio);
+
+                let world_matrices = WorldMatrices {
+                        view_pos: Vec4::new_position(&camera_transform.pos),
+                        view: view_mat,
+                        proj: proj_mat,
+                };
+
+                frame_data.world_matrices_buffer.write(&world_matrices)?;
+
+                let (light_transform, light_emitter) = world
+                        .query::<(&Transform, &LightEmitter)>()
+                        .iter(&world)
+                        .next()
+                        .unwrap();
+
+                let world_light = WorldLight {
+                        // pos: Vec4::new_position(&Vec3::new(0.0, 2.0, 0.0)),
+                        // color: Vec4::new_position(&Vec3::new(0.8, 0.8, 0.8)),
+                        pos: Vec4::new_position(&light_transform.pos),
+                        color: Vec4::new_position(&light_emitter.color),
+                };
+
+                frame_data.world_light_buffer.write(&world_light)?;
+
+                unsafe {
+                        self.vk_context.device.cmd_set_viewport(
+                                *frame_data.draw_cmd_buffer,
+                                0,
+                                slice::from_ref(&self.swapchain.viewport),
+                        );
+                        self.vk_context.device.cmd_set_scissor(
+                                *frame_data.draw_cmd_buffer,
+                                0,
+                                slice::from_ref(&self.swapchain.scissor),
+                        );
+
+                        self.vk_context.device.cmd_bind_descriptor_sets(
+                                *frame_data.draw_cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                *self.graphics_pipeline_layout,
+                                0,
+                                &[frame_data.world_dst_set],
+                                &[],
+                        );
+
+                        let asset_manager = world.remove_resource::<AssetManager>().unwrap();
+
+                        for (minstance,) in world
+                                .query::<(&crate::model_instance_manager::ModelInstance,)>()
+                                .iter(world)
+                        {
+                                Self::draw_model_instance_world(
+                                        &self.vk_context.pdevice,
+                                        &self.vk_context.device,
+                                        *frame_data.draw_cmd_buffer,
+                                        frame_data.object_dst_set,
+                                        *self.graphics_pipeline_layout,
+                                        &asset_manager,
+                                        &self.vk_asset_manager,
+                                        &world_matrices,
+                                        minstance,
+                                )?;
+                        }
+
+                        world.insert_resource(asset_manager);
+
+                        // self.imgui_renderer
+                        // .as_mut()
+                        // .unwrap()
+                        // .cmd_draw(*frame_data.draw_cmd_buffer, imgui_draw_data)?;
+
+                        self.end_frame(imagei)?;
+                }
+
+                Ok(())
+        }
+
         fn draw(
                 &mut self,
                 mesh_instances: &SlotMap<MeshInstanceId, MeshInstance>,
@@ -889,6 +1014,126 @@ impl VkRenderer {
                 self.framei = (self.framei + 1) % self.max_concurrent_frames;
 
                 Ok(())
+        }
+
+        fn draw_model_instance_world(
+                pdevice: &VkPhysicalDevice,
+                device: &VkDevice,
+                draw_cmd_buffer: vk::CommandBuffer,
+                object_dst_set: vk::DescriptorSet,
+                pipeline_layout: vk::PipelineLayout,
+                asset_manager: &AssetManager,
+                vk_asset_manager: &VkAssetManager,
+                matrices: &WorldMatrices,
+                minstance: &crate::model_instance_manager::ModelInstance,
+        ) -> VkResult<()> {
+                // let transform_final = model_instance_transform * model.base_transform;
+
+                // let mats_m_mvp = MatricesMMvp {
+                //         model: transform_final,
+                //         mvp: matrices.proj * matrices.view * transform_final,
+                // };
+
+                // unsafe {
+                //         device.cmd_push_constants(
+                //                 draw_cmd_buffer,
+                //                 pipeline_layout,
+                //                 vk::ShaderStageFlags::VERTEX,
+                //                 0,
+                //                 slice::from_raw_parts(
+                //                         &mats_m_mvp as *const _ as *const u8,
+                //                         std::mem::size_of::<MatricesMMvp>(),
+                //                 ),
+                //         );
+                // }
+
+                // matrices.normal = glm::inverse_transpose(transform_final);
+
+                //let mut last_material = MaterialID::MAX;
+
+                let model = &asset_manager.models()[minstance.model];
+                for &mesh_id in &model.meshes {
+                        Self::draw_mesh_instance_world(
+                                pdevice,
+                                device,
+                                draw_cmd_buffer,
+                                object_dst_set,
+                                pipeline_layout,
+                                asset_manager,
+                                vk_asset_manager,
+                                mesh_id,
+                                minstance.transform,
+                        );
+                }
+
+                for child_minstance in &minstance.children {
+                        Self::draw_model_instance_world(
+                                pdevice,
+                                device,
+                                draw_cmd_buffer,
+                                object_dst_set,
+                                pipeline_layout,
+                                asset_manager,
+                                vk_asset_manager,
+                                matrices,
+                                child_minstance,
+                        )?;
+                }
+
+                Ok(())
+        }
+
+        fn draw_mesh_instance_world(
+                pdevice: &VkPhysicalDevice,
+                device: &VkDevice,
+                draw_cmd_buffer: vk::CommandBuffer,
+                object_dst_set: vk::DescriptorSet,
+                pipeline_layout: vk::PipelineLayout,
+                asset_manager: &AssetManager,
+                vk_asset_manager: &VkAssetManager,
+                mesh_id: MeshId,
+                transform_id: TransformId,
+        ) {
+                let mesh = &asset_manager.meshes()[mesh_id];
+
+                /* if mesh.material != last_material {
+                        last_material = mesh.material;
+                } */
+
+                let material = &asset_manager.materials()[mesh.material];
+                let pipeline = *vk_asset_manager.pipelines[material.shader];
+
+                let material_dst_set = vk_asset_manager.material_dst_sets[mesh.material];
+                let positions = &vk_asset_manager.buffer_views[mesh.positions];
+                let normals = &vk_asset_manager.buffer_views[mesh.normals];
+                let tex_coords = &vk_asset_manager.buffer_views[mesh.tex_coords];
+                let indices = &vk_asset_manager.buffer_views[mesh.indices];
+
+                unsafe {
+                        device.cmd_bind_pipeline(draw_cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+
+                        let object_matrices_padded_size = pdevice.padded_size_of::<ObjectMatrices>();
+                        let object_matrices_buffer_idx = transform_id.data().as_ffi() as u32 as usize;
+                        let object_matrices_buffer_offset = object_matrices_padded_size * object_matrices_buffer_idx;
+
+                        device.cmd_bind_descriptor_sets(
+                                draw_cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                pipeline_layout,
+                                1,
+                                &[material_dst_set, object_dst_set],
+                                &[0, object_matrices_buffer_offset as u32],
+                        );
+                        device.cmd_bind_vertex_buffers(
+                                draw_cmd_buffer,
+                                0,
+                                &[*positions.buffer, *normals.buffer, *tex_coords.buffer],
+                                &[0, 0, 0],
+                        );
+                        device.cmd_bind_index_buffer(draw_cmd_buffer, *indices.buffer, 0, indices.index_type);
+
+                        device.cmd_draw_indexed(draw_cmd_buffer, indices.element_count as u32, 1, 0, 0, 0);
+                }
         }
 
         fn draw_model_instance(

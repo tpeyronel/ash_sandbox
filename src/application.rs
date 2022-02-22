@@ -6,13 +6,16 @@ use std::{
 };
 
 use slotmap::SlotMap;
-use specs::{DispatcherBuilder, Entity, ReadExpect, WriteStorage};
+use specs::{DispatcherBuilder, ReadExpect, WriteStorage};
 use tps_counter::TPSCounter;
 
 use crate::{
         actions::*,
         application_config::ApplicationConfig,
         asset_manager::*,
+        components::{
+                ActiveCamera, LightEmitter, OrbitalVelocity, Parent, ProjectionCamera, RelativeTransform, Transform,
+        },
         constants::{FONT_SIZE, MAX_CONCURRENT_FRAMES, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
         hashmap::HashMap,
@@ -23,14 +26,14 @@ use crate::{
                 LogicThread, LogicThreadCommand, LogicThreadMessage, LogicThreadSpawnParams, PlayerResource,
                 TransformComponent,
         },
+        model_instance_manager::{ModelInstance, ModelInstanceManager, TransformManager},
         my_glm::*,
         render_state_switcher::RenderStateSwitcher,
-        renderer::{
-                MeshInstance, MeshInstanceId, ModelInstance, ModelInstanceId, RenderState, Renderer, TransformManager,
-        },
+        renderer::{MeshInstance, MeshInstanceId, ModelInstanceId, RenderState, Renderer},
         vk::vk_renderer::VkRenderer,
         AnyResult,
 };
+use bevy_ecs::prelude::*;
 #[allow(unused_imports)]
 use log::{error, info, trace};
 use serde::{Deserialize, Serialize};
@@ -43,9 +46,10 @@ use winit::{
 
 #[allow(dead_code)]
 pub struct Application {
-        target_ticktime: f32,
-
         event_loop: Option<EventLoop<()>>,
+
+        target_ticktime: f32,
+        world: World,
         window: Rc<Window>,
         window_state: WindowState,
         window_thread_rx: std::sync::mpsc::Receiver<WindowThreadMessage>,
@@ -56,8 +60,8 @@ pub struct Application {
         action_receiver: ActionReceiver,
 
         mesh_instances: SlotMap<MeshInstanceId, MeshInstance>,
-        model_instances: SlotMap<ModelInstanceId, ModelInstance>,
-        model_instances_index: HashMap<Entity, ModelInstanceId>,
+        model_instances: SlotMap<ModelInstanceId, crate::renderer::ModelInstance>,
+        model_instances_index: HashMap<specs::Entity, ModelInstanceId>,
 
         render_state_manager: RenderStateManager,
         renderer: VkRenderer,
@@ -85,9 +89,10 @@ impl Application {
                                 WindowMode::Borderless => Some(Fullscreen::Borderless(None)),
                                 WindowMode::Fullscreen => Some(Fullscreen::Exclusive(fullscreen_video_mode.clone())),
                         })
-                        .with_visible(false)
+                        // .with_visible(false)
+                        .with_visible(true)
                         .with_always_on_top(false)
-                        .with_min_inner_size(winit::dpi::PhysicalSize {
+                        .with_min_inner_size(winit::dpi::PhysicalSize::<u32> {
                                 width: 144,
                                 height: 144,
                         })
@@ -103,8 +108,142 @@ impl Application {
                         fullscreen_video_mode,
                         CursorState::Normal,
                 );
-
                 trace!("Initialized ImGui");
+
+                let mut world = World::default();
+
+                let asset_manager = Self::init_asset_manager()?;
+                let mut transform_manager = TransformManager::new(MAX_CONCURRENT_FRAMES);
+                let model_instance_manager = ModelInstanceManager::new();
+
+                let player = world.spawn().insert(Transform::from_pos(Vec3::new(0.0, 0.0, 2.0))).id();
+
+                let camera = world
+                        .spawn()
+                        .insert(Parent(player))
+                        .insert(Transform::default())
+                        .insert(RelativeTransform(Transform::from_pos(Vec3::new(0.0, 1.0, 0.0))))
+                        .insert(ProjectionCamera::new(90.0f32.to_radians(), 1.0, 0.1, 100.0))
+                        .id();
+
+                world.insert_resource(ActiveCamera(camera));
+
+                let _colt = world
+                        .spawn()
+                        .insert(Transform::from_pos(Vec3::new(0.0, 0.0, -2.5)))
+                        .insert(model_instance_manager.create_model_instance(
+                                &asset_manager,
+                                &mut transform_manager,
+                                asset_manager.get_model_by_name("colt"),
+                        ))
+                        .insert(OrbitalVelocity {
+                                origin: Vec3::from_element(0.0),
+                                velocity: Vec3::new(0.0, -22.5f32.to_radians(), 0.0),
+                        })
+                        .id();
+
+                let _icosphere = world
+                        .spawn()
+                        .insert(Transform::from_scale(Vec3::new(4.0, 4.0, 4.0)))
+                        .insert(model_instance_manager.create_model_instance(
+                                &asset_manager,
+                                &mut transform_manager,
+                                asset_manager.get_model_by_name("icosphere"),
+                        ))
+                        .insert(OrbitalVelocity {
+                                origin: Vec3::from_element(0.0),
+                                velocity: Vec3::new(0.0, 0f32.to_radians(), 0.0),
+                        })
+                        .id();
+
+                let _grass_plane = world
+                        .spawn()
+                        .insert(Transform::from_pos(Vec3::new(0.0, -1.0, 0.0)))
+                        .insert(model_instance_manager.create_model_instance(
+                                &asset_manager,
+                                &mut transform_manager,
+                                asset_manager.get_model_by_name("grass-plane"),
+                        ))
+                        .id();
+
+                let _light = world
+                        .spawn()
+                        .insert(Transform {
+                                pos: Vec3::new(1.0, 2.0, 0.0),
+                                orien: UnitQuat::identity(),
+                                scale: Vec3::from_element(0.25),
+                        })
+                        .insert(model_instance_manager.create_model_instance(
+                                &asset_manager,
+                                &mut transform_manager,
+                                asset_manager.get_model_by_name("lit-icosphere"),
+                        ))
+                        .insert(LightEmitter {
+                                color: Vec3::new(0.9, 1.0, 0.9),
+                        })
+                        .insert(OrbitalVelocity {
+                                origin: Vec3::from_element(0.0),
+                                velocity: Vec3::new(0.0, 45f32.to_radians(), 0.0),
+                        })
+                        .id();
+
+                world.insert_resource(asset_manager);
+                world.insert_resource(transform_manager);
+
+                fn update_transforms(
+                        query: Query<(Entity, &Transform, &ModelInstance), Changed<Transform>>,
+                        asset_manager: Res<AssetManager>,
+                        mut transform_manager: ResMut<TransformManager>,
+                ) {
+                        transform_manager.on_update();
+
+                        let mut matrix_stack = MatrixStack::new();
+                        for (e, transform, model_instance) in query.iter() {
+                                matrix_stack.push(transform.to_matrix());
+                                process_model_instance(
+                                        &mut matrix_stack,
+                                        &mut transform_manager,
+                                        &asset_manager,
+                                        model_instance,
+                                );
+                                matrix_stack.pop();
+                        }
+                }
+
+                fn process_model_instance(
+                        matrix_stack: &mut MatrixStack,
+                        transform_manager: &mut TransformManager,
+                        asset_manager: &AssetManager,
+                        model_instance: &ModelInstance,
+                ) {
+                        let model = &asset_manager.models()[model_instance.model];
+
+                        let transform = matrix_stack.push(model.base_transform);
+                        transform_manager.set_transform(model_instance.transform, &transform);
+
+                        for child_model_instance in &model_instance.children {
+                                process_model_instance(
+                                        matrix_stack,
+                                        transform_manager,
+                                        asset_manager,
+                                        child_model_instance,
+                                );
+                        }
+
+                        matrix_stack.pop();
+                }
+
+                let mut schedule = Schedule::default();
+
+                schedule.add_stage("update", SystemStage::single_threaded().with_system(update_transforms));
+
+                let mut renderer = VkRenderer::new(Rc::clone(&window), &mut imgui_context.context)?;
+
+                loop {
+                        schedule.run(&mut world);
+
+                        renderer.draw_world(&mut world)?;
+                }
 
                 let dispatch_actions = true;
                 let mut input_manager = InputManager::new(dispatch_actions);
@@ -144,8 +283,6 @@ impl Application {
                 let render_state_switcher = Arc::new(Mutex::new(RenderStateSwitcher::new()));
                 let render_state_manager = RenderStateManager::new(Arc::clone(&render_state_switcher));
 
-                let renderer = VkRenderer::new(Rc::clone(&window), &mut imgui_context.context)?;
-
                 let (logic_thread_tx, logic_thread_rx) = std::sync::mpsc::channel();
                 let (window_thread_tx, window_thread_rx) = std::sync::mpsc::channel();
 
@@ -177,8 +314,9 @@ impl Application {
                 let action_receiver = input_manager.create_action_receiver();
 
                 Ok(Self {
-                        target_ticktime: 1.0 / config.tps as f32,
                         event_loop: Some(event_loop),
+                        target_ticktime: 1.0 / config.tps as f32,
+                        world,
                         window,
                         window_state,
                         window_thread_rx,
@@ -245,6 +383,82 @@ impl Application {
                 platform.attach_window(context.io_mut(), &window, imgui_winit_support::HiDpiMode::Rounded);
 
                 ImguiContext { context, platform }
+        }
+
+        fn init_asset_manager() -> AnyResult<AssetManager> {
+                let dsampler = Sampler {
+                        name: Some(String::from("Default Sampler")),
+                        mag_filter: MagFilter::Linear,
+                        min_filter: MinFilter::LinearMipmapLinear,
+                        wrap_s: WrappingMode::Repeat,
+                        wrap_t: WrappingMode::Repeat,
+                };
+
+                // TODO: improve default shader.
+                let dmaterial = Material {
+                        name: Some(String::from("Default Material")),
+                        shader: ShaderId::from(slotmap::KeyData::default()),
+                        base_color_factor: Vec4::new(0.8, 0.8, 0.8, 1.0),
+                        metallic_factor: 0.0,
+                        roughness_factor: 1.0,
+                        base_color_texture: None,
+                        metallic_roughness_texture: None,
+                        normal_texture: None,
+                        occlusion_texture: None,
+                        emissive_texture: None,
+                        emissive_factor: Vec3::from_element(0.0),
+                };
+
+                let mut asset_manager = AssetManager::new(dsampler, dmaterial);
+
+                // asset_manager.register_shader_resource(
+                //         "matrices".to_string(),
+                //         ShaderResource {
+                //                 elements: vec![
+                //                         ShaderResourceElement {
+                //                                 element_type: ShaderResourceElementType::UniformBuffer,
+                //                                 shader_stage_flags: ash::vk::ShaderStageFlags::VERTEX,
+                //                         },
+                //                         ShaderResourceElement {
+                //                                 element_type: ShaderResourceElementType::UniformBufferDynamic,
+                //                                 shader_stage_flags: ash::vk::ShaderStageFlags::VERTEX,
+                //                         },
+                //                 ],
+                //         },
+                // );
+
+                // asset_manager.register_shader_resource(
+                //         "material-texture-sampler".to_string(),
+                //         ShaderResource {
+                //                 elements: vec![
+                //                         ShaderResourceElement {
+                //                                 element_type: ShaderResourceElementType::SampledImage,
+                //                                 shader_stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+                //                         },
+                //                         ShaderResourceElement {
+                //                                 element_type: ShaderResourceElementType::Sampler,
+                //                                 shader_stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+                //                         },
+                //                 ],
+                //         },
+                // );
+
+                let _basic_shader =
+                        asset_manager.load_shader_from_yaml(Path::new("res/shader/basic_shader/basic_shader.yaml"))?;
+                let _color_shader =
+                        asset_manager.load_shader_from_yaml(Path::new("res/shader/color_shader/color_shader.yaml"))?;
+
+                let _model_colt = asset_manager.import_gltf_file(Path::new("res/model/new-colt/colt.gltf"))?;
+                let _model_grass_plane =
+                        asset_manager.import_gltf_file(Path::new("res/model/grass-plane/grass-plane.gltf"))?;
+                let _model_sphere = asset_manager.import_gltf_file(Path::new("res/model/sphere/sphere.gltf"))?;
+                let _model_icosphere =
+                        asset_manager.import_gltf_file(Path::new("res/model/icosphere/icosphere.gltf"))?;
+                let _model_lit_icosphere = asset_manager
+                        .import_gltf_file(std::path::Path::new("res/model/lit-icosphere/lit-icosphere.gltf"))?;
+
+                trace!("Initialized AssetManager");
+                Ok(asset_manager)
         }
 
         fn on_winit_event(
@@ -340,15 +554,15 @@ impl Application {
                                 &mut self.player_transform,
                         )?;
 
-                        self.renderer.draw(
-                                &self.mesh_instances,
-                                &self.model_instances,
-                                &self.model_instances_index,
-                                &self.transform_manager,
-                                &render_state,
-                                &self.player_orien.to_quat(),
-                                imgui_ui.render(),
-                        )?;
+                        // self.renderer.draw(
+                        //         &self.mesh_instances,
+                        //         &self.model_instances,
+                        //         &self.model_instances_index,
+                        //         &self.transform_manager,
+                        //         &render_state,
+                        //         &self.player_orien.to_quat(),
+                        //         imgui_ui.render(),
+                        // )?;
                 }
 
                 Ok(())
@@ -390,7 +604,7 @@ impl Application {
         fn create_model_instance(
                 asset_manager: &AssetManager,
                 mesh_instances: &mut SlotMap<MeshInstanceId, MeshInstance>,
-                model_instances: &mut SlotMap<ModelInstanceId, ModelInstance>,
+                model_instances: &mut SlotMap<ModelInstanceId, crate::renderer::ModelInstance>,
                 model_id: ModelId,
                 transform: TransformComponent,
         ) -> ModelInstanceId {
@@ -417,7 +631,7 @@ impl Application {
                         ));
                 }
 
-                let model_instance = ModelInstance {
+                let model_instance = crate::renderer::ModelInstance {
                         model_id,
                         mesh_instances: mesh_instance_ids,
                         children: child_model_instance_ids,
@@ -431,15 +645,15 @@ impl Application {
                 matrix_stack: &mut MatrixStack,
                 transform_manager: &mut TransformManager,
                 asset_manager: &AssetManager,
-                model_instances: &SlotMap<ModelInstanceId, ModelInstance>,
-                model_instance: &ModelInstance,
+                model_instances: &SlotMap<ModelInstanceId, crate::renderer::ModelInstance>,
+                model_instance: &crate::renderer::ModelInstance,
         ) {
                 matrix_stack.push(model_instance.transform.to_matrix());
                 let transform = matrix_stack.push(asset_manager.models()[model_instance.model_id].base_transform);
 
-                for &mesh_instance_id in &model_instance.mesh_instances {
-                        transform_manager.set_transform(mesh_instance_id, &transform);
-                }
+                // for &mesh_instance_id in &model_instance.mesh_instances {
+                //         transform_manager.set_transform(mesh_instance_id, &transform);
+                // }
 
                 for &child_model_instance_id in &model_instance.children {
                         Self::process_model_instance(
