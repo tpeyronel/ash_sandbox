@@ -26,6 +26,14 @@ impl Default for Transform {
 }
 
 impl Transform {
+        pub fn interp(&self, other: &Self, t: f32) -> Self {
+                Self {
+                        pos: Vec3::lerp(&self.pos, &other.pos, t),
+                        orien: UnitQuat::nlerp(&self.orien, &other.orien, t),
+                        scale: Vec3::lerp(&self.scale, &other.scale, t),
+                }
+        }
+
         pub fn to_matrix(&self) -> Mat4 {
                 Mat4::new_translation(&self.pos)
                         * UnitQuat::to_homogeneous(&self.orien)
@@ -71,6 +79,9 @@ pub struct Parent(pub Entity);
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct RelativeTransform(pub Transform);
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct OldTransform(pub Transform);
 
 #[derive(Component, Debug, Default, Clone, Copy)]
 pub struct ProjectionCamera {

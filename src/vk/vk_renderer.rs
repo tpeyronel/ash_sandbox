@@ -18,8 +18,9 @@ use super::{
         vk_wrapper::{VkDescriptorSetLayout, VkDevice, VkPhysicalDevice, VkPipelineLayout, VkRenderPass, VkSemaphore},
 };
 use crate::{
+        application::InterpTransform,
         asset_manager::{AssetManager, MeshId},
-        components::{ActiveCamera, LightEmitter, Player, ProjectionCamera, Transform},
+        components::{ActiveCamera, LightEmitter, Player, ProjectionCamera},
         model_instance_manager::TransformId,
         my_glm::*,
         renderer::{RenderState, Renderer},
@@ -357,7 +358,7 @@ impl Renderer for VkRenderer {
                 let player = world.get_resource::<Player>().unwrap().0;
                 let camera = world.get_resource::<ActiveCamera>().unwrap().0;
 
-                let player_transform = world.get::<Transform>(player).unwrap();
+                let player_transform = &world.get::<InterpTransform>(player).unwrap().0;
                 let camera_projection = world.get::<ProjectionCamera>(camera).unwrap();
 
                 let inverted_view_mat =
@@ -377,7 +378,7 @@ impl Renderer for VkRenderer {
                 frame_data.world_matrices_buffer.write(&world_matrices)?;
 
                 let (light_transform, light_emitter) = world
-                        .query::<(&Transform, &LightEmitter)>()
+                        .query::<(&InterpTransform, &LightEmitter)>()
                         .iter(&world)
                         .next()
                         .unwrap();
@@ -385,7 +386,7 @@ impl Renderer for VkRenderer {
                 let world_light = WorldLight {
                         // pos: Vec4::new_position(&Vec3::new(0.0, 2.0, 0.0)),
                         // color: Vec4::new_position(&Vec3::new(0.8, 0.8, 0.8)),
-                        pos: Vec4::new_position(&light_transform.pos),
+                        pos: Vec4::new_position(&light_transform.0.pos),
                         color: Vec4::new_position(&light_emitter.color),
                 };
 

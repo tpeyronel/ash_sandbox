@@ -14,7 +14,7 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         components::{
-                ActiveCamera, DeltaTime, LightEmitter, OrbitalVelocity, Parent, Player, ProjectionCamera,
+                ActiveCamera, DeltaTime, LightEmitter, OldTransform, OrbitalVelocity, Parent, Player, ProjectionCamera,
                 RelativeTransform, Transform,
         },
         constants::{FONT_SIZE, MAX_CONCURRENT_FRAMES, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
@@ -181,6 +181,9 @@ impl Application {
 
                 let mut schedule = Schedule::default();
 
+                let first_stage = SystemStage::single_threaded().with_system(manage_transform_registry);
+                schedule.add_stage("first", first_stage);
+
                 let update = SystemStage::single_threaded()
                         .with_system(process_actions)
                         .with_system(relative_transform_updater)
@@ -227,6 +230,8 @@ impl Application {
 
                 world.insert_non_send(input_manager.create_action_receiver());
                 let action_receiver = input_manager.create_action_receiver();
+
+                schedule.run(&mut world);
 
                 Ok(Self {
                         event_loop: Some(event_loop),
@@ -448,13 +453,15 @@ impl Application {
                 player_transform.orien = self.player_orien.to_quat();
 
                 self.accumulator += self.delta_time;
-                if self.accumulator > self.target_ticktime {
+                if self.accumulator >= self.target_ticktime {
                         self.schedule.run(&mut self.world);
                         self.accumulator -= self.target_ticktime;
 
                         // self.tps_counter.tick_and_map(|t| info!("TPS: {}", t));
                 }
 
+                // self.tps_counter.tick_and_map(|t| info!("TPS: {}", t));
+                interpolate_transforms(&mut self.world, self.accumulator / self.target_ticktime);
                 self.renderer.draw_world(&mut self.world)?;
 
                 // self.logic_thread_tx
@@ -986,3 +993,30 @@ fn relative_transform_updater(
                 commands.entity(child).insert(new_child_transform);
         }
 }
+
+fn manage_transform_registry(
+        mut commands: Commands,
+        new_transforms: Query<(Entity, &Transform), Without<OldTransform>>,
+        mut transforms: Query<(&Transform, &mut OldTransform)>,
+) {
+        for (e, new_transform) in new_transforms.iter() {
+                commands.entity(e).insert(OldTransform(*new_transform));
+                commands.entity(e).insert(InterpTransform(*new_transform));
+        }
+
+        for (transform, mut old_transform) in transforms.iter_mut() {
+                old_transform.0 = *transform;
+        }
+}
+
+fn interpolate_transforms(world: &mut World, t: f32) {
+        let mut query = world.query::<(&OldTransform, &Transform, &mut InterpTransform)>();
+
+        for (old_transform, new_transform, mut interp_transform) in query.iter_mut(world) {
+                interp_transform.0 = Transform::interp(&old_transform.0, new_transform, t);
+                // info!("{:?}", interp_transform.0.pos);
+        }
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct InterpTransform(pub Transform);
