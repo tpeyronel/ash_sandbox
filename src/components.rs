@@ -71,7 +71,8 @@ pub struct AngularVelocity(pub Vec3);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct OrbitalVelocity {
         pub origin: Vec3,
-        pub velocity: Vec3,
+        pub orbit: UnitVec3,
+        pub speed: f32,
 }
 
 #[derive(Component, Debug, Clone, Copy)]

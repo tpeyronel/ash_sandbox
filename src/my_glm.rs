@@ -1,5 +1,5 @@
 use glm::{TVec3, TVec4};
-use nalgebra::Scalar;
+use nalgebra::{Scalar, Unit};
 
 extern crate nalgebra_glm as glm;
 
@@ -16,6 +16,15 @@ pub type Vec2 = glm::Vec2;
 pub type Vec3 = glm::Vec3;
 #[allow(dead_code)]
 pub type Vec4 = glm::Vec4;
+
+#[allow(dead_code)]
+pub type UnitVec1 = Unit<glm::Vec1>;
+#[allow(dead_code)]
+pub type UnitVec2 = Unit<glm::Vec2>;
+#[allow(dead_code)]
+pub type UnitVec3 = Unit<glm::Vec3>;
+#[allow(dead_code)]
+pub type UnitVec4 = Unit<glm::Vec4>;
 
 #[allow(dead_code)]
 pub type Vec1u = glm::UVec1;

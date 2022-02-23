@@ -5,6 +5,7 @@ use std::{
         time::Instant,
 };
 
+use nalgebra::Unit;
 use slotmap::SlotMap;
 use specs::{ReadExpect, WriteStorage};
 use tps_counter::TPSCounter;
@@ -48,6 +49,7 @@ pub struct Application {
         target_ticktime: f32,
         world: World,
         schedule: Schedule,
+        render_schedule: Schedule,
         accumulator: f32,
         window: Rc<Window>,
         window_state: WindowState,
@@ -126,8 +128,10 @@ impl Application {
                                 asset_manager.get_model_by_name("colt"),
                         ))
                         .insert(OrbitalVelocity {
-                                origin: Vec3::from_element(0.0),
-                                velocity: Vec3::new(0.0, -22.5f32.to_radians(), 0.0),
+                                origin: Vec3::new(2.5, 2.5, 0.0),
+                                // orbit: Vec3::y_axis(),
+                                orbit: Unit::new_normalize(Vec3::x() + Vec3::y()),
+                                speed: -22.5f32.to_radians(),
                         })
                         .id();
 
@@ -141,7 +145,8 @@ impl Application {
                         ))
                         .insert(OrbitalVelocity {
                                 origin: Vec3::from_element(0.0),
-                                velocity: Vec3::new(0.0, 0f32.to_radians(), 0.0),
+                                orbit: Vec3::y_axis(),
+                                speed: 0.0f32.to_radians(),
                         })
                         .id();
 
@@ -172,7 +177,8 @@ impl Application {
                         })
                         .insert(OrbitalVelocity {
                                 origin: Vec3::from_element(0.0),
-                                velocity: Vec3::new(0.0, 45f32.to_radians(), 0.0),
+                                orbit: Vec3::y_axis(),
+                                speed: 45.0f32.to_radians(),
                         })
                         .id();
 
@@ -191,10 +197,13 @@ impl Application {
                 let update = SystemStage::single_threaded()
                         .with_system(init_new_transforms)
                         .with_system(process_actions)
-                        .with_system(relative_transform_updater)
-                        .with_system(update_transforms);
+                        .with_system(integrate_orbital_velocities)
+                        .with_system(relative_transform_updater);
 
                 schedule.add_stage("update", update);
+
+                let mut render_schedule = Schedule::default();
+                render_schedule.add_stage("render", SystemStage::single_threaded().with_system(update_transforms));
 
                 let renderer = VkRenderer::new(Rc::clone(&window), &mut imgui_context.context)?;
 
@@ -243,6 +252,7 @@ impl Application {
                         target_ticktime: 1.0 / config.tps as f32,
                         world,
                         schedule,
+                        render_schedule,
                         accumulator: 0.0,
                         window,
                         window_state,
@@ -483,6 +493,7 @@ impl Application {
                 }
 
                 // self.tps_counter.tick_and_map(|t| info!("TPS: {}", t));
+                self.render_schedule.run(&mut self.world);
                 interpolate_transforms(&mut self.world, self.accumulator / self.target_ticktime);
                 self.renderer.draw_world(&mut self.world)?;
 
@@ -890,7 +901,7 @@ impl MatrixStack {
 }
 
 fn update_transforms(
-        query: Query<(Entity, &Transform, &ModelInstance), Changed<Transform>>,
+        query: Query<(Entity, &InterpTransform, &ModelInstance), Changed<InterpTransform>>,
         asset_manager: Res<AssetManager>,
         mut transform_manager: ResMut<TransformManager>,
 ) {
@@ -898,7 +909,7 @@ fn update_transforms(
 
         let mut matrix_stack = MatrixStack::new();
         for (e, transform, model_instance) in query.iter() {
-                matrix_stack.push(transform.to_matrix());
+                matrix_stack.push(transform.0.to_matrix());
                 process_model_instance(
                         &mut matrix_stack,
                         &mut transform_manager,
@@ -1015,6 +1026,18 @@ fn init_new_transforms(mut commands: Commands, new_transforms: Query<(Entity, &T
 fn persist_transforms(mut transforms: Query<(&Transform, &mut OldTransform)>) {
         for (transform, mut old_transform) in transforms.iter_mut() {
                 old_transform.0 = *transform;
+        }
+}
+
+fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transform)>, delta_time: Res<DeltaTime>) {
+        for (orbital_velocity, mut transform) in query.iter_mut() {
+                let orbital_pos = transform.pos - orbital_velocity.origin;
+                let orbital_rot =
+                        UnitQuat::from_axis_angle(&orbital_velocity.orbit, orbital_velocity.speed * delta_time.0);
+                let new_orbital_pos = orbital_rot * orbital_pos;
+                let movement = new_orbital_pos - orbital_pos;
+
+                transform.pos += movement;
         }
 }
 
