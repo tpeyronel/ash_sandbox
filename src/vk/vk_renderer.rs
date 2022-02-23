@@ -20,7 +20,7 @@ use super::{
 use crate::{
         application::InterpTransform,
         asset_manager::{AssetManager, MeshId},
-        components::{ActiveCamera, LightEmitter, Player, ProjectionCamera},
+        components::{ActiveCamera, LightEmitter, Player, ProjectionCamera, Transform},
         model_instance_manager::TransformId,
         my_glm::*,
         renderer::{RenderState, Renderer},
@@ -358,11 +358,11 @@ impl Renderer for VkRenderer {
                 let player = world.get_resource::<Player>().unwrap().0;
                 let camera = world.get_resource::<ActiveCamera>().unwrap().0;
 
-                let player_transform = &world.get::<InterpTransform>(player).unwrap().0;
+                let player_orien = &world.get::<Transform>(player).unwrap().orien;
+                let camera_pos = &world.get::<InterpTransform>(camera).unwrap().0.pos;
                 let camera_projection = world.get::<ProjectionCamera>(camera).unwrap();
 
-                let inverted_view_mat =
-                        Mat4::new_translation(&player_transform.pos) * player_transform.orien.to_homogeneous();
+                let inverted_view_mat = Mat4::new_translation(&camera_pos) * player_orien.to_homogeneous();
                 let view_mat = inverted_view_mat
                         .try_inverse()
                         .expect("Couldn't invert camera ViewMatrix!");
@@ -370,7 +370,7 @@ impl Renderer for VkRenderer {
                 let proj_mat = camera_projection.calc_proj_matrix(aspect_ratio);
 
                 let world_matrices = WorldMatrices {
-                        view_pos: Vec4::new_position(&player_transform.pos),
+                        view_pos: Vec4::new_position(&camera_pos),
                         view: view_mat,
                         proj: proj_mat,
                 };

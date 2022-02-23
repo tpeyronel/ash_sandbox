@@ -178,13 +178,18 @@ impl Application {
 
                 world.insert_resource(asset_manager);
                 world.insert_resource(transform_manager);
+                world.insert_resource(ControlFlow::Poll);
+                world.insert_resource(window_state.window_mode);
+                world.insert_resource(window_state.cursor_state);
+                world.insert_resource(Vec::<WindowCommand>::new());
 
                 let mut schedule = Schedule::default();
 
-                let first_stage = SystemStage::single_threaded().with_system(manage_transform_registry);
+                let first_stage = SystemStage::single_threaded().with_system(persist_transforms);
                 schedule.add_stage("first", first_stage);
 
                 let update = SystemStage::single_threaded()
+                        .with_system(init_new_transforms)
                         .with_system(process_actions)
                         .with_system(relative_transform_updater)
                         .with_system(update_transforms);
@@ -433,7 +438,7 @@ impl Application {
                         .set_dispatch_actions(self.window_state.has_focus && self.dispatch_actions);
 
                 for (action_id, strength) in self.action_receiver.receive_adjusted(self.delta_time) {
-                        if !self.player_camera_enabled {
+                        if self.window_state.cursor_state != CursorState::Hidden {
                                 continue;
                         }
 
@@ -456,6 +461,23 @@ impl Application {
                 if self.accumulator >= self.target_ticktime {
                         self.schedule.run(&mut self.world);
                         self.accumulator -= self.target_ticktime;
+                        *control_flow = *self.world.get_resource::<ControlFlow>().unwrap();
+
+                        for window_command in self.world.get_resource_mut::<Vec<WindowCommand>>().unwrap().drain(..) {
+                                match window_command {
+                                        WindowCommand::SetCursorState(cursor_state) => {
+                                                self.window_state.set_cursor_state(
+                                                        &self.window,
+                                                        self.imgui_context.context.io_mut(),
+                                                        cursor_state,
+                                                );
+                                                // input_manager.set_dispatch_actions(new_cursor_state == CursorState::Hidden);
+                                        },
+                                        WindowCommand::SetWindowMode(window_mode) => {
+                                                self.window_state.set_window_mode(&self.window, window_mode);
+                                        },
+                                }
+                        }
 
                         // self.tps_counter.tick_and_map(|t| info!("TPS: {}", t));
                 }
@@ -910,9 +932,11 @@ fn process_actions(
         delta_time: Res<DeltaTime>,
         player: Res<Player>,
         action_receiver: NonSend<ActionReceiver>,
-        // window: Res<Window>,
-        // window_state: NonSend<WindowState>,
-        // cursor_state: ResMut<CursorState>,
+        mut control_flow: ResMut<ControlFlow>,
+        mut window_mode: ResMut<WindowMode>,
+        mut cursor_state: ResMut<CursorState>,
+        // TODO: make commands by observing modifications to Res<WindowMode>, etc.
+        mut window_commands: ResMut<Vec<WindowCommand>>,
         mut transforms: Query<&mut Transform>,
 ) {
         let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
@@ -925,39 +949,26 @@ fn process_actions(
                         MOVE_LEFTWARD => desired_dir.x -= strength.0,
                         MOVE_UPWARD => desired_dir.y += strength.0,
                         MOVE_DOWNARD => desired_dir.y -= strength.0,
-                        // EXIT => {
-                        //         let command = WindowThreadMessage::Command(WindowThreadCommand::Exit);
-                        //         queued_window_thread_messages.0.push_back(command);
-                        // },
-                        // TOGGLE_CURSOR => {
-                        //         *cursor_state = match *cursor_state {
-                        //                 CursorState::Normal => CursorState::Hidden,
-                        //                 CursorState::Hidden => CursorState::Normal,
-                        //         };
+                        EXIT => {
+                                *control_flow = ControlFlow::Exit;
+                        },
+                        TOGGLE_CURSOR => {
+                                *cursor_state = match *cursor_state {
+                                        CursorState::Normal => CursorState::Hidden,
+                                        CursorState::Hidden => CursorState::Normal,
+                                };
 
-                        //         window_state.set_cursor_state(window, imgui_io, *cursor_state);
+                                window_commands.push(WindowCommand::SetCursorState(*cursor_state));
+                        },
+                        CYCLE_WINDOW_MODE => {
+                                *window_mode = match *window_mode {
+                                        WindowMode::Windowed => WindowMode::Borderless,
+                                        WindowMode::Borderless => WindowMode::Fullscreen,
+                                        WindowMode::Fullscreen => WindowMode::Windowed,
+                                };
 
-                        //         queued_window_thread_messages.0.push_back(WindowThreadMessage::Command(
-                        //                 WindowThreadCommand::SetCursorState(*cursor_state),
-                        //         ));
-
-                        //         queued_window_thread_messages.0.push_back(WindowThreadMessage::Command(
-                        //                 WindowThreadCommand::SetPlayerCameraEnabled(
-                        //                         self.last_cursor_state == CursorState::Hidden,
-                        //                 ),
-                        //         ));
-                        // },
-                        // CYCLE_WINDOW_MODE => {
-                        //         self.last_window_mode = match self.last_window_mode {
-                        //                 WindowMode::Windowed => WindowMode::Borderless,
-                        //                 WindowMode::Borderless => WindowMode::Fullscreen,
-                        //                 WindowMode::Fullscreen => WindowMode::Windowed,
-                        //         };
-
-                        //         queued_window_thread_messages.0.push_back(WindowThreadMessage::Command(
-                        //                 WindowThreadCommand::SetWindowMode(self.last_window_mode),
-                        //         ));
-                        // },
+                                window_commands.push(WindowCommand::SetWindowMode(*window_mode));
+                        },
                         _ => (),
                 }
         }
@@ -994,16 +1005,14 @@ fn relative_transform_updater(
         }
 }
 
-fn manage_transform_registry(
-        mut commands: Commands,
-        new_transforms: Query<(Entity, &Transform), Without<OldTransform>>,
-        mut transforms: Query<(&Transform, &mut OldTransform)>,
-) {
+fn init_new_transforms(mut commands: Commands, new_transforms: Query<(Entity, &Transform), Added<Transform>>) {
         for (e, new_transform) in new_transforms.iter() {
                 commands.entity(e).insert(OldTransform(*new_transform));
                 commands.entity(e).insert(InterpTransform(*new_transform));
         }
+}
 
+fn persist_transforms(mut transforms: Query<(&Transform, &mut OldTransform)>) {
         for (transform, mut old_transform) in transforms.iter_mut() {
                 old_transform.0 = *transform;
         }
@@ -1014,9 +1023,13 @@ fn interpolate_transforms(world: &mut World, t: f32) {
 
         for (old_transform, new_transform, mut interp_transform) in query.iter_mut(world) {
                 interp_transform.0 = Transform::interp(&old_transform.0, new_transform, t);
-                // info!("{:?}", interp_transform.0.pos);
         }
 }
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct InterpTransform(pub Transform);
+
+enum WindowCommand {
+        SetCursorState(CursorState),
+        SetWindowMode(WindowMode),
+}
