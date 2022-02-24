@@ -29,7 +29,8 @@ impl Transform {
         pub fn interp(&self, other: &Self, t: f32) -> Self {
                 Self {
                         pos: Vec3::lerp(&self.pos, &other.pos, t),
-                        orien: UnitQuat::nlerp(&self.orien, &other.orien, t),
+                        orien: UnitQuat::try_slerp(&self.orien, &other.orien, t, 0.0)
+                                .unwrap_or_else(|| UnitQuat::nlerp(&self.orien, &other.orien, t)),
                         scale: Vec3::lerp(&self.scale, &other.scale, t),
                 }
         }
@@ -71,9 +72,14 @@ pub struct AngularVelocity(pub Vec3);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct OrbitalVelocity {
         pub origin: Vec3,
-        pub orbit: UnitVec3,
-        pub speed: f32,
+        pub velocity: Vec3,
 }
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Force(pub Vec3);
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Mass(pub f32);
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Parent(pub Entity);

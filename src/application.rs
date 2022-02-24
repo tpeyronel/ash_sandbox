@@ -5,7 +5,6 @@ use std::{
         time::Instant,
 };
 
-use nalgebra::Unit;
 use slotmap::SlotMap;
 use specs::{ReadExpect, WriteStorage};
 use tps_counter::TPSCounter;
@@ -15,8 +14,8 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         components::{
-                ActiveCamera, DeltaTime, LightEmitter, OldTransform, OrbitalVelocity, Parent, Player, ProjectionCamera,
-                RelativeTransform, Transform,
+                ActiveCamera, AngularVelocity, DeltaTime, Force, LightEmitter, Mass, OldTransform, OrbitalVelocity,
+                Parent, Player, ProjectionCamera, RelativeTransform, Transform, Velocity,
         },
         constants::{FONT_SIZE, MAX_CONCURRENT_FRAMES, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
@@ -121,17 +120,16 @@ impl Application {
 
                 let _colt = world
                         .spawn()
-                        .insert(Transform::from_pos(Vec3::new(0.0, 0.0, -2.5)))
+                        .insert(Transform::from_pos(Vec3::new(2.5, 0.0, 0.0)))
                         .insert(model_instance_manager.create_model_instance(
                                 &asset_manager,
                                 &mut transform_manager,
                                 asset_manager.get_model_by_name("colt"),
                         ))
+                        .insert(AngularVelocity(Vec3::y() * 45.0f32.to_radians()))
                         .insert(OrbitalVelocity {
-                                origin: Vec3::new(2.5, 2.5, 0.0),
-                                // orbit: Vec3::y_axis(),
-                                orbit: Unit::new_normalize(Vec3::x() + Vec3::y()),
-                                speed: -22.5f32.to_radians(),
+                                origin: Vec3::new(0.0, 2.5, 0.0),
+                                velocity: (Vec3::x() + Vec3::y()).normalize() * -22.5f32.to_radians(),
                         })
                         .id();
 
@@ -143,11 +141,9 @@ impl Application {
                                 &mut transform_manager,
                                 asset_manager.get_model_by_name("icosphere"),
                         ))
-                        .insert(OrbitalVelocity {
-                                origin: Vec3::from_element(0.0),
-                                orbit: Vec3::y_axis(),
-                                speed: 0.0f32.to_radians(),
-                        })
+                        .insert(Force(Vec3::new(0.0, 0.0, 0.0)))
+                        .insert(Mass(1.0))
+                        .insert(Velocity(Vec3::new(0.0, 0.0, 0.0)))
                         .id();
 
                 let _grass_plane = world
@@ -177,8 +173,7 @@ impl Application {
                         })
                         .insert(OrbitalVelocity {
                                 origin: Vec3::from_element(0.0),
-                                orbit: Vec3::y_axis(),
-                                speed: 45.0f32.to_radians(),
+                                velocity: Vec3::y() * 45.0f32.to_radians(),
                         })
                         .id();
 
@@ -191,13 +186,22 @@ impl Application {
 
                 let mut schedule = Schedule::default();
 
-                let first_stage = SystemStage::single_threaded().with_system(persist_transforms);
+                let first_stage = SystemStage::single_threaded()
+                        .with_system(renormalize_unit_quaternions)
+                        .with_system(persist_transforms);
                 schedule.add_stage("first", first_stage);
 
                 let update = SystemStage::single_threaded()
                         .with_system(init_new_transforms)
                         .with_system(process_actions)
-                        .with_system(integrate_orbital_velocities)
+                        .with_system(integrate_force.label("linear-force"))
+                        .with_system(integrate_linear_velocity.label("linear-velocity").after("linear-force"))
+                        .with_system(
+                                integrate_angular_velocities
+                                        .label("angular-velocity")
+                                        .after("linear-velocity"),
+                        )
+                        .with_system(integrate_orbital_velocities.after("angular-velocity"))
                         .with_system(relative_transform_updater);
 
                 schedule.add_stage("update", update);
@@ -1023,21 +1027,50 @@ fn init_new_transforms(mut commands: Commands, new_transforms: Query<(Entity, &T
         }
 }
 
+fn renormalize_unit_quaternions(mut transforms: Query<&mut Transform, Changed<Transform>>) {
+        for mut transform in transforms.iter_mut() {
+                transform.orien = UnitQuat::new_normalize(*transform.orien);
+        }
+}
+
 fn persist_transforms(mut transforms: Query<(&Transform, &mut OldTransform)>) {
         for (transform, mut old_transform) in transforms.iter_mut() {
                 old_transform.0 = *transform;
         }
 }
 
+fn integrate_force(mut query: Query<(&Force, &Mass, &mut Velocity)>, delta_time: Res<DeltaTime>) {
+        for (force, mass, mut velocity) in query.iter_mut() {
+                let momentum = force.0 * delta_time.0;
+                let delta_velocity = momentum / mass.0;
+                velocity.0 += delta_velocity;
+        }
+        // for (force, mass, mut velocity) in query.iter_mut() {
+        //         let acceleration = force.0 / mass.0;
+        //         velocity.0 += acceleration * delta_time.0;
+        // }
+}
+
+fn integrate_linear_velocity(mut query: Query<(&Velocity, &mut Transform)>, delta_time: Res<DeltaTime>) {
+        for (velocity, mut transform) in query.iter_mut() {
+                transform.pos += velocity.0 * delta_time.0;
+        }
+}
+
+fn integrate_angular_velocities(mut query: Query<(&AngularVelocity, &mut Transform)>, delta_time: Res<DeltaTime>) {
+        for (angular_velocity, mut transform) in query.iter_mut() {
+                transform.orien *= UnitQuat::new(angular_velocity.0 * delta_time.0);
+        }
+}
+
 fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transform)>, delta_time: Res<DeltaTime>) {
         for (orbital_velocity, mut transform) in query.iter_mut() {
                 let orbital_pos = transform.pos - orbital_velocity.origin;
-                let orbital_rot =
-                        UnitQuat::from_axis_angle(&orbital_velocity.orbit, orbital_velocity.speed * delta_time.0);
+                let orbital_rot = UnitQuat::new(orbital_velocity.velocity * delta_time.0);
                 let new_orbital_pos = orbital_rot * orbital_pos;
-                let movement = new_orbital_pos - orbital_pos;
+                let delta_pos = new_orbital_pos - orbital_pos;
 
-                transform.pos += movement;
+                transform.pos += delta_pos;
         }
 }
 
