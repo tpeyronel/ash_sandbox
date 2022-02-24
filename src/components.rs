@@ -6,7 +6,9 @@ pub struct Player(pub Entity);
 
 pub struct ActiveCamera(pub Entity);
 
-pub struct DeltaTime(pub f32);
+pub struct Ticktime(pub f32);
+
+pub struct InterpScalar(pub f32);
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Transform {

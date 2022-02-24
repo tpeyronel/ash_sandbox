@@ -322,7 +322,7 @@ impl VkRenderer {
 }
 
 impl Renderer for VkRenderer {
-        fn draw_world(&mut self, world: &mut World) -> AnyResult<()> {
+        fn draw_world(&mut self, world: &mut World, imgui_draw_data: &imgui::DrawData) -> AnyResult<()> {
                 self.vk_asset_manager
                         .process_asset_manager_events(world.get_resource::<AssetManager>().unwrap())?;
                 world.get_resource_mut::<AssetManager>().unwrap().clear_events();
@@ -330,7 +330,7 @@ impl Renderer for VkRenderer {
                 let transform_manager = world
                         .get_resource::<crate::model_instance_manager::TransformManager>()
                         .unwrap();
-
+                // TODO: wait for fence before updating buffers
                 let object_matrices_padded_size = self.vk_context.pdevice.padded_size_of::<ObjectMatrices>();
                 for (mesh_instance_id, mesh_transform) in transform_manager.iter_transform_updates() {
                         let buffer_idx = mesh_instance_id.data().as_ffi() as u32 as usize;
@@ -434,10 +434,10 @@ impl Renderer for VkRenderer {
 
                         world.insert_resource(asset_manager);
 
-                        // self.imgui_renderer
-                        // .as_mut()
-                        // .unwrap()
-                        // .cmd_draw(*frame_data.draw_cmd_buffer, imgui_draw_data)?;
+                        self.imgui_renderer
+                                .as_mut()
+                                .unwrap()
+                                .cmd_draw(*frame_data.draw_cmd_buffer, imgui_draw_data)?;
 
                         self.end_frame(imagei)?;
                 }

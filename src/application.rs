@@ -1,12 +1,9 @@
 use std::{
         path::Path,
         rc::Rc,
-        sync::{Arc, Mutex},
-        time::Instant,
+        time::{Duration, Instant},
 };
 
-use slotmap::SlotMap;
-use specs::{ReadExpect, WriteStorage};
 use tps_counter::TPSCounter;
 
 use crate::{
@@ -14,19 +11,17 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         components::{
-                ActiveCamera, AngularVelocity, DeltaTime, Force, LightEmitter, Mass, OldTransform, OrbitalVelocity,
-                Parent, Player, ProjectionCamera, RelativeTransform, Transform, Velocity,
+                ActiveCamera, AngularVelocity, Force, InterpScalar, LightEmitter, Mass, OldTransform, OrbitalVelocity,
+                Parent, Player, ProjectionCamera, RelativeTransform, Ticktime, Transform, Velocity,
         },
         constants::{FONT_SIZE, MAX_CONCURRENT_FRAMES, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
         input_manager::{
                 ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType,
         },
-        logic_thread::{PlayerResource, TransformComponent},
         model_instance_manager::{ModelInstance, ModelInstanceManager, TransformManager},
         my_glm::*,
-        render_state_switcher::RenderStateSwitcher,
-        renderer::{ModelInstanceId, RenderState, Renderer},
+        renderer::Renderer,
         vk::vk_renderer::VkRenderer,
         AnyResult,
 };
@@ -52,12 +47,12 @@ pub struct Application {
         accumulator: f32,
         window: Rc<Window>,
         window_state: WindowState,
-        imgui_context: ImguiContext,
+        imgui_manager: ImguiManager,
         input_manager: InputManager,
         dispatch_actions: bool,
         action_receiver: ActionReceiver,
 
-        renderer: VkRenderer,
+        renderer: Box<dyn Renderer>,
 
         player_orien: EulerAngles,
         player_camera_enabled: bool,
@@ -88,11 +83,77 @@ impl Application {
                         .build(&event_loop)?);
                 trace!("Created window");
 
-                let mut imgui_context = Self::init_imgui(&window);
+                let mut imgui_manager = ImguiManager::new(&window);
+
+                imgui_manager.add_callback(move |ui, world| {
+                        let mut player = world.entity_mut(world.get_resource::<Player>().unwrap().0);
+                        let mut player_transform = player.get_mut::<Transform>().unwrap();
+                        let player_orien = player_transform.as_ref().orien;
+                        let (yaw, pitch, roll) = player_orien.euler_angles();
+
+                        imgui::Window::new("Hello world")
+                                .size([300.0, 100.0], imgui::Condition::FirstUseEver)
+                                .build(ui, || {
+                                        let mouse_pos = ui.io().mouse_pos;
+
+                                        ui.text(format!(
+                                                "fps: {:7.2}   {:5.2}ms",
+                                                ui.io().framerate,
+                                                1000.0 / ui.io().framerate
+                                        ));
+                                        ui.text(format!("Mouse pos: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
+                                        ui.separator();
+                                        ui.text(format!(
+                                                "Pitch: {:.1}, Yaw: {:.1}, Roll: {:.1}",
+                                                pitch.to_degrees(),
+                                                yaw.to_degrees(),
+                                                roll.to_degrees(),
+                                        ));
+                                        // ui.text(format!(
+                                        //         "Pitch: {:.1}, Yaw: {:.1}, Roll: {:.1}",
+                                        //         player_orien.pitch().to_degrees(),
+                                        //         player_orien.yaw().to_degrees(),
+                                        //         player_orien.roll().to_degrees(),
+                                        // ));
+
+                                        let pos = &mut player_transform.pos;
+                                        if imgui::Slider::new("position", -2.5, 2.5).build_array(&ui, pos.into()) {
+                                                player_transform.pos = *pos;
+                                        }
+
+                                        // let mut pitch = player_orien.pitch();
+                                        // if imgui::AngleSlider::new("pitch")
+                                        //         .range_degrees(-90.0, 90.0)
+                                        //         .build(&ui, &mut pitch)
+                                        // {
+                                        //         player_orien.set_pitch(pitch);
+                                        // }
+
+                                        // let mut yaw = player_orien.yaw();
+                                        // if imgui::AngleSlider::new("yaw")
+                                        //         .range_degrees(-180.0, 180.0)
+                                        //         .build(&ui, &mut yaw)
+                                        // {
+                                        //         player_orien.set_yaw(yaw);
+                                        // }
+
+                                        // let mut roll = player_orien.roll();
+                                        // if imgui::AngleSlider::new("roll")
+                                        //         .range_degrees(-180.0, 180.0)
+                                        //         .build(&ui, &mut roll)
+                                        // {
+                                        //         player_orien.set_roll(roll);
+                                        // }
+                                });
+
+                        ui.show_demo_window(&mut false);
+
+                        // *dispatch_actions = !ui.io().want_capture_mouse;
+                });
 
                 let window_state = WindowState::new(
                         &window,
-                        imgui_context.context.io_mut(),
+                        imgui_manager.imgui_context.io_mut(),
                         WindowMode::Windowed,
                         fullscreen_video_mode,
                         CursorState::Normal,
@@ -100,7 +161,7 @@ impl Application {
                 trace!("Initialized ImGui");
 
                 let mut world = World::default();
-                world.insert_resource(DeltaTime(1.0 / config.tps as f32));
+                world.insert_resource(Ticktime(1.0 / config.tps as f32));
 
                 let asset_manager = Self::init_asset_manager()?;
                 let mut transform_manager = TransformManager::new(MAX_CONCURRENT_FRAMES);
@@ -207,9 +268,14 @@ impl Application {
                 schedule.add_stage("update", update);
 
                 let mut render_schedule = Schedule::default();
-                render_schedule.add_stage("render", SystemStage::single_threaded().with_system(update_transforms));
+                render_schedule.add_stage(
+                        "render",
+                        SystemStage::single_threaded()
+                                .with_system(interpolate_transforms.label("interpolate-transforms"))
+                                .with_system(update_transforms.after("interpolate-transforms")),
+                );
 
-                let renderer = VkRenderer::new(Rc::clone(&window), &mut imgui_context.context)?;
+                let renderer = Box::new(VkRenderer::new(Rc::clone(&window), &mut imgui_manager.imgui_context)?);
 
                 let dispatch_actions = true;
                 let mut input_manager = InputManager::new(dispatch_actions);
@@ -260,7 +326,7 @@ impl Application {
                         accumulator: 0.0,
                         window,
                         window_state,
-                        imgui_context,
+                        imgui_manager,
                         input_manager,
                         dispatch_actions,
                         action_receiver,
@@ -285,35 +351,6 @@ impl Application {
                         self.on_winit_event(event, control_flow)
                                 .expect("Error ocurred in render loop");
                 });
-        }
-
-        fn init_imgui(window: &Window) -> ImguiContext {
-                let mut context = imgui::Context::create();
-                let mut platform = imgui_winit_support::WinitPlatform::init(&mut context);
-
-                let hidpi_factor = platform.hidpi_factor() as f32;
-                let font_size = FONT_SIZE * hidpi_factor;
-                context.fonts().add_font(&[
-                        imgui::FontSource::DefaultFontData {
-                                config: Some(imgui::FontConfig {
-                                        size_pixels: font_size,
-                                        ..imgui::FontConfig::default()
-                                }),
-                        },
-                        imgui::FontSource::TtfData {
-                                data: include_bytes!("../res/font/FiraCode-Regular.ttf"),
-                                size_pixels: font_size,
-                                config: Some(imgui::FontConfig {
-                                        rasterizer_multiply: 1.75,
-                                        glyph_ranges: imgui::FontGlyphRanges::japanese(),
-                                        ..imgui::FontConfig::default()
-                                }),
-                        },
-                ]);
-                context.io_mut().font_global_scale = 1.0 / hidpi_factor;
-                platform.attach_window(context.io_mut(), &window, imgui_winit_support::HiDpiMode::Rounded);
-
-                ImguiContext { context, platform }
         }
 
         fn init_asset_manager() -> AnyResult<AssetManager> {
@@ -397,9 +434,7 @@ impl Application {
                 event: winit::event::Event<'_, ()>,
                 control_flow: &mut ControlFlow,
         ) -> AnyResult<()> {
-                self.imgui_context
-                        .platform
-                        .handle_event(self.imgui_context.context.io_mut(), &self.window, &event);
+                self.imgui_manager.handle_winit_event(&self.window, &event);
 
                 match event {
                         Event::NewEvents(start_cause) => {
@@ -424,7 +459,7 @@ impl Application {
                 let delta_time = self.frame_begin - previous_frame_begin;
 
                 self.delta_time = delta_time.as_secs_f32();
-                self.imgui_context.context.io_mut().update_delta_time(delta_time);
+                self.imgui_manager.on_delta_time_updated(delta_time);
         }
 
         fn on_window_event(&mut self, window_event: WindowEvent, control_flow: &mut ControlFlow) {
@@ -482,7 +517,7 @@ impl Application {
                                         WindowCommand::SetCursorState(cursor_state) => {
                                                 self.window_state.set_cursor_state(
                                                         &self.window,
-                                                        self.imgui_context.context.io_mut(),
+                                                        self.imgui_manager.imgui_context.io_mut(),
                                                         cursor_state,
                                                 );
                                                 // input_manager.set_dispatch_actions(new_cursor_state == CursorState::Hidden);
@@ -497,13 +532,11 @@ impl Application {
                 }
 
                 // self.tps_counter.tick_and_map(|t| info!("TPS: {}", t));
+                self.world
+                        .insert_resource(InterpScalar(self.accumulator / self.target_ticktime));
                 self.render_schedule.run(&mut self.world);
-                interpolate_transforms(&mut self.world, self.accumulator / self.target_ticktime);
-                self.renderer.draw_world(&mut self.world)?;
-
-                // self.logic_thread_tx
-                //         .send(LogicThreadMessage::SetPlayerOrien(self.player_orien.to_quat()))
-                //         .expect("Failed to send command to logic thread!");
+                let ui = self.imgui_manager.build_imgui_ui(&self.window, &mut self.world)?;
+                self.renderer.draw_world(&mut self.world, ui.render())?;
 
                 // if let Some(render_state) = self.render_state_manager.get_render_state(self.target_ticktime) {
                 //         self.transform_manager.on_update();
@@ -529,140 +562,6 @@ impl Application {
                 // }
 
                 Ok(())
-        }
-
-        fn process_model_instance(
-                matrix_stack: &mut MatrixStack,
-                transform_manager: &mut TransformManager,
-                asset_manager: &AssetManager,
-                model_instances: &SlotMap<ModelInstanceId, crate::renderer::ModelInstance>,
-                model_instance: &crate::renderer::ModelInstance,
-        ) {
-                matrix_stack.push(model_instance.transform.to_matrix());
-                let transform = matrix_stack.push(asset_manager.models()[model_instance.model_id].base_transform);
-
-                // for &mesh_instance_id in &model_instance.mesh_instances {
-                //         transform_manager.set_transform(mesh_instance_id, &transform);
-                // }
-
-                for &child_model_instance_id in &model_instance.children {
-                        Self::process_model_instance(
-                                matrix_stack,
-                                transform_manager,
-                                asset_manager,
-                                model_instances,
-                                &model_instances[child_model_instance_id],
-                        );
-                }
-
-                matrix_stack.pop();
-                matrix_stack.pop();
-        }
-
-        fn build_imgui_ui<'a>(
-                imgui_context: &'a mut ImguiContext,
-                window: &winit::window::Window,
-                dispatch_actions: &mut bool,
-                player_orien: &mut EulerAngles,
-                player_transform: &mut SharedValueSlave<TransformComponent>,
-        ) -> Result<imgui::Ui<'a>, winit::error::ExternalError> {
-                imgui_context
-                        .platform
-                        .prepare_frame(imgui_context.context.io_mut(), window)?;
-
-                let ui = imgui_context.context.frame();
-
-                imgui::Window::new("Hello world")
-                        .size([300.0, 100.0], imgui::Condition::FirstUseEver)
-                        .build(&ui, || {
-                                let mouse_pos = ui.io().mouse_pos;
-
-                                ui.text(format!(
-                                        "fps: {:7.2}   {:5.2}ms",
-                                        ui.io().framerate,
-                                        1000.0 / ui.io().framerate
-                                ));
-                                ui.text(format!("Mouse pos: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
-                                ui.separator();
-                                ui.text(format!(
-                                        "Pitch: {:.1}, Yaw: {:.1}, Roll: {:.1}",
-                                        player_orien.pitch().to_degrees(),
-                                        player_orien.yaw().to_degrees(),
-                                        player_orien.roll().to_degrees(),
-                                ));
-
-                                let pos = &mut player_transform.get_mut().pos;
-                                if imgui::Slider::new("position", -2.5, 2.5).build_array(&ui, pos.into()) {
-                                        player_transform.reemit();
-                                }
-
-                                let mut pitch = player_orien.pitch();
-                                if imgui::AngleSlider::new("pitch")
-                                        .range_degrees(-90.0, 90.0)
-                                        .build(&ui, &mut pitch)
-                                {
-                                        player_orien.set_pitch(pitch);
-                                }
-
-                                let mut yaw = player_orien.yaw();
-                                if imgui::AngleSlider::new("yaw")
-                                        .range_degrees(-180.0, 180.0)
-                                        .build(&ui, &mut yaw)
-                                {
-                                        player_orien.set_yaw(yaw);
-                                }
-
-                                let mut roll = player_orien.roll();
-                                if imgui::AngleSlider::new("roll")
-                                        .range_degrees(-180.0, 180.0)
-                                        .build(&ui, &mut roll)
-                                {
-                                        player_orien.set_roll(roll);
-                                }
-                        });
-
-                ui.show_demo_window(&mut false);
-
-                *dispatch_actions = !ui.io().want_capture_mouse;
-
-                Ok(ui)
-        }
-
-        // fn process_logic_thread_messages(&mut self, control_flow: &mut ControlFlow) {
-        //         for message in self.window_thread_rx.try_iter() {
-        //                 match message {
-        //                         WindowThreadMessage::Command(command) => Self::process_command(
-        //                                 command,
-        //                                 control_flow,
-        //                                 &self.window,
-        //                                 &mut self.imgui_context.context.io_mut(),
-        //                                 &mut self.window_state,
-        //                                 &mut self.player_camera_enabled,
-        //                         ),
-        //                 }
-        //         }
-        // }
-
-        fn process_command(
-                command: WindowThreadCommand,
-                control_flow: &mut ControlFlow,
-                window: &winit::window::Window,
-                imgui_io: &mut imgui::Io,
-                window_state: &mut WindowState,
-                player_camera_enabled: &mut bool,
-        ) {
-                match command {
-                        WindowThreadCommand::Exit => *control_flow = ControlFlow::Exit,
-                        WindowThreadCommand::SetCursorState(cursor_state) => {
-                                window_state.set_cursor_state(window, imgui_io, cursor_state);
-                        },
-                        WindowThreadCommand::SetWindowMode(window_mode) => {
-                                window_state.set_window_mode(window, window_mode);
-                        },
-                        WindowThreadCommand::SetPlayerCameraEnabled(enabled) => {
-                                *player_camera_enabled = enabled;
-                        },
-                }
         }
 
         fn on_quit(&mut self) {
@@ -748,137 +647,6 @@ pub enum WindowMode {
         Fullscreen,
 }
 
-struct ImguiContext {
-        context: imgui::Context,
-        platform: imgui_winit_support::WinitPlatform,
-}
-
-pub enum WindowThreadMessage {
-        Command(WindowThreadCommand),
-}
-
-pub enum WindowThreadCommand {
-        Exit,
-        SetCursorState(CursorState),
-        SetWindowMode(WindowMode),
-        SetPlayerCameraEnabled(bool),
-}
-
-struct LoggerSystem {
-        player_transform: SharedValueMaster<TransformComponent>,
-}
-
-impl<'a> specs::System<'a> for LoggerSystem {
-        type SystemData = (ReadExpect<'a, PlayerResource>, WriteStorage<'a, TransformComponent>);
-
-        fn run(&mut self, (player, mut transforms): Self::SystemData) {
-                if let Some(transform) = self.player_transform.receive() {
-                        *transforms.get_mut(player.0).unwrap() = transform;
-                } else {
-                        self.player_transform.emit(*transforms.get(player.0).unwrap());
-                }
-        }
-}
-
-struct SharedValueMaster<T> {
-        tx: single_value_channel::Updater<T>,
-        rx: single_value_channel::Receiver<Option<T>>,
-}
-
-impl<T> SharedValueMaster<T> {
-        pub fn new(value: T) -> (Self, SharedValueSlave<T>) {
-                let (rx0, tx0) = single_value_channel::channel_starting_with(value);
-                let (rx1, tx1) = single_value_channel::channel();
-
-                (Self { tx: tx0, rx: rx1 }, SharedValueSlave { tx: tx1, rx: rx0 })
-        }
-
-        pub fn emit(&mut self, value: T) {
-                self.tx.update(value).unwrap();
-        }
-
-        pub fn receive(&mut self) -> Option<T> {
-                self.rx.latest_mut().take()
-        }
-}
-
-struct SharedValueSlave<T> {
-        rx: single_value_channel::Receiver<T>,
-        tx: single_value_channel::Updater<Option<T>>,
-}
-
-impl<T: Copy> SharedValueSlave<T> {
-        #[allow(dead_code)]
-        pub fn emit(&mut self, value: T) {
-                *self.get_mut() = value;
-                self.tx.update(Some(value)).unwrap();
-        }
-
-        #[allow(dead_code)]
-        pub fn reemit(&mut self) {
-                self.tx.update(Some(*self.rx.latest())).unwrap();
-        }
-
-        #[allow(dead_code)]
-        pub fn get(&mut self) -> &T {
-                self.rx.latest()
-        }
-
-        #[allow(dead_code)]
-        pub fn get_mut(&mut self) -> &mut T {
-                self.rx.latest_mut()
-        }
-}
-
-struct RenderStateManager {
-        render_state_switcher: Arc<Mutex<RenderStateSwitcher>>,
-        old_render_state: Option<Box<RenderState>>,
-        new_render_state: Option<Box<RenderState>>,
-        latest_render_state_switch: Instant,
-}
-
-impl RenderStateManager {
-        fn new(render_state_switcher: Arc<Mutex<RenderStateSwitcher>>) -> Self {
-                Self {
-                        render_state_switcher,
-                        old_render_state: None,
-                        new_render_state: None,
-                        latest_render_state_switch: Instant::now(),
-                }
-        }
-
-        fn get_render_state(&mut self, target_ticktime: f32) -> Option<RenderState> {
-                self.try_switch_render_state();
-
-                self.try_interp_render_states(target_ticktime)
-        }
-
-        fn try_switch_render_state(&mut self) {
-                let mut render_state_switcher = self.render_state_switcher.lock().unwrap();
-                if let Some(new_render_state) = render_state_switcher.try_exchange(&mut self.old_render_state) {
-                        self.old_render_state = self.new_render_state.replace(new_render_state);
-                        self.latest_render_state_switch = Instant::now();
-                } else {
-                        if let Some(new_render_state) = &mut self.new_render_state {
-                                new_render_state.asset_manager.as_mut().unwrap().clear_events();
-                        }
-                }
-        }
-
-        fn try_interp_render_states(&self, target_ticktime: f32) -> Option<RenderState> {
-                match (&self.old_render_state, &self.new_render_state) {
-                        (Some(old_render_state), Some(new_render_state)) => {
-                                let elapsed = self.latest_render_state_switch.elapsed();
-                                let t = f32::clamp(elapsed.as_secs_f32() / target_ticktime, 0.0, 1.0);
-
-                                Some(RenderState::interpolate(old_render_state, new_render_state, t))
-                        },
-                        (None, Some(new_render_state)) => Some(RenderState::clone(new_render_state)),
-                        _ => None,
-                }
-        }
-}
-
 struct MatrixStack {
         stack: Vec<Mat4>,
 }
@@ -905,14 +673,14 @@ impl MatrixStack {
 }
 
 fn update_transforms(
-        query: Query<(Entity, &InterpTransform, &ModelInstance), Changed<InterpTransform>>,
+        query: Query<(&InterpTransform, &ModelInstance), Changed<InterpTransform>>,
         asset_manager: Res<AssetManager>,
         mut transform_manager: ResMut<TransformManager>,
 ) {
         transform_manager.on_update();
 
         let mut matrix_stack = MatrixStack::new();
-        for (e, transform, model_instance) in query.iter() {
+        for (transform, model_instance) in query.iter() {
                 matrix_stack.push(transform.0.to_matrix());
                 process_model_instance(
                         &mut matrix_stack,
@@ -944,7 +712,7 @@ fn process_model_instance(
 
 fn process_actions(
         mut commands: Commands,
-        delta_time: Res<DeltaTime>,
+        ticktime: Res<Ticktime>,
         player: Res<Player>,
         action_receiver: NonSend<ActionReceiver>,
         mut control_flow: ResMut<ControlFlow>,
@@ -998,7 +766,7 @@ fn process_actions(
                         0.0,
                 ));
 
-                let move_amount = PLAYER_MOVEMENT_SPEED * delta_time.0;
+                let move_amount = PLAYER_MOVEMENT_SPEED * ticktime.0;
                 let move_vector = player_hor_orien * desired_dir.normalize() * move_amount;
 
                 player_transform.pos += move_vector;
@@ -1039,34 +807,34 @@ fn persist_transforms(mut transforms: Query<(&Transform, &mut OldTransform)>) {
         }
 }
 
-fn integrate_force(mut query: Query<(&Force, &Mass, &mut Velocity)>, delta_time: Res<DeltaTime>) {
+fn integrate_force(mut query: Query<(&Force, &Mass, &mut Velocity)>, ticktime: Res<Ticktime>) {
         for (force, mass, mut velocity) in query.iter_mut() {
-                let momentum = force.0 * delta_time.0;
+                let momentum = force.0 * ticktime.0;
                 let delta_velocity = momentum / mass.0;
                 velocity.0 += delta_velocity;
         }
         // for (force, mass, mut velocity) in query.iter_mut() {
         //         let acceleration = force.0 / mass.0;
-        //         velocity.0 += acceleration * delta_time.0;
+        //         velocity.0 += acceleration * ticktime.0;
         // }
 }
 
-fn integrate_linear_velocity(mut query: Query<(&Velocity, &mut Transform)>, delta_time: Res<DeltaTime>) {
+fn integrate_linear_velocity(mut query: Query<(&Velocity, &mut Transform)>, ticktime: Res<Ticktime>) {
         for (velocity, mut transform) in query.iter_mut() {
-                transform.pos += velocity.0 * delta_time.0;
+                transform.pos += velocity.0 * ticktime.0;
         }
 }
 
-fn integrate_angular_velocities(mut query: Query<(&AngularVelocity, &mut Transform)>, delta_time: Res<DeltaTime>) {
+fn integrate_angular_velocities(mut query: Query<(&AngularVelocity, &mut Transform)>, ticktime: Res<Ticktime>) {
         for (angular_velocity, mut transform) in query.iter_mut() {
-                transform.orien *= UnitQuat::new(angular_velocity.0 * delta_time.0);
+                transform.orien *= UnitQuat::new(angular_velocity.0 * ticktime.0);
         }
 }
 
-fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transform)>, delta_time: Res<DeltaTime>) {
+fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transform)>, ticktime: Res<Ticktime>) {
         for (orbital_velocity, mut transform) in query.iter_mut() {
                 let orbital_pos = transform.pos - orbital_velocity.origin;
-                let orbital_rot = UnitQuat::new(orbital_velocity.velocity * delta_time.0);
+                let orbital_rot = UnitQuat::new(orbital_velocity.velocity * ticktime.0);
                 let new_orbital_pos = orbital_rot * orbital_pos;
                 let delta_pos = new_orbital_pos - orbital_pos;
 
@@ -1074,11 +842,78 @@ fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transfo
         }
 }
 
-fn interpolate_transforms(world: &mut World, t: f32) {
-        let mut query = world.query::<(&OldTransform, &Transform, &mut InterpTransform)>();
+fn interpolate_transforms(mut query: Query<(&OldTransform, &Transform, &mut InterpTransform)>, t: Res<InterpScalar>) {
+        for (old_transform, new_transform, mut interp_transform) in query.iter_mut() {
+                interp_transform.0 = Transform::interp(&old_transform.0, new_transform, t.0);
+        }
+}
 
-        for (old_transform, new_transform, mut interp_transform) in query.iter_mut(world) {
-                interp_transform.0 = Transform::interp(&old_transform.0, new_transform, t);
+pub struct ImguiManager {
+        imgui_context: imgui::Context,
+        imgui_platform: imgui_winit_support::WinitPlatform,
+        callbacks: Vec<Box<dyn FnMut(&mut imgui::Ui<'_>, &mut World)>>,
+}
+
+impl ImguiManager {
+        fn new(window: &Window) -> Self {
+                let mut imgui_context = imgui::Context::create();
+                let mut imgui_platform = imgui_winit_support::WinitPlatform::init(&mut imgui_context);
+
+                let hidpi_factor = imgui_platform.hidpi_factor() as f32;
+                let font_size = FONT_SIZE * hidpi_factor;
+                imgui_context.fonts().add_font(&[
+                        imgui::FontSource::DefaultFontData {
+                                config: Some(imgui::FontConfig {
+                                        size_pixels: font_size,
+                                        ..imgui::FontConfig::default()
+                                }),
+                        },
+                        imgui::FontSource::TtfData {
+                                data: include_bytes!("../res/font/FiraCode-Regular.ttf"),
+                                size_pixels: font_size,
+                                config: Some(imgui::FontConfig {
+                                        rasterizer_multiply: 1.75,
+                                        glyph_ranges: imgui::FontGlyphRanges::japanese(),
+                                        ..imgui::FontConfig::default()
+                                }),
+                        },
+                ]);
+                imgui_context.io_mut().font_global_scale = 1.0 / hidpi_factor;
+
+                imgui_platform.attach_window(imgui_context.io_mut(), &window, imgui_winit_support::HiDpiMode::Rounded);
+
+                Self {
+                        imgui_context,
+                        imgui_platform,
+                        callbacks: Vec::new(),
+                }
+        }
+
+        fn add_callback<T: FnMut(&mut imgui::Ui<'_>, &mut World) + 'static>(&mut self, f: T) {
+                self.callbacks.push(Box::new(f));
+        }
+
+        fn handle_winit_event(&mut self, window: &Window, event: &winit::event::Event<'_, ()>) {
+                self.imgui_platform
+                        .handle_event(self.imgui_context.io_mut(), window, event);
+        }
+
+        fn on_delta_time_updated(&mut self, delta_time: Duration) {
+                self.imgui_context.io_mut().update_delta_time(delta_time);
+        }
+
+        fn build_imgui_ui<'a>(
+                &'a mut self,
+                window: &winit::window::Window,
+                world: &mut World,
+        ) -> Result<imgui::Ui<'a>, winit::error::ExternalError> {
+                self.imgui_platform.prepare_frame(self.imgui_context.io_mut(), window)?;
+
+                let mut ui = self.imgui_context.frame();
+
+                self.callbacks.iter_mut().for_each(|c| c(&mut ui, world));
+
+                Ok(ui)
         }
 }
 

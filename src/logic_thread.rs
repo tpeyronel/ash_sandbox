@@ -1,5 +1,4 @@
 use std::{
-        collections::VecDeque,
         path::Path,
         sync::{Arc, Mutex},
         time::{Duration, Instant},
@@ -15,12 +14,9 @@ use specs::{
 use log::{error, info, trace, warn};
 
 use crate::{
-        actions::*,
-        application::{CursorState, WindowMode, WindowThreadCommand, WindowThreadMessage},
         asset_manager::{AssetManager, MagFilter, Material, MinFilter, ModelId, Sampler, ShaderId, WrappingMode},
-        constants::PLAYER_MOVEMENT_SPEED,
         input_manager::ActionReceiver,
-        my_glm::{Mat4, Quat, UnitQuat, Vec3, Vec4},
+        my_glm::{Mat4, UnitQuat, Vec3, Vec4},
         render_state_switcher::RenderStateSwitcher,
         renderer::{LightColor, LightPos, RenderState},
         AnyResult,
@@ -41,13 +37,9 @@ struct ActiveCameraResource(Entity);
 #[derive(Debug, Clone, Copy)]
 pub struct PlayerResource(pub Entity);
 
-#[derive(Default)]
-struct QueuedWindowThreadMessagesResource(VecDeque<WindowThreadMessage>);
-
 pub struct LogicThreadSpawnParams {
         pub target_tps: u32,
         pub logic_thread_rx: std::sync::mpsc::Receiver<LogicThreadMessage>,
-        pub window_thread_tx: std::sync::mpsc::Sender<WindowThreadMessage>,
         pub action_receiver: ActionReceiver,
         pub render_state_switcher: Arc<Mutex<RenderStateSwitcher>>,
         pub systems: Vec<Box<dyn FnOnce(&mut DispatcherBuilder) + Send + Sync>>,
@@ -82,28 +74,10 @@ impl LogicThread {
                 world.insert(TargetTicktimeResource(target_ticktime));
                 world.insert(TargetTicktimeF32Resource(target_ticktime.as_secs_f32()));
 
-                world.insert(QueuedWindowThreadMessagesResource::default());
-
                 let mut dispatcher_builder = DispatcherBuilder::new()
-                        .with(
-                                InputHandlerSystem {
-                                        action_receiver: params.action_receiver,
-                                        last_cursor_state: CursorState::Normal,
-                                        last_window_mode: WindowMode::Windowed,
-                                },
-                                "input-handler-system",
-                                &[],
-                        )
                         .with(
                                 FamilyHierarchySynchronizerSystem::default(),
                                 "family-hierarchy-synchronizer",
-                                &[],
-                        )
-                        .with(
-                                WindowThreadMessageDispatcherSystem {
-                                        window_thread_tx: params.window_thread_tx,
-                                },
-                                "window-thread-message-dispatcher",
                                 &[],
                         )
                         .with(
@@ -302,87 +276,6 @@ pub enum LogicThreadCommand {
         Exit,
 }
 
-struct InputHandlerSystem {
-        action_receiver: ActionReceiver,
-        last_cursor_state: CursorState,
-        last_window_mode: WindowMode,
-}
-
-impl<'a> specs::System<'a> for InputHandlerSystem {
-        type SystemData = (
-                ReadExpect<'a, TargetTicktimeF32Resource>,
-                ReadExpect<'a, PlayerResource>,
-                WriteExpect<'a, QueuedWindowThreadMessagesResource>,
-                WriteStorage<'a, TransformComponent>,
-        );
-
-        fn run(
-                &mut self,
-                (target_ticktime, player, mut queued_window_thread_messages, mut transforms): Self::SystemData,
-        ) {
-                let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
-
-                for (action_id, strength) in self.action_receiver.receive() {
-                        match action_id {
-                                MOVE_FORWARD => desired_dir.z -= strength.0,
-                                MOVE_BACKWARD => desired_dir.z += strength.0,
-                                MOVE_RIGHTWARD => desired_dir.x += strength.0,
-                                MOVE_LEFTWARD => desired_dir.x -= strength.0,
-                                MOVE_UPWARD => desired_dir.y += strength.0,
-                                MOVE_DOWNARD => desired_dir.y -= strength.0,
-                                EXIT => {
-                                        let command = WindowThreadMessage::Command(WindowThreadCommand::Exit);
-                                        queued_window_thread_messages.0.push_back(command);
-                                },
-                                TOGGLE_CURSOR => {
-                                        self.last_cursor_state = match self.last_cursor_state {
-                                                CursorState::Normal => CursorState::Hidden,
-                                                CursorState::Hidden => CursorState::Normal,
-                                        };
-
-                                        queued_window_thread_messages.0.push_back(WindowThreadMessage::Command(
-                                                WindowThreadCommand::SetCursorState(self.last_cursor_state),
-                                        ));
-
-                                        queued_window_thread_messages.0.push_back(WindowThreadMessage::Command(
-                                                WindowThreadCommand::SetPlayerCameraEnabled(
-                                                        self.last_cursor_state == CursorState::Hidden,
-                                                ),
-                                        ));
-                                },
-                                CYCLE_WINDOW_MODE => {
-                                        self.last_window_mode = match self.last_window_mode {
-                                                WindowMode::Windowed => WindowMode::Borderless,
-                                                WindowMode::Borderless => WindowMode::Fullscreen,
-                                                WindowMode::Fullscreen => WindowMode::Windowed,
-                                        };
-
-                                        queued_window_thread_messages.0.push_back(WindowThreadMessage::Command(
-                                                WindowThreadCommand::SetWindowMode(self.last_window_mode),
-                                        ));
-                                },
-                                _ => (),
-                        }
-                }
-
-                if desired_dir.norm_squared() > f32::EPSILON {
-                        let player_orien = &transforms.get(player.0).unwrap().orien;
-                        let player_hor_orien = UnitQuat::new_normalize(Quat::new(
-                                player_orien.as_vector().w,
-                                0.0,
-                                player_orien.as_vector().y,
-                                0.0,
-                        ));
-
-                        let move_amount = PLAYER_MOVEMENT_SPEED * target_ticktime.0;
-                        let move_dir = player_hor_orien * desired_dir.normalize() * move_amount;
-
-                        let player_pos = &mut transforms.get_mut(player.0).unwrap().pos;
-                        *player_pos += move_dir;
-                }
-        }
-}
-
 #[derive(Default)]
 struct FamilyHierarchySynchronizerSystem {
         reader_id: Option<ReaderId<ComponentEvent>>,
@@ -418,22 +311,6 @@ impl<'a> specs::System<'a> for FamilyHierarchySynchronizerSystem {
                 Self::SystemData::setup(world);
 
                 self.reader_id = Some(WriteStorage::<ParentComponent>::fetch(world).register_reader());
-        }
-}
-
-struct WindowThreadMessageDispatcherSystem {
-        window_thread_tx: std::sync::mpsc::Sender<WindowThreadMessage>,
-}
-
-impl<'a> specs::System<'a> for WindowThreadMessageDispatcherSystem {
-        type SystemData = WriteExpect<'a, QueuedWindowThreadMessagesResource>;
-
-        fn run(&mut self, mut queued_messages: Self::SystemData) {
-                while let Some(message) = queued_messages.0.pop_front() {
-                        if let Err(err) = self.window_thread_tx.send(message) {
-                                error!("Error ocurred sending message to window thread: {}", err);
-                        }
-                }
         }
 }
 
