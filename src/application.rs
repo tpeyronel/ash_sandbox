@@ -54,7 +54,6 @@ pub struct Application {
 
         renderer: Box<dyn Renderer>,
 
-        player_orien: EulerAngles,
         player_camera_enabled: bool,
 
         tps_counter: TPSCounter,
@@ -88,8 +87,7 @@ impl Application {
                 imgui_manager.add_callback(move |ui, world| {
                         let mut player = world.entity_mut(world.get_resource::<Player>().unwrap().0);
                         let mut player_transform = player.get_mut::<Transform>().unwrap();
-                        let player_orien = player_transform.as_ref().orien;
-                        let (yaw, pitch, roll) = player_orien.euler_angles();
+                        let mut player_orien = player.get_mut::<EulerAngles>().unwrap();
 
                         imgui::Window::new("Hello world")
                                 .size([300.0, 100.0], imgui::Condition::FirstUseEver)
@@ -103,47 +101,42 @@ impl Application {
                                         ));
                                         ui.text(format!("Mouse pos: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
                                         ui.separator();
+
                                         ui.text(format!(
                                                 "Pitch: {:.1}, Yaw: {:.1}, Roll: {:.1}",
-                                                pitch.to_degrees(),
-                                                yaw.to_degrees(),
-                                                roll.to_degrees(),
+                                                player_orien.pitch().to_degrees(),
+                                                player_orien.yaw().to_degrees(),
+                                                player_orien.roll().to_degrees(),
                                         ));
-                                        // ui.text(format!(
-                                        //         "Pitch: {:.1}, Yaw: {:.1}, Roll: {:.1}",
-                                        //         player_orien.pitch().to_degrees(),
-                                        //         player_orien.yaw().to_degrees(),
-                                        //         player_orien.roll().to_degrees(),
-                                        // ));
 
                                         let pos = &mut player_transform.pos;
                                         if imgui::Slider::new("position", -2.5, 2.5).build_array(&ui, pos.into()) {
                                                 player_transform.pos = *pos;
                                         }
 
-                                        // let mut pitch = player_orien.pitch();
-                                        // if imgui::AngleSlider::new("pitch")
-                                        //         .range_degrees(-90.0, 90.0)
-                                        //         .build(&ui, &mut pitch)
-                                        // {
-                                        //         player_orien.set_pitch(pitch);
-                                        // }
+                                        let mut pitch = player_orien.pitch();
+                                        if imgui::AngleSlider::new("pitch")
+                                                .range_degrees(-90.0, 90.0)
+                                                .build(&ui, &mut pitch)
+                                        {
+                                                player_orien.set_pitch(pitch);
+                                        }
 
-                                        // let mut yaw = player_orien.yaw();
-                                        // if imgui::AngleSlider::new("yaw")
-                                        //         .range_degrees(-180.0, 180.0)
-                                        //         .build(&ui, &mut yaw)
-                                        // {
-                                        //         player_orien.set_yaw(yaw);
-                                        // }
+                                        let mut yaw = player_orien.yaw();
+                                        if imgui::AngleSlider::new("yaw")
+                                                .range_degrees(-180.0, 180.0)
+                                                .build(&ui, &mut yaw)
+                                        {
+                                                player_orien.set_yaw(yaw);
+                                        }
 
-                                        // let mut roll = player_orien.roll();
-                                        // if imgui::AngleSlider::new("roll")
-                                        //         .range_degrees(-180.0, 180.0)
-                                        //         .build(&ui, &mut roll)
-                                        // {
-                                        //         player_orien.set_roll(roll);
-                                        // }
+                                        let mut roll = player_orien.roll();
+                                        if imgui::AngleSlider::new("roll")
+                                                .range_degrees(-180.0, 180.0)
+                                                .build(&ui, &mut roll)
+                                        {
+                                                player_orien.set_roll(roll);
+                                        }
                                 });
 
                         ui.show_demo_window(&mut false);
@@ -167,7 +160,11 @@ impl Application {
                 let mut transform_manager = TransformManager::new(MAX_CONCURRENT_FRAMES);
                 let model_instance_manager = ModelInstanceManager::new();
 
-                let player = world.spawn().insert(Transform::from_pos(Vec3::new(0.0, 0.0, 2.0))).id();
+                let player = world
+                        .spawn()
+                        .insert(Transform::from_pos(Vec3::new(0.0, 0.0, 2.0)))
+                        .insert(EulerAngles::new(0.0, 0.0, 0.0))
+                        .id();
                 world.insert_resource(Player(player));
 
                 let camera = world
@@ -248,14 +245,15 @@ impl Application {
                 let mut schedule = Schedule::default();
 
                 let first_stage = SystemStage::single_threaded()
-                        .with_system(renormalize_unit_quaternions)
-                        .with_system(persist_transforms);
+                        .with_system(renormalize_quaternions.label("renormalize-quaternions"))
+                        .with_system(persist_transforms.after("renormalize-quaternions"));
                 schedule.add_stage("first", first_stage);
 
                 let update = SystemStage::single_threaded()
                         .with_system(init_new_transforms)
-                        .with_system(process_actions)
-                        .with_system(integrate_force.label("linear-force"))
+                        .with_system(process_actions.label("process-actions"))
+                        .with_system(apply_euler_angles.label("apply-euler-angles").after("process-actions"))
+                        .with_system(integrate_force.label("linear-force").after("apply-euler-angles"))
                         .with_system(integrate_linear_velocity.label("linear-velocity").after("linear-force"))
                         .with_system(
                                 integrate_angular_velocities
@@ -271,6 +269,7 @@ impl Application {
                 render_schedule.add_stage(
                         "render",
                         SystemStage::single_threaded()
+                                .with_system(apply_euler_angles.label("apply-euler-angles"))
                                 .with_system(interpolate_transforms.label("interpolate-transforms"))
                                 .with_system(update_transforms.after("interpolate-transforms")),
                 );
@@ -333,7 +332,6 @@ impl Application {
 
                         renderer,
 
-                        player_orien: EulerAngles::new(0.0, 0.0, 0.0),
                         player_camera_enabled: false,
 
                         tps_counter: TPSCounter::new(20),
@@ -486,25 +484,24 @@ impl Application {
                 self.input_manager
                         .set_dispatch_actions(self.window_state.has_focus && self.dispatch_actions);
 
-                for (action_id, strength) in self.action_receiver.receive_adjusted(self.delta_time) {
+                let mut player = self.world.entity_mut(self.world.get_resource::<Player>().unwrap().0);
+                let mut player_orien = player.get_mut::<EulerAngles>().unwrap();
+
+                for (action_id, strength) in self.action_receiver.receive(self.delta_time) {
                         if self.window_state.cursor_state != CursorState::Hidden {
                                 continue;
                         }
 
                         match action_id {
-                                YAW_POSITIVE => self.player_orien.yaw_by(strength.0 * ROTATION_PER_SECOND),
-                                YAW_NEGATIVE => self.player_orien.yaw_by(-strength.0 * ROTATION_PER_SECOND),
-                                PITCH_POSITIVE => self.player_orien.pitch_by(strength.0 * ROTATION_PER_SECOND),
-                                PITCH_NEGATIVE => self.player_orien.pitch_by(-strength.0 * ROTATION_PER_SECOND),
-                                ROLL_POSITIVE => self.player_orien.roll_by(strength.0 * ROTATION_PER_SECOND),
-                                ROLL_NEGATIVE => self.player_orien.roll_by(-strength.0 * ROTATION_PER_SECOND),
+                                YAW_POSITIVE => player_orien.yaw_by(strength.0 * ROTATION_PER_SECOND),
+                                YAW_NEGATIVE => player_orien.yaw_by(-strength.0 * ROTATION_PER_SECOND),
+                                PITCH_POSITIVE => player_orien.pitch_by(strength.0 * ROTATION_PER_SECOND),
+                                PITCH_NEGATIVE => player_orien.pitch_by(-strength.0 * ROTATION_PER_SECOND),
+                                ROLL_POSITIVE => player_orien.roll_by(strength.0 * ROTATION_PER_SECOND),
+                                ROLL_NEGATIVE => player_orien.roll_by(-strength.0 * ROTATION_PER_SECOND),
                                 _ => continue,
                         }
                 }
-
-                let player = self.world.get_resource::<Player>().unwrap().0;
-                let mut player_transform = self.world.entity_mut(player).get_mut::<Transform>().unwrap();
-                player_transform.orien = self.player_orien.to_quat();
 
                 self.accumulator += self.delta_time;
                 if self.accumulator >= self.target_ticktime {
@@ -724,7 +721,7 @@ fn process_actions(
 ) {
         let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
 
-        for (action_id, strength) in action_receiver.receive() {
+        for (action_id, strength) in action_receiver.receive(ticktime.0) {
                 match action_id {
                         MOVE_FORWARD => desired_dir.z -= strength.0,
                         MOVE_BACKWARD => desired_dir.z += strength.0,
@@ -766,8 +763,7 @@ fn process_actions(
                         0.0,
                 ));
 
-                let move_amount = PLAYER_MOVEMENT_SPEED * ticktime.0;
-                let move_vector = player_hor_orien * desired_dir.normalize() * move_amount;
+                let move_vector = player_hor_orien * desired_dir * PLAYER_MOVEMENT_SPEED;
 
                 player_transform.pos += move_vector;
         }
@@ -795,7 +791,7 @@ fn init_new_transforms(mut commands: Commands, new_transforms: Query<(Entity, &T
         }
 }
 
-fn renormalize_unit_quaternions(mut transforms: Query<&mut Transform, Changed<Transform>>) {
+fn renormalize_quaternions(mut transforms: Query<&mut Transform, Changed<Transform>>) {
         for mut transform in transforms.iter_mut() {
                 transform.orien = UnitQuat::new_normalize(*transform.orien);
         }
@@ -804,6 +800,12 @@ fn renormalize_unit_quaternions(mut transforms: Query<&mut Transform, Changed<Tr
 fn persist_transforms(mut transforms: Query<(&Transform, &mut OldTransform)>) {
         for (transform, mut old_transform) in transforms.iter_mut() {
                 old_transform.0 = *transform;
+        }
+}
+
+fn apply_euler_angles(mut query: Query<(&EulerAngles, &mut Transform)>) {
+        for (euler_angles, mut transform) in query.iter_mut() {
+                transform.orien = euler_angles.to_quat();
         }
 }
 

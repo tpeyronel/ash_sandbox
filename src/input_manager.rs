@@ -193,13 +193,7 @@ impl ActionReceiver {
                 }
         }
 
-        pub fn receive(&self) -> Vec<(ActionId, ActionStrength)> {
-                let action_events = self.action_events.try_iter().map(|e| (e.action_id, e.strength));
-
-                self.poll_actions().into_iter().chain(action_events).collect()
-        }
-
-        pub fn receive_adjusted(&self, delta_time: f32) -> Vec<(ActionId, ActionStrength)> {
+        pub fn receive(&self, delta_time: f32) -> Vec<(ActionId, ActionStrength)> {
                 let action_events = self.action_events.try_iter().map(|e| (e.action_id, e.strength));
 
                 self.poll_actions()

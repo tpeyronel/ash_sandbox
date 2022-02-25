@@ -1,9 +1,11 @@
+use bevy_ecs::prelude::Component;
+
 use crate::my_glm::{UnitQuat, Vec3};
 
 const PITCH_MAX: f32 = std::f32::consts::FRAC_PI_2 - 0.0001;
 const PITCH_MIN: f32 = -PITCH_MAX;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Component)]
 pub struct EulerAngles {
         angles: [f32; 3],
 }
