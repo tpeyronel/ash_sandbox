@@ -101,7 +101,7 @@ impl Application {
                                         ui.text(format!(
                                                 "tps: {:7.2}   {:5.2}ms",
                                                 tps_counter.tps(),
-                                                tps_counter.ticktime().as_secs_f32(),
+                                                tps_counter.ticktime().as_secs_f32() * 1000.0,
                                         ));
                                         ui.text(format!("Mouse pos: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
                                         ui.separator();

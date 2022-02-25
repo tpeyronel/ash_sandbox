@@ -1,12 +1,11 @@
-use std::{rc::Rc, slice, sync::Arc, time::Instant};
+use std::{rc::Rc, slice, time::Instant};
 
 use ash::{prelude::VkResult, vk};
 
-use bevy_ecs::{prelude::World, system::Res};
+use bevy_ecs::prelude::World;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
-use slotmap::{Key, SlotMap};
-use specs::Entity;
+use slotmap::Key;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use super::{
@@ -23,166 +22,13 @@ use crate::{
         components::{ActiveCamera, LightEmitter, Player, ProjectionCamera, Transform},
         model_instance_manager::TransformId,
         my_glm::*,
-        renderer::{RenderState, Renderer},
+        renderer::Renderer,
 };
 use crate::{
         constants::{DESIRED_SWAPCHAIN_IMG_COUNT, MAX_CONCURRENT_FRAMES},
-        hashmap::HashMap,
-        renderer::{MeshInstance, MeshInstanceId, ModelInstance, ModelInstanceId, TransformManager},
         util::DerefIntoSlice,
         AnyResult,
 };
-
-struct VkFrameData {
-        // Signaled when a swapchain image has become available for presentation. vkAcquireImage may return an image that is not immediately available.
-        img_available_semaphore: VkSemaphore,
-        // Signaled when a swapchain image presentation has completed
-        present_complete_semaphore: VkSemaphore,
-        // Command buffer used for submitting draw operations of one frame.
-        draw_cmd_buffer: VkReusableCommandBuffer,
-
-        world_dst_set: vk::DescriptorSet,
-        object_dst_set: vk::DescriptorSet,
-
-        world_matrices_buffer: VkBuffer,
-        world_light_buffer: VkBuffer,
-        material_data_buffer: VkBuffer,
-        object_matrices_buffer: VkBuffer,
-}
-
-impl VkFrameData {
-        fn new(
-                vk_context: &VkContext,
-                world_dst_set_layout: vk::DescriptorSetLayout,
-                object_dst_set_layout: vk::DescriptorSetLayout,
-        ) -> AnyResult<Self> {
-                let semaphore_cinfo = vk::SemaphoreCreateInfo::builder().build();
-                let img_available_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
-                let present_complete_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
-
-                let draw_cmd_buffer =
-                        VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
-
-                let [world_dst_set, object_dst_set] = unsafe {
-                        vk_context.device.allocate_descriptor_sets_array(
-                                *vk_context.dst_pool,
-                                &[world_dst_set_layout, object_dst_set_layout],
-                        )?
-                };
-
-                let world_matrices_buffer_size = std::mem::size_of::<WorldMatrices>() as vk::DeviceSize;
-                let world_matrices_buffer = VkBuffer::new_uniform_buffer(
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        std::mem::size_of::<WorldMatrices>() as vk::DeviceSize,
-                )?;
-
-                let world_light_buffer_size = std::mem::size_of::<WorldLight>() as vk::DeviceSize;
-                let world_light_buffer = VkBuffer::new_uniform_buffer(
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        world_light_buffer_size,
-                )?;
-
-                let material_data_buffer_size = std::mem::size_of::<MaterialData>() as vk::DeviceSize;
-                let material_data_buffer = VkBuffer::new_uniform_buffer(
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        material_data_buffer_size,
-                )?;
-
-                const MAX_OBJECT_MATRICES: usize = 16384;
-                let object_matrices_padded_size = vk_context.pdevice.padded_size_of::<ObjectMatrices>();
-                let object_matrices_buffer_size = (object_matrices_padded_size * MAX_OBJECT_MATRICES) as vk::DeviceSize;
-                let object_matrices_buffer = VkBuffer::new_uniform_buffer(
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        object_matrices_buffer_size,
-                )?;
-
-                let object_matrices = ObjectMatrices {
-                        model: Mat4::new_translation(&Vec3::new(2.0, 0.0, 0.0)),
-                        mvp: Mat4::identity(),
-                        normal: Mat4::identity(),
-                };
-                object_matrices_buffer.write(&object_matrices)?;
-
-                let world_matrices_buffer_info = vk::DescriptorBufferInfo {
-                        buffer: *world_matrices_buffer,
-                        offset: 0,
-                        range: world_matrices_buffer_size,
-                };
-
-                let world_matrices_dst_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .dst_set(world_dst_set)
-                        .dst_binding(0)
-                        .dst_array_element(0)
-                        .buffer_info(std::slice::from_ref(&world_matrices_buffer_info))
-                        .build();
-
-                let world_light_buffer_info = vk::DescriptorBufferInfo {
-                        buffer: *world_light_buffer,
-                        offset: 0,
-                        range: world_light_buffer_size,
-                };
-
-                let world_light_dst_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .dst_set(world_dst_set)
-                        .dst_binding(1)
-                        .dst_array_element(0)
-                        .buffer_info(std::slice::from_ref(&world_light_buffer_info))
-                        .build();
-
-                let object_matrices_buffer_info = vk::DescriptorBufferInfo {
-                        buffer: *object_matrices_buffer,
-                        offset: 0,
-                        range: object_matrices_padded_size as vk::DeviceSize,
-                };
-
-                let object_matrices_dst_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-                        .dst_set(object_dst_set)
-                        .dst_binding(0)
-                        .dst_array_element(0)
-                        .buffer_info(std::slice::from_ref(&object_matrices_buffer_info))
-                        .build();
-
-                let writes = [
-                        world_matrices_dst_write,
-                        world_light_dst_write,
-                        object_matrices_dst_write,
-                ];
-                unsafe { vk_context.device.update_descriptor_sets(&writes, &[]) };
-
-                Ok(Self {
-                        img_available_semaphore,
-                        present_complete_semaphore,
-                        draw_cmd_buffer,
-                        world_dst_set,
-                        object_dst_set,
-                        world_matrices_buffer,
-                        world_light_buffer,
-                        material_data_buffer,
-                        object_matrices_buffer,
-                })
-        }
-}
-
-impl Drop for VkFrameData {
-        fn drop(&mut self) {
-                unsafe {
-                        self.present_complete_semaphore.destroy();
-                        self.img_available_semaphore.destroy();
-                        self.object_matrices_buffer.destroy();
-                        self.material_data_buffer.destroy();
-                        self.world_light_buffer.destroy();
-                        self.world_matrices_buffer.destroy();
-                        self.draw_cmd_buffer.destroy();
-                }
-        }
-}
 
 pub struct VkRenderer {
         window: Rc<Window>,
@@ -419,7 +265,7 @@ impl Renderer for VkRenderer {
                                 .query::<(&crate::model_instance_manager::ModelInstance,)>()
                                 .iter(world)
                         {
-                                Self::draw_model_instance_world(
+                                Self::draw_model_instance(
                                         &self.vk_context.pdevice,
                                         &self.vk_context.device,
                                         *frame_data.draw_cmd_buffer,
@@ -433,130 +279,6 @@ impl Renderer for VkRenderer {
                         }
 
                         world.insert_resource(asset_manager);
-
-                        self.imgui_renderer
-                                .as_mut()
-                                .unwrap()
-                                .cmd_draw(*frame_data.draw_cmd_buffer, imgui_draw_data)?;
-
-                        self.end_frame(imagei)?;
-                }
-
-                Ok(())
-        }
-
-        fn draw(
-                &mut self,
-                mesh_instances: &SlotMap<MeshInstanceId, MeshInstance>,
-                model_instances: &SlotMap<ModelInstanceId, ModelInstance>,
-                model_instances_index: &HashMap<Entity, ModelInstanceId>,
-                transform_manager: &TransformManager,
-                render_state: &RenderState,
-                player_orien: &UnitQuat,
-                imgui_draw_data: &imgui::DrawData,
-        ) -> AnyResult<()> {
-                self.vk_asset_manager
-                        .process_asset_manager_events(render_state.asset_manager.as_ref().unwrap())?;
-
-                let object_matrices_padded_size = self.vk_context.pdevice.padded_size_of::<ObjectMatrices>();
-                for (mesh_instance_id, mesh_transform) in transform_manager.iter() {
-                        let buffer_idx = mesh_instance_id.data().as_ffi() as u32 as usize;
-                        let buffer_offset = object_matrices_padded_size * buffer_idx;
-
-                        self.frames_data[self.framei]
-                                .object_matrices_buffer
-                                .write_offsetted(mesh_transform, buffer_offset)?;
-                }
-
-                if !self.should_render() {
-                        return Ok(());
-                }
-
-                let imagei = match unsafe { self.begin_frame()? } {
-                        BeginFrameResult::Draw { imagei } => imagei,
-                        BeginFrameResult::Skip => return Ok(()),
-                };
-
-                let frame_data = &mut self.frames_data[self.framei];
-
-                let PhysicalSize { width, height } = self.window.inner_size();
-                let aspect_ratio = width as f32 / height as f32;
-
-                let inverted_view_mat = Mat4::new_translation(&render_state.camera_pos) * player_orien.to_homogeneous();
-                let view_mat = inverted_view_mat
-                        .try_inverse()
-                        .expect("Couldn't invert camera ViewMatrix!");
-
-                let proj_mat = render_state.proj_camera.calc_proj_matrix(aspect_ratio);
-
-                let world_matrices = WorldMatrices {
-                        view_pos: Vec4::new_position(&render_state.camera_pos),
-                        view: view_mat,
-                        proj: proj_mat,
-                };
-
-                frame_data.world_matrices_buffer.write(&world_matrices)?;
-
-                let (_, light) = render_state.lights.iter().next().unwrap();
-
-                let world_light = WorldLight {
-                        pos: Vec4::new_position(&light.0 .0),
-                        color: Vec4::new_position(&light.1 .0),
-                };
-
-                frame_data.world_light_buffer.write(&world_light)?;
-
-                unsafe {
-                        self.vk_context.device.cmd_set_viewport(
-                                *frame_data.draw_cmd_buffer,
-                                0,
-                                slice::from_ref(&self.swapchain.viewport),
-                        );
-                        self.vk_context.device.cmd_set_scissor(
-                                *frame_data.draw_cmd_buffer,
-                                0,
-                                slice::from_ref(&self.swapchain.scissor),
-                        );
-
-                        self.vk_context.device.cmd_bind_descriptor_sets(
-                                *frame_data.draw_cmd_buffer,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                *self.graphics_pipeline_layout,
-                                0,
-                                &[frame_data.world_dst_set],
-                                &[],
-                        );
-
-                        for (e, _) in &render_state.model_instances {
-                                let minstance_id = model_instances_index[e];
-
-                                Self::draw_model_instance(
-                                        &self.vk_context.pdevice,
-                                        &self.vk_context.device,
-                                        *frame_data.draw_cmd_buffer,
-                                        frame_data.object_dst_set,
-                                        *self.graphics_pipeline_layout,
-                                        render_state.asset_manager.as_ref().unwrap(),
-                                        &self.vk_asset_manager,
-                                        mesh_instances,
-                                        model_instances,
-                                        &world_matrices,
-                                        minstance_id,
-                                )?;
-
-                                // Self::draw_model(
-                                //         &self.vk_context.device,
-                                //         *frame_data.draw_cmd_buffer,
-                                //         frame_data.object_dst_set,
-                                //         *self.graphics_pipeline_layout,
-                                //         &self.asset_manager,
-                                //         &self.vk_asset_manager,
-                                //         &world_matrices,
-                                //         minstance_model_id.0,
-                                //         &minstance_transform.to_matrix(),
-                                //         0,
-                                // )?;
-                        }
 
                         self.imgui_renderer
                                 .as_mut()
@@ -1018,7 +740,7 @@ impl VkRenderer {
                 Ok(())
         }
 
-        fn draw_model_instance_world(
+        fn draw_model_instance(
                 pdevice: &VkPhysicalDevice,
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
@@ -1055,7 +777,7 @@ impl VkRenderer {
 
                 let model = &asset_manager.models()[minstance.model];
                 for &mesh_id in &model.meshes {
-                        Self::draw_mesh_instance_world(
+                        Self::draw_mesh_instance(
                                 pdevice,
                                 device,
                                 draw_cmd_buffer,
@@ -1069,7 +791,7 @@ impl VkRenderer {
                 }
 
                 for child_minstance in &minstance.children {
-                        Self::draw_model_instance_world(
+                        Self::draw_model_instance(
                                 pdevice,
                                 device,
                                 draw_cmd_buffer,
@@ -1085,7 +807,7 @@ impl VkRenderer {
                 Ok(())
         }
 
-        fn draw_mesh_instance_world(
+        fn draw_mesh_instance(
                 pdevice: &VkPhysicalDevice,
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
@@ -1137,129 +859,155 @@ impl VkRenderer {
                         device.cmd_draw_indexed(draw_cmd_buffer, indices.element_count as u32, 1, 0, 0, 0);
                 }
         }
+}
 
-        fn draw_model_instance(
-                pdevice: &VkPhysicalDevice,
-                device: &VkDevice,
-                draw_cmd_buffer: vk::CommandBuffer,
-                object_dst_set: vk::DescriptorSet,
-                pipeline_layout: vk::PipelineLayout,
-                asset_manager: &AssetManager,
-                vk_asset_manager: &VkAssetManager,
-                mesh_instances: &SlotMap<MeshInstanceId, MeshInstance>,
-                model_instances: &SlotMap<ModelInstanceId, ModelInstance>,
-                matrices: &WorldMatrices,
-                minstance_id: ModelInstanceId,
-        ) -> VkResult<()> {
-                let minstance = &model_instances[minstance_id];
+struct VkFrameData {
+        // Signaled when a swapchain image has become available for presentation. vkAcquireImage may return an image that is not immediately available.
+        img_available_semaphore: VkSemaphore,
+        // Signaled when a swapchain image presentation has completed
+        present_complete_semaphore: VkSemaphore,
+        // Command buffer used for submitting draw operations of one frame.
+        draw_cmd_buffer: VkReusableCommandBuffer,
 
-                // let transform_final = model_instance_transform * model.base_transform;
+        world_dst_set: vk::DescriptorSet,
+        object_dst_set: vk::DescriptorSet,
 
-                // let mats_m_mvp = MatricesMMvp {
-                //         model: transform_final,
-                //         mvp: matrices.proj * matrices.view * transform_final,
-                // };
+        world_matrices_buffer: VkBuffer,
+        world_light_buffer: VkBuffer,
+        material_data_buffer: VkBuffer,
+        object_matrices_buffer: VkBuffer,
+}
 
-                // unsafe {
-                //         device.cmd_push_constants(
-                //                 draw_cmd_buffer,
-                //                 pipeline_layout,
-                //                 vk::ShaderStageFlags::VERTEX,
-                //                 0,
-                //                 slice::from_raw_parts(
-                //                         &mats_m_mvp as *const _ as *const u8,
-                //                         std::mem::size_of::<MatricesMMvp>(),
-                //                 ),
-                //         );
-                // }
+impl VkFrameData {
+        fn new(
+                vk_context: &VkContext,
+                world_dst_set_layout: vk::DescriptorSetLayout,
+                object_dst_set_layout: vk::DescriptorSetLayout,
+        ) -> AnyResult<Self> {
+                let semaphore_cinfo = vk::SemaphoreCreateInfo::builder().build();
+                let img_available_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
+                let present_complete_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
 
-                // matrices.normal = glm::inverse_transpose(transform_final);
+                let draw_cmd_buffer =
+                        VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
 
-                //let mut last_material = MaterialID::MAX;
-                for &mesh_instance_id in &minstance.mesh_instances {
-                        Self::draw_mesh_instance(
-                                pdevice,
-                                device,
-                                draw_cmd_buffer,
-                                object_dst_set,
-                                pipeline_layout,
-                                asset_manager,
-                                vk_asset_manager,
-                                mesh_instances,
-                                mesh_instance_id,
-                        );
-                }
+                let [world_dst_set, object_dst_set] = unsafe {
+                        vk_context.device.allocate_descriptor_sets_array(
+                                *vk_context.dst_pool,
+                                &[world_dst_set_layout, object_dst_set_layout],
+                        )?
+                };
 
-                for &child_minstance_id in &minstance.children {
-                        Self::draw_model_instance(
-                                pdevice,
-                                device,
-                                draw_cmd_buffer,
-                                object_dst_set,
-                                pipeline_layout,
-                                asset_manager,
-                                vk_asset_manager,
-                                mesh_instances,
-                                model_instances,
-                                matrices,
-                                child_minstance_id,
-                        )?;
-                }
+                let world_matrices_buffer_size = std::mem::size_of::<WorldMatrices>() as vk::DeviceSize;
+                let world_matrices_buffer = VkBuffer::new_uniform_buffer(
+                        &vk_context.device,
+                        Rc::clone(&vk_context.allocator),
+                        std::mem::size_of::<WorldMatrices>() as vk::DeviceSize,
+                )?;
 
-                Ok(())
+                let world_light_buffer_size = std::mem::size_of::<WorldLight>() as vk::DeviceSize;
+                let world_light_buffer = VkBuffer::new_uniform_buffer(
+                        &vk_context.device,
+                        Rc::clone(&vk_context.allocator),
+                        world_light_buffer_size,
+                )?;
+
+                let material_data_buffer_size = std::mem::size_of::<MaterialData>() as vk::DeviceSize;
+                let material_data_buffer = VkBuffer::new_uniform_buffer(
+                        &vk_context.device,
+                        Rc::clone(&vk_context.allocator),
+                        material_data_buffer_size,
+                )?;
+
+                const MAX_OBJECT_MATRICES: usize = 16384;
+                let object_matrices_padded_size = vk_context.pdevice.padded_size_of::<ObjectMatrices>();
+                let object_matrices_buffer_size = (object_matrices_padded_size * MAX_OBJECT_MATRICES) as vk::DeviceSize;
+                let object_matrices_buffer = VkBuffer::new_uniform_buffer(
+                        &vk_context.device,
+                        Rc::clone(&vk_context.allocator),
+                        object_matrices_buffer_size,
+                )?;
+
+                let object_matrices = ObjectMatrices {
+                        model: Mat4::new_translation(&Vec3::new(2.0, 0.0, 0.0)),
+                        mvp: Mat4::identity(),
+                        normal: Mat4::identity(),
+                };
+                object_matrices_buffer.write(&object_matrices)?;
+
+                let world_matrices_buffer_info = vk::DescriptorBufferInfo {
+                        buffer: *world_matrices_buffer,
+                        offset: 0,
+                        range: world_matrices_buffer_size,
+                };
+
+                let world_matrices_dst_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .dst_set(world_dst_set)
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .buffer_info(std::slice::from_ref(&world_matrices_buffer_info))
+                        .build();
+
+                let world_light_buffer_info = vk::DescriptorBufferInfo {
+                        buffer: *world_light_buffer,
+                        offset: 0,
+                        range: world_light_buffer_size,
+                };
+
+                let world_light_dst_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .dst_set(world_dst_set)
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .buffer_info(std::slice::from_ref(&world_light_buffer_info))
+                        .build();
+
+                let object_matrices_buffer_info = vk::DescriptorBufferInfo {
+                        buffer: *object_matrices_buffer,
+                        offset: 0,
+                        range: object_matrices_padded_size as vk::DeviceSize,
+                };
+
+                let object_matrices_dst_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
+                        .dst_set(object_dst_set)
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .buffer_info(std::slice::from_ref(&object_matrices_buffer_info))
+                        .build();
+
+                let writes = [
+                        world_matrices_dst_write,
+                        world_light_dst_write,
+                        object_matrices_dst_write,
+                ];
+                unsafe { vk_context.device.update_descriptor_sets(&writes, &[]) };
+
+                Ok(Self {
+                        img_available_semaphore,
+                        present_complete_semaphore,
+                        draw_cmd_buffer,
+                        world_dst_set,
+                        object_dst_set,
+                        world_matrices_buffer,
+                        world_light_buffer,
+                        material_data_buffer,
+                        object_matrices_buffer,
+                })
         }
+}
 
-        fn draw_mesh_instance(
-                pdevice: &VkPhysicalDevice,
-                device: &VkDevice,
-                draw_cmd_buffer: vk::CommandBuffer,
-                object_dst_set: vk::DescriptorSet,
-                pipeline_layout: vk::PipelineLayout,
-                asset_manager: &AssetManager,
-                vk_asset_manager: &VkAssetManager,
-                mesh_instances: &SlotMap<MeshInstanceId, MeshInstance>,
-                mesh_instance_id: MeshInstanceId,
-        ) {
-                let mesh_instance = &mesh_instances[mesh_instance_id];
-                let mesh = &asset_manager.meshes()[mesh_instance.mesh_id];
-
-                /* if mesh.material != last_material {
-                        last_material = mesh.material;
-                } */
-
-                let material = &asset_manager.materials()[mesh.material];
-                let pipeline = *vk_asset_manager.pipelines[material.shader];
-
-                let material_dst_set = vk_asset_manager.material_dst_sets[mesh.material];
-                let positions = &vk_asset_manager.buffer_views[mesh.positions];
-                let normals = &vk_asset_manager.buffer_views[mesh.normals];
-                let tex_coords = &vk_asset_manager.buffer_views[mesh.tex_coords];
-                let indices = &vk_asset_manager.buffer_views[mesh.indices];
-
+impl Drop for VkFrameData {
+        fn drop(&mut self) {
                 unsafe {
-                        device.cmd_bind_pipeline(draw_cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
-
-                        let object_matrices_padded_size = pdevice.padded_size_of::<ObjectMatrices>();
-                        let object_matrices_buffer_idx = mesh_instance_id.data().as_ffi() as u32 as usize;
-                        let object_matrices_buffer_offset = object_matrices_padded_size * object_matrices_buffer_idx;
-
-                        device.cmd_bind_descriptor_sets(
-                                draw_cmd_buffer,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                pipeline_layout,
-                                1,
-                                &[material_dst_set, object_dst_set],
-                                &[0, object_matrices_buffer_offset as u32],
-                        );
-                        device.cmd_bind_vertex_buffers(
-                                draw_cmd_buffer,
-                                0,
-                                &[*positions.buffer, *normals.buffer, *tex_coords.buffer],
-                                &[0, 0, 0],
-                        );
-                        device.cmd_bind_index_buffer(draw_cmd_buffer, *indices.buffer, 0, indices.index_type);
-
-                        device.cmd_draw_indexed(draw_cmd_buffer, indices.element_count as u32, 1, 0, 0, 0);
+                        self.present_complete_semaphore.destroy();
+                        self.img_available_semaphore.destroy();
+                        self.object_matrices_buffer.destroy();
+                        self.material_data_buffer.destroy();
+                        self.world_light_buffer.destroy();
+                        self.world_matrices_buffer.destroy();
+                        self.draw_cmd_buffer.destroy();
                 }
         }
 }
