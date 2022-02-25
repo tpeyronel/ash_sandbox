@@ -11,8 +11,9 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         components::{
-                ActiveCamera, AngularVelocity, Force, InterpScalar, LightEmitter, Mass, OldTransform, OrbitalVelocity,
-                Parent, Player, ProjectionCamera, RelativeTransform, Ticktime, Transform, Velocity,
+                ActiveCamera, AngularVelocity, Force, ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar,
+                LightEmitter, Mass, OldTransform, OrbitalVelocity, Parent, Player, ProjectionCamera, RelativeTransform,
+                Ticktime, Transform, Velocity,
         },
         constants::{FONT_SIZE, MAX_CONCURRENT_FRAMES, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
@@ -85,22 +86,29 @@ impl Application {
                 let mut imgui_manager = ImguiManager::new(&window);
 
                 imgui_manager.add_callback(move |ui, world| {
-                        let mut player = world.entity_mut(world.get_resource::<Player>().unwrap().0);
-                        let mut player_transform = player.get_mut::<Transform>().unwrap();
-                        let mut player_orien = player.get_mut::<EulerAngles>().unwrap();
-
                         imgui::Window::new("Hello world")
                                 .size([300.0, 100.0], imgui::Condition::FirstUseEver)
                                 .build(ui, || {
+                                        let tps_counter = world.get_resource::<TPSCounter>().unwrap();
+
                                         let mouse_pos = ui.io().mouse_pos;
 
                                         ui.text(format!(
                                                 "fps: {:7.2}   {:5.2}ms",
                                                 ui.io().framerate,
-                                                1000.0 / ui.io().framerate
+                                                1000.0 / ui.io().framerate,
+                                        ));
+                                        ui.text(format!(
+                                                "tps: {:7.2}   {:5.2}ms",
+                                                tps_counter.tps(),
+                                                tps_counter.ticktime().as_secs_f32(),
                                         ));
                                         ui.text(format!("Mouse pos: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
                                         ui.separator();
+
+                                        let mut player = world.entity_mut(world.get_resource::<Player>().unwrap().0);
+                                        let mut player_transform = player.get_mut::<Transform>().unwrap();
+                                        let mut player_orien = player.get_mut::<EulerAngles>().unwrap();
 
                                         ui.text(format!(
                                                 "Pitch: {:.1}, Yaw: {:.1}, Roll: {:.1}",
@@ -141,7 +149,8 @@ impl Application {
 
                         ui.show_demo_window(&mut false);
 
-                        // *dispatch_actions = !ui.io().want_capture_mouse;
+                        world.get_resource_mut::<ImguiWantCaptureMouse>().unwrap().0 = ui.io().want_capture_mouse;
+                        world.get_resource_mut::<ImguiWantCaptureKeyboard>().unwrap().0 = ui.io().want_capture_keyboard;
                 });
 
                 let window_state = WindowState::new(
@@ -155,6 +164,9 @@ impl Application {
 
                 let mut world = World::default();
                 world.insert_resource(Ticktime(1.0 / config.tps as f32));
+                world.insert_resource(ImguiWantCaptureMouse(false));
+                world.insert_resource(ImguiWantCaptureKeyboard(false));
+                world.insert_resource(TPSCounter::new(20));
 
                 let asset_manager = Self::init_asset_manager()?;
                 let mut transform_manager = TransformManager::new(MAX_CONCURRENT_FRAMES);
@@ -245,6 +257,7 @@ impl Application {
                 let mut schedule = Schedule::default();
 
                 let first_stage = SystemStage::single_threaded()
+                        .with_system(update_tps_counter)
                         .with_system(renormalize_quaternions.label("renormalize-quaternions"))
                         .with_system(persist_transforms.after("renormalize-quaternions"));
                 schedule.add_stage("first", first_stage);
@@ -467,8 +480,7 @@ impl Application {
                         } */
                         WindowEvent::Focused(focused) => {
                                 self.window_state.on_window_focused(focused, &self.window);
-                                self.input_manager
-                                        .set_dispatch_actions(focused && self.dispatch_actions);
+                                self.input_manager.set_dispatch_actions(self.should_dispatch_actions());
                         },
                         WindowEvent::Resized(new_size) => {
                                 self.renderer.on_window_resize(new_size.width, new_size.height);
@@ -481,8 +493,7 @@ impl Application {
         }
 
         fn update(&mut self, control_flow: &mut ControlFlow) -> AnyResult<()> {
-                self.input_manager
-                        .set_dispatch_actions(self.window_state.has_focus && self.dispatch_actions);
+                self.input_manager.set_dispatch_actions(self.should_dispatch_actions());
 
                 let mut player = self.world.entity_mut(self.world.get_resource::<Player>().unwrap().0);
                 let mut player_orien = player.get_mut::<EulerAngles>().unwrap();
@@ -559,6 +570,12 @@ impl Application {
                 // }
 
                 Ok(())
+        }
+
+        fn should_dispatch_actions(&self) -> bool {
+                return !(self.world.get_resource::<ImguiWantCaptureMouse>().unwrap().0
+                        || self.world.get_resource::<ImguiWantCaptureKeyboard>().unwrap().0
+                        || !self.window_state.has_focus);
         }
 
         fn on_quit(&mut self) {
@@ -789,6 +806,10 @@ fn init_new_transforms(mut commands: Commands, new_transforms: Query<(Entity, &T
                 commands.entity(e).insert(OldTransform(*new_transform));
                 commands.entity(e).insert(InterpTransform(*new_transform));
         }
+}
+
+fn update_tps_counter(mut tps_counter: ResMut<TPSCounter>) {
+        tps_counter.tick();
 }
 
 fn renormalize_quaternions(mut transforms: Query<&mut Transform, Changed<Transform>>) {

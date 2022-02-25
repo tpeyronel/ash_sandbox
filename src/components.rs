@@ -10,6 +10,10 @@ pub struct Ticktime(pub f32);
 
 pub struct InterpScalar(pub f32);
 
+pub struct ImguiWantCaptureMouse(pub bool);
+pub struct ImguiWantCaptureKeyboard(pub bool);
+
+
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Transform {
         pub pos: Vec3,
