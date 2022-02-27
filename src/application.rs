@@ -15,7 +15,10 @@ use crate::{
                 ImguiWantCaptureMouse, InterpScalar, LightEmitter, Mass, OrbitalVelocity, Parent, Player,
                 PreviousGlobalTransform, ProjectionCamera, Ticktime, Transform, Velocity,
         },
-        constants::{DEFAULT_SHININESS, FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
+        constants::{
+                DEFAULT_AMBIENT_STRENGTH, DEFAULT_DIFFUSE_STRENGTH, DEFAULT_SHININESS, DEFAULT_SPECULAR_STRENGTH,
+                FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND,
+        },
         euler_angles::EulerAngles,
         hashmap::{GetOrInsertDefault, HashMap},
         input_manager::{
@@ -156,6 +159,12 @@ impl Application {
                                                         imgui::TreeNode::new(material_name).build(ui, || {
                                                                 imgui::Slider::new("shininess", 0.0f32, 256.0)
                                                                         .build(&ui, &mut material.shininess);
+                                                                imgui::Slider::new("ambient strength", 0.0f32, 1.0)
+                                                                        .build(&ui, &mut material.ambient_strength);
+                                                                imgui::Slider::new("specular strength", 0.0f32, 1.0)
+                                                                        .build(&ui, &mut material.specular_strength);
+                                                                imgui::Slider::new("diffuse strength", 0.0f32, 1.0)
+                                                                        .build(&ui, &mut material.diffuse_strength);
                                                         });
                                                 }
                                         });
@@ -334,6 +343,9 @@ impl Application {
                         metallic_factor: 0.0,
                         roughness_factor: 1.0,
                         shininess: DEFAULT_SHININESS,
+                        ambient_strength: DEFAULT_AMBIENT_STRENGTH,
+                        specular_strength: DEFAULT_SPECULAR_STRENGTH,
+                        diffuse_strength: DEFAULT_DIFFUSE_STRENGTH,
                         base_color_texture: None,
                         metallic_roughness_texture: None,
                         normal_texture: None,

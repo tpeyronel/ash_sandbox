@@ -8,3 +8,6 @@ pub const PLAYER_MOVEMENT_SPEED: f32 = 2.5;
 pub const ROTATION_PER_SECOND: f32 = std::f32::consts::TAU / 4.0;
 pub const MAX_OBJECT_MATRICES: usize = 16384;
 pub const DEFAULT_SHININESS: f32 = 32.0;
+pub const DEFAULT_AMBIENT_STRENGTH: f32 = 0.01;
+pub const DEFAULT_SPECULAR_STRENGTH: f32 = 0.5;
+pub const DEFAULT_DIFFUSE_STRENGTH: f32 = 1.0;

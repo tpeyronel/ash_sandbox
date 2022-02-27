@@ -10,7 +10,12 @@ use log::{debug, error, info, trace, warn};
 use slotmap::SlotMap;
 use thiserror::Error;
 
-use crate::{components::Transform, constants::DEFAULT_SHININESS, hashmap::HashMap, my_glm::*};
+use crate::{
+        components::Transform,
+        constants::{DEFAULT_AMBIENT_STRENGTH, DEFAULT_DIFFUSE_STRENGTH, DEFAULT_SHININESS, DEFAULT_SPECULAR_STRENGTH},
+        hashmap::HashMap,
+        my_glm::*,
+};
 
 /*enum ComponentType {
         I8 = 1,
@@ -96,6 +101,9 @@ pub struct Material {
         pub metallic_factor: f32,
         pub roughness_factor: f32,
         pub shininess: f32,
+        pub ambient_strength: f32,
+        pub specular_strength: f32,
+        pub diffuse_strength: f32,
 
         pub base_color_texture: Option<TextureId>,
         pub metallic_roughness_texture: Option<TextureId>,
@@ -716,6 +724,9 @@ impl AssetManager {
                                         base_color_factor,
                                         metallic_factor,
                                         shininess: DEFAULT_SHININESS,
+                                        ambient_strength: DEFAULT_AMBIENT_STRENGTH,
+                                        specular_strength: DEFAULT_SPECULAR_STRENGTH,
+                                        diffuse_strength: DEFAULT_DIFFUSE_STRENGTH,
                                         roughness_factor,
                                         base_color_texture,
                                         metallic_roughness_texture,

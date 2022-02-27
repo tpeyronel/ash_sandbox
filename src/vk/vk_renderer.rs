@@ -782,7 +782,14 @@ impl VkRenderer {
                                         ambient_color: material.base_color_factor,
                                         diffuse_color: material.base_color_factor,
                                         specular_color: material.base_color_factor,
-                                        shininess: material.shininess,
+                                        shininess_and_ambient_strength: Vec2::new(
+                                                material.shininess,
+                                                material.ambient_strength,
+                                        ),
+                                        specular_strength_and_diffuse_strength: Vec2::new(
+                                                material.specular_strength,
+                                                material.diffuse_strength,
+                                        ),
                                 },
                                 framei,
                         )?;
@@ -989,7 +996,8 @@ pub struct MaterialData {
         ambient_color: Vec4,
         diffuse_color: Vec4,
         specular_color: Vec4,
-        shininess: f32,
+        shininess_and_ambient_strength: Vec2,
+        specular_strength_and_diffuse_strength: Vec2,
 }
 
 #[allow(dead_code)]

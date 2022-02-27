@@ -16,7 +16,8 @@ layout (set = 1, binding = 0) uniform MaterialData {
         vec4 ambient_color;
         vec4 diffuse_color;
         vec4 specular_color;
-        float shininess;
+        vec2 shininess_and_ambient_strength;
+        vec2 specular_strength_and_diffuse_strength;
 } u_material;
 layout (set = 1, binding = 1) uniform texture2D u_texture;
 layout (set = 1, binding = 2) uniform sampler u_sampler;
@@ -30,20 +31,23 @@ layout (location = 0) out vec4 o_out_color;
 
 
 void main() {
-        float ambient_strength = 0.01;
+        float shininess = u_material.shininess_and_ambient_strength.x;
+        float ambient_strength = u_material.shininess_and_ambient_strength.y;
+        float specular_strength = u_material.specular_strength_and_diffuse_strength.x;
+        float diffuse_strength = u_material.specular_strength_and_diffuse_strength.y;
+
         vec4 ambient = ambient_strength * u_light.color;
 
         vec3 normal = normalize(i_normal);
         vec3 light_dir = normalize(i_frag_pos - u_light.pos.xyz);
 
         float diffuse_angle = max(dot(-light_dir, normal), 0.0);
-        vec4 diffuse = diffuse_angle * u_light.color;
+        vec4 diffuse = diffuse_strength * diffuse_angle * u_light.color;
 
         vec3 camera_rdir = normalize(u_world_matrices.view_pos.xyz - i_frag_pos);
         vec3 halfway = normalize(camera_rdir - light_dir);
-        float specular_strength = 0.5;
         float specular_angle = max(dot(halfway, normal), 0.0);
-        float specular_coefficient = pow(specular_angle, u_material.shininess);
+        float specular_coefficient = pow(specular_angle, shininess);
         vec4 specular = (specular_strength * specular_coefficient) * u_light.color;
 
         vec4 texture = texture(sampler2D(u_texture, u_sampler), i_tex_coord);
