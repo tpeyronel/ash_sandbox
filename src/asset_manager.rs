@@ -10,7 +10,7 @@ use log::{debug, error, info, trace, warn};
 use slotmap::SlotMap;
 use thiserror::Error;
 
-use crate::{components::Transform, hashmap::HashMap, my_glm::*};
+use crate::{components::Transform, constants::DEFAULT_SHININESS, hashmap::HashMap, my_glm::*};
 
 /*enum ComponentType {
         I8 = 1,
@@ -95,6 +95,7 @@ pub struct Material {
         pub base_color_factor: Vec4,
         pub metallic_factor: f32,
         pub roughness_factor: f32,
+        pub shininess: f32,
 
         pub base_color_texture: Option<TextureId>,
         pub metallic_roughness_texture: Option<TextureId>,
@@ -490,13 +491,22 @@ impl AssetManager {
         }
 
         #[allow(dead_code)]
+        pub fn iter_materials_mut(&mut self) -> impl Iterator<Item = (MaterialId, &mut Material)> {
+                // let events = &mut self.events;
+                self.materials.iter_mut().map(move |(mid, m)| {
+                        // events.push(AssetManagerEvent::MaterialUpdated(mid));
+                        (mid, m)
+                })
+        }
+
+        #[allow(dead_code)]
         pub fn get_material(&self, material_id: MaterialId) -> Option<&Material> {
                 self.materials.get(material_id)
         }
 
         #[allow(dead_code)]
         pub fn get_material_mut(&mut self, material_id: MaterialId) -> Option<&mut Material> {
-                self.events.push(AssetManagerEvent::MaterialUpdated(material_id));
+                // self.events.push(AssetManagerEvent::MaterialUpdated(material_id));
                 self.materials.get_mut(material_id)
         }
 
@@ -705,6 +715,7 @@ impl AssetManager {
                                         shader,
                                         base_color_factor,
                                         metallic_factor,
+                                        shininess: DEFAULT_SHININESS,
                                         roughness_factor,
                                         base_color_texture,
                                         metallic_roughness_texture,

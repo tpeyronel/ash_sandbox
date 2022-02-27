@@ -7,3 +7,4 @@ pub const PIXELS_PER_UNIT: f32 = 480.0;
 pub const PLAYER_MOVEMENT_SPEED: f32 = 2.5;
 pub const ROTATION_PER_SECOND: f32 = std::f32::consts::TAU / 4.0;
 pub const MAX_OBJECT_MATRICES: usize = 16384;
+pub const DEFAULT_SHININESS: f32 = 32.0;

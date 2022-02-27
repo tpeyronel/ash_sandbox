@@ -15,7 +15,7 @@ use crate::{
                 ImguiWantCaptureMouse, InterpScalar, LightEmitter, Mass, OrbitalVelocity, Parent, Player,
                 PreviousGlobalTransform, ProjectionCamera, Ticktime, Transform, Velocity,
         },
-        constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
+        constants::{DEFAULT_SHININESS, FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
         hashmap::{GetOrInsertDefault, HashMap},
         input_manager::{
@@ -142,6 +142,23 @@ impl Application {
                                         {
                                                 camera_orien.set_roll(roll);
                                         }
+
+                                        let mut asset_manager = world.get_resource_mut::<AssetManager>().unwrap();
+
+                                        imgui::TreeNode::new("Materials").build(ui, || {
+                                                for (material_id, material) in asset_manager.iter_materials_mut() {
+                                                        let material_name = format!(
+                                                                "{:?} - {}",
+                                                                material_id,
+                                                                material.name.as_deref().unwrap_or("unknown")
+                                                        );
+
+                                                        imgui::TreeNode::new(material_name).build(ui, || {
+                                                                imgui::Slider::new("shininess", 0.0f32, 256.0)
+                                                                        .build(&ui, &mut material.shininess);
+                                                        });
+                                                }
+                                        });
                                 });
 
                         ui.show_demo_window(&mut false);
@@ -316,6 +333,7 @@ impl Application {
                         base_color_factor: Vec4::new(0.8, 0.8, 0.8, 1.0),
                         metallic_factor: 0.0,
                         roughness_factor: 1.0,
+                        shininess: DEFAULT_SHININESS,
                         base_color_texture: None,
                         metallic_roughness_texture: None,
                         normal_texture: None,

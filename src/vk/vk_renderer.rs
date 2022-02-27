@@ -260,6 +260,7 @@ impl Renderer for VkRenderer {
                                         *self.graphics_pipeline_layout,
                                         &asset_manager,
                                         &self.vk_asset_manager,
+                                        self.framei,
                                         &world_matrices,
                                         minstance,
                                         &transform.0,
@@ -704,6 +705,7 @@ impl VkRenderer {
                 pipeline_layout: vk::PipelineLayout,
                 asset_manager: &AssetManager,
                 vk_asset_manager: &VkAssetManager,
+                framei: usize,
                 world_matrices: &WorldMatrices,
                 minstance: &ModelInstance,
                 minstance_transform: &Transform,
@@ -739,8 +741,9 @@ impl VkRenderer {
                                 pipeline_layout,
                                 asset_manager,
                                 vk_asset_manager,
+                                framei,
                                 mesh_id,
-                        );
+                        )?;
                 }
 
                 Ok(())
@@ -752,8 +755,9 @@ impl VkRenderer {
                 pipeline_layout: vk::PipelineLayout,
                 asset_manager: &AssetManager,
                 vk_asset_manager: &VkAssetManager,
+                framei: usize,
                 mesh_id: MeshId,
-        ) {
+        ) -> VkResult<()> {
                 let mesh = &asset_manager.meshes()[mesh_id];
 
                 /* if mesh.material != last_material {
@@ -763,7 +767,7 @@ impl VkRenderer {
                 let material = &asset_manager.materials()[mesh.material];
                 let pipeline = *vk_asset_manager.pipelines[material.shader];
 
-                let material_dst_set = vk_asset_manager.material_dst_sets[mesh.material];
+                let vk_material = &vk_asset_manager.materials[mesh.material];
                 let positions = &vk_asset_manager.buffer_views[mesh.positions];
                 let normals = &vk_asset_manager.buffer_views[mesh.normals];
                 let tex_coords = &vk_asset_manager.buffer_views[mesh.tex_coords];
@@ -772,13 +776,24 @@ impl VkRenderer {
                 unsafe {
                         device.cmd_bind_pipeline(draw_cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
+                        // TODO: update all materials beforehand, to avoid updating the same material if its shared by multiple meshes.
+                        let offset = vk_material.material_data_buffer.write(
+                                &MaterialData {
+                                        ambient_color: material.base_color_factor,
+                                        diffuse_color: material.base_color_factor,
+                                        specular_color: material.base_color_factor,
+                                        shininess: material.shininess,
+                                },
+                                framei,
+                        )?;
+
                         device.cmd_bind_descriptor_sets(
                                 draw_cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
                                 pipeline_layout,
                                 1,
-                                &[material_dst_set],
-                                &[0],
+                                &[vk_material.dst_set],
+                                &[offset as u32],
                         );
                         device.cmd_bind_vertex_buffers(
                                 draw_cmd_buffer,
@@ -790,6 +805,8 @@ impl VkRenderer {
 
                         device.cmd_draw_indexed(draw_cmd_buffer, indices.element_count as u32, 1, 0, 0, 0);
                 }
+
+                Ok(())
         }
 }
 
@@ -968,7 +985,7 @@ struct WorldResources {
 }
 
 #[allow(dead_code)]
-struct MaterialData {
+pub struct MaterialData {
         ambient_color: Vec4,
         diffuse_color: Vec4,
         specular_color: Vec4,

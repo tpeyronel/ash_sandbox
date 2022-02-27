@@ -43,7 +43,7 @@ void main() {
         vec3 halfway = normalize(camera_rdir - light_dir);
         float specular_strength = 0.5;
         float specular_angle = max(dot(halfway, normal), 0.0);
-        float specular_coefficient = pow(specular_angle, 64.0);
+        float specular_coefficient = pow(specular_angle, u_material.shininess);
         vec4 specular = (specular_strength * specular_coefficient) * u_light.color;
 
         vec4 texture = texture(sampler2D(u_texture, u_sampler), i_tex_coord);

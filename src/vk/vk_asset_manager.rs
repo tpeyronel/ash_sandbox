@@ -22,8 +22,10 @@ use crate::{
         AnyResult,
 };
 
-use super::vk_wrapper::{
-        VkDescriptorPool, VkDescriptorSetLayout, VkInstance, VkPipeline, VkShaderModule, VmaAllocator,
+use super::{
+        vk_buffer::VkDynamicUniformBuffer,
+        vk_renderer::MaterialData,
+        vk_wrapper::{VkDescriptorPool, VkDescriptorSetLayout, VkInstance, VkPipeline, VkShaderModule, VmaAllocator},
 };
 
 pub struct VkModelBufferView {
@@ -36,6 +38,11 @@ pub struct VkModelBufferView {
 pub struct VkModelImage {
         pub image: VkImage,
         pub image_view: VkImageView,
+}
+
+pub struct VkMaterial {
+        pub dst_set: vk::DescriptorSet,
+        pub material_data_buffer: VkDynamicUniformBuffer<MaterialData>,
 }
 
 pub struct VkShader {
@@ -58,6 +65,7 @@ pub struct VkAssetManager {
         transfer_queue: vk::Queue,
         dst_pool: VkDescriptorPool,
         cmd_buffer: VkReusableCommandBuffer,
+        concurrent_frames: usize,
 
         material_dst_set_layout: VkDescriptorSetLayout,
 
@@ -68,7 +76,7 @@ pub struct VkAssetManager {
         pub buffer_views: SecondaryMap<BufferViewId, VkModelBufferView>,
         pub images: SecondaryMap<ImageId, VkModelImage>,
         pub samplers: SecondaryMap<SamplerId, VkSampler>,
-        pub material_dst_sets: SecondaryMap<MaterialId, vk::DescriptorSet>,
+        pub materials: SecondaryMap<MaterialId, VkMaterial>,
         // pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
         pub shaders: SecondaryMap<ShaderId, VkShader>,
         pub pipelines: SecondaryMap<ShaderId, VkPipeline>,
@@ -85,9 +93,9 @@ impl VkAssetManager {
                 swapchain_samples: vk::SampleCountFlags,
                 render_pass: vk::RenderPass,
                 pipeline_layout: vk::PipelineLayout,
-                frames_in_flight: usize,
+                concurrent_frames: usize,
         ) -> AnyResult<Self> {
-                assert!(frames_in_flight > 0, "Frames in flight must be greater to zero");
+                assert!(concurrent_frames > 0, "Frames in flight must be greater to zero");
 
                 let dst_pool = Self::create_dst_pool(&device)?;
                 let cmd_buffer = VkReusableCommandBuffer::new(Rc::clone(&device), cmd_pool)?;
@@ -109,6 +117,7 @@ impl VkAssetManager {
                         transfer_queue,
                         dst_pool,
                         cmd_buffer,
+                        concurrent_frames,
 
                         material_dst_set_layout,
 
@@ -119,7 +128,7 @@ impl VkAssetManager {
                         buffer_views: SecondaryMap::new(),
                         images: SecondaryMap::new(),
                         samplers: SecondaryMap::new(),
-                        material_dst_sets: SecondaryMap::new(),
+                        materials: SecondaryMap::new(),
                         // shader_resources: HashMap::new(),
                         shaders: SecondaryMap::new(),
                         pipelines: SecondaryMap::new(),
@@ -169,6 +178,10 @@ impl VkAssetManager {
                 self.shaders.drain().for_each(|(_, shader)| unsafe {
                         shader.vert_module.destroy();
                         shader.frag_module.destroy();
+                });
+
+                self.materials.drain().for_each(|(_, material)| unsafe {
+                        material.material_data_buffer.destroy();
                 });
 
                 // self.shader_resources.drain().for_each(|(_, shader_resource)| unsafe {
@@ -288,20 +301,20 @@ impl VkAssetManager {
         }
 
         fn on_material_updated(&mut self, asset_manager: &AssetManager, material_id: MaterialId) -> AnyResult<()> {
-                match self.material_dst_sets.get(material_id) {
-                        Some(&material_dst_set) => {
-                                let material = match asset_manager.get_material(material_id) {
+                match self.materials.get(material_id) {
+                        Some(_vk_material) => {
+                                let _material = match asset_manager.get_material(material_id) {
                                         Some(material) => material,
                                         None => return Ok(()),
                                 };
 
-                                self.update_vk_material_dst_set(asset_manager, material, material_dst_set);
+                                // self.update_vk_material(asset_manager, material, vk_material.dst_set);
                         },
                         None => {
-                                if let Some(material_dst_set) =
-                                        self.create_vk_material_dst_set_from_material(asset_manager, material_id)?
+                                if let Some(vk_material) =
+                                        self.create_vk_material_from_material(asset_manager, material_id)?
                                 {
-                                        self.material_dst_sets.insert(material_id, material_dst_set);
+                                        self.materials.insert(material_id, vk_material);
                                 }
                         },
                 }
@@ -535,11 +548,11 @@ impl VkAssetManager {
                 Ok(Some(vk_sampler))
         }
 
-        fn create_vk_material_dst_set_from_material(
+        fn create_vk_material_from_material(
                 &self,
                 asset_manager: &AssetManager,
                 material_id: MaterialId,
-        ) -> AnyResult<Option<vk::DescriptorSet>> {
+        ) -> AnyResult<Option<VkMaterial>> {
                 let material = match asset_manager.get_material(material_id) {
                         Some(material) => material,
                         None => return Ok(None),
@@ -550,12 +563,40 @@ impl VkAssetManager {
                                 .allocate_descriptor_sets_array(*self.dst_pool, &[*self.material_dst_set_layout])?
                 };
 
-                self.update_vk_material_dst_set(asset_manager, material, material_dst_set);
+                let material_data_buffer = VkDynamicUniformBuffer::new(
+                        &self.pdevice,
+                        &self.device,
+                        Rc::clone(&self.allocator),
+                        self.concurrent_frames,
+                )?;
 
-                Ok(Some(material_dst_set))
+                let buffer_info = vk::DescriptorBufferInfo {
+                        buffer: *material_data_buffer,
+                        offset: 0,
+                        range: material_data_buffer.element_padded_size() as vk::DeviceSize,
+                };
+
+                let write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
+                        .dst_set(material_dst_set)
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .buffer_info(std::slice::from_ref(&buffer_info))
+                        .build();
+
+                unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+
+                self.update_vk_material(asset_manager, material, material_dst_set);
+
+                let vk_material = VkMaterial {
+                        dst_set: material_dst_set,
+                        material_data_buffer,
+                };
+
+                Ok(Some(vk_material))
         }
 
-        fn update_vk_material_dst_set(
+        fn update_vk_material(
                 &self,
                 asset_manager: &AssetManager,
                 material: &Material,
