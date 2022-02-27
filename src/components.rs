@@ -17,55 +17,59 @@ pub struct ImguiWantCaptureKeyboard(pub bool);
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Transform {
-        pub pos: Vec3,
-        pub orien: UnitQuat,
+        pub translation: Vec3,
+        pub rotation: UnitQuat,
         pub scale: Vec3,
 }
 
 impl Default for Transform {
         fn default() -> Self {
-                Self {
-                        pos: Vec3::from_element(0.0),
-                        orien: UnitQuat::identity(),
-                        scale: Vec3::from_element(1.0),
-                }
+                Self::identity()
         }
 }
 
 impl Transform {
         pub fn interp(&self, other: &Self, t: f32) -> Self {
                 Self {
-                        pos: Vec3::lerp(&self.pos, &other.pos, t),
-                        orien: UnitQuat::try_slerp(&self.orien, &other.orien, t, 0.0)
-                                .unwrap_or_else(|| UnitQuat::nlerp(&self.orien, &other.orien, t)),
+                        translation: Vec3::lerp(&self.translation, &other.translation, t),
+                        rotation: UnitQuat::try_slerp(&self.rotation, &other.rotation, t, 0.0)
+                                .unwrap_or_else(|| UnitQuat::nlerp(&self.rotation, &other.rotation, t)),
                         scale: Vec3::lerp(&self.scale, &other.scale, t),
                 }
         }
 
         pub fn to_matrix(&self) -> Mat4 {
-                Mat4::new_translation(&self.pos)
-                        * UnitQuat::to_homogeneous(&self.orien)
+                Mat4::new_translation(&self.translation)
+                        * UnitQuat::to_homogeneous(&self.rotation)
                         * Mat4::new_nonuniform_scaling(&self.scale)
         }
 
-        pub fn from_pos(pos: Vec3) -> Self {
+        pub fn from_translation(translation: Vec3) -> Self {
                 Self {
-                        pos,
-                        ..Default::default()
+                        translation,
+                        ..Self::identity()
                 }
         }
 
-        pub fn from_orien(orien: UnitQuat) -> Self {
+        pub fn from_rotation(rotation: UnitQuat) -> Self {
                 Self {
-                        orien,
-                        ..Default::default()
+                        rotation,
+                        ..Self::identity()
                 }
         }
 
         pub fn from_scale(scale: Vec3) -> Self {
                 Self {
                         scale,
-                        ..Default::default()
+                        ..Self::identity()
+                }
+        }
+
+        pub fn identity() -> Self {
+                Self {
+                        translation: Vec3::from_element(0.0),
+                        rotation: UnitQuat::identity(),
+                        scale: Vec3::from_element(1.0),
                 }
         }
 }
@@ -75,8 +79,8 @@ impl Mul<Transform> for Transform {
 
         fn mul(self, rhs: Transform) -> Self::Output {
                 Self {
-                        pos: self.pos + self.scale.component_mul(&(self.orien * rhs.pos)),
-                        orien: self.orien * rhs.orien,
+                        translation: self.translation + self.scale.component_mul(&(self.rotation * rhs.translation)),
+                        rotation: self.rotation * rhs.rotation,
                         scale: self.scale.component_mul(&rhs.scale),
                 }
         }

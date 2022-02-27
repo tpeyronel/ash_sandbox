@@ -118,9 +118,9 @@ impl Application {
                                                 player_orien.roll().to_degrees(),
                                         ));
 
-                                        let pos = &mut player_transform.pos;
-                                        if imgui::Slider::new("position", -2.5, 2.5).build_array(&ui, pos.into()) {
-                                                player_transform.pos = *pos;
+                                        let pos = &mut player_transform.translation;
+                                        if imgui::Slider::new("translation", -2.5, 2.5).build_array(&ui, pos.into()) {
+                                                player_transform.translation = *pos;
                                         }
 
                                         let mut pitch = player_orien.pitch();
@@ -175,7 +175,7 @@ impl Application {
 
                 let player = world
                         .spawn()
-                        .insert(Transform::from_pos(Vec3::new(0.0, 0.0, 2.0)))
+                        .insert(Transform::from_translation(Vec3::new(0.0, 0.0, 2.0)))
                         .insert(EulerAngles::new(0.0, 0.0, 0.0))
                         .id();
                 world.insert_resource(Player(player));
@@ -183,14 +183,14 @@ impl Application {
                 let camera = world
                         .spawn()
                         .insert(Parent(player))
-                        .insert(Transform::from_pos(Vec3::new(0.0, 1.0, 0.0)))
+                        .insert(Transform::from_translation(Vec3::new(0.0, 1.0, 0.0)))
                         .insert(ProjectionCamera::new(90.0f32.to_radians(), 1.0, 0.1, 100.0))
                         .id();
                 world.insert_resource(ActiveCamera(camera));
 
                 let _colt = world
                         .spawn()
-                        .insert(Transform::from_pos(Vec3::new(2.5, 0.0, 0.0)))
+                        .insert(Transform::from_translation(Vec3::new(2.5, 0.0, 0.0)))
                         .insert(model_instance_manager.create_model_instance(
                                 &asset_manager,
                                 &mut transform_manager,
@@ -218,7 +218,7 @@ impl Application {
 
                 let _grass_plane = world
                         .spawn()
-                        .insert(Transform::from_pos(Vec3::new(0.0, -1.0, 0.0)))
+                        .insert(Transform::from_translation(Vec3::new(0.0, -1.0, 0.0)))
                         .insert(model_instance_manager.create_model_instance(
                                 &asset_manager,
                                 &mut transform_manager,
@@ -229,8 +229,8 @@ impl Application {
                 let _light = world
                         .spawn()
                         .insert(Transform {
-                                pos: Vec3::new(1.0, 2.0, 0.0),
-                                orien: UnitQuat::identity(),
+                                translation: Vec3::new(1.0, 2.0, 0.0),
+                                rotation: UnitQuat::identity(),
                                 scale: Vec3::from_element(0.25),
                         })
                         .insert(model_instance_manager.create_model_instance(
@@ -264,10 +264,7 @@ impl Application {
                 schedule.add_stage("first", first_stage);
 
                 let update = SystemStage::single_threaded()
-                        .with_system(
-                                persist_transforms.label("persist-transforms"),
-                                // .after("init-new-transforms"),
-                        )
+                        .with_system(persist_transforms.label("persist-transforms"))
                         .with_system(process_actions.label("process-actions").after("persist-transforms"))
                         .with_system(apply_euler_angles.label("apply-euler-angles").after("process-actions"))
                         .with_system(integrate_force.label("linear-force").after("apply-euler-angles"))
@@ -782,15 +779,15 @@ fn process_actions(
                 let mut player_transform = transforms.get_mut(player.0).unwrap();
 
                 let player_hor_orien = UnitQuat::new_normalize(Quat::new(
-                        player_transform.orien.as_vector().w,
+                        player_transform.rotation.as_vector().w,
                         0.0,
-                        player_transform.orien.as_vector().y,
+                        player_transform.rotation.as_vector().y,
                         0.0,
                 ));
 
                 let move_vector = player_hor_orien * desired_dir * PLAYER_MOVEMENT_SPEED;
 
-                player_transform.pos += move_vector;
+                player_transform.translation += move_vector;
         }
 }
 
@@ -889,7 +886,7 @@ fn update_tps_counter(mut tps_counter: ResMut<TPSCounter>) {
 
 fn renormalize_quaternions(mut transforms: Query<&mut Transform, Changed<Transform>>) {
         for mut transform in transforms.iter_mut() {
-                transform.orien = UnitQuat::new_normalize(*transform.orien);
+                transform.rotation = UnitQuat::new_normalize(*transform.rotation);
         }
 }
 
@@ -901,7 +898,7 @@ fn persist_transforms(mut transforms: Query<(&GlobalTransform, &mut PreviousGlob
 
 fn apply_euler_angles(mut query: Query<(&EulerAngles, &mut Transform)>) {
         for (euler_angles, mut transform) in query.iter_mut() {
-                transform.orien = euler_angles.to_quat();
+                transform.rotation = euler_angles.to_quat();
         }
 }
 
@@ -919,24 +916,24 @@ fn integrate_force(mut query: Query<(&Force, &Mass, &mut Velocity)>, ticktime: R
 
 fn integrate_linear_velocity(mut query: Query<(&Velocity, &mut Transform)>, ticktime: Res<Ticktime>) {
         for (velocity, mut transform) in query.iter_mut() {
-                transform.pos += velocity.0 * ticktime.0;
+                transform.translation += velocity.0 * ticktime.0;
         }
 }
 
 fn integrate_angular_velocities(mut query: Query<(&AngularVelocity, &mut Transform)>, ticktime: Res<Ticktime>) {
         for (angular_velocity, mut transform) in query.iter_mut() {
-                transform.orien *= UnitQuat::new(angular_velocity.0 * ticktime.0);
+                transform.rotation *= UnitQuat::new(angular_velocity.0 * ticktime.0);
         }
 }
 
 fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transform)>, ticktime: Res<Ticktime>) {
         for (orbital_velocity, mut transform) in query.iter_mut() {
-                let orbital_pos = transform.pos - orbital_velocity.origin;
+                let orbital_pos = transform.translation - orbital_velocity.origin;
                 let orbital_rot = UnitQuat::new(orbital_velocity.velocity * ticktime.0);
                 let new_orbital_pos = orbital_rot * orbital_pos;
                 let delta_pos = new_orbital_pos - orbital_pos;
 
-                transform.pos += delta_pos;
+                transform.translation += delta_pos;
         }
 }
 

@@ -205,8 +205,8 @@ impl Renderer for VkRenderer {
                 let camera = world.get_resource::<ActiveCamera>().unwrap().0;
 
                 // TODO: use global transform instead of transform (GlobalTransform = fixed update);
-                let player_orien = &world.get::<Transform>(player).unwrap().orien;
-                let camera_pos = &world.get::<InterpGlobalTransform>(camera).unwrap().0.pos;
+                let player_orien = &world.get::<Transform>(player).unwrap().rotation;
+                let camera_pos = &world.get::<InterpGlobalTransform>(camera).unwrap().0.translation;
                 let camera_projection = world.get::<ProjectionCamera>(camera).unwrap();
 
                 let inverted_view_mat = Mat4::new_translation(&camera_pos) * player_orien.to_homogeneous();
@@ -233,7 +233,7 @@ impl Renderer for VkRenderer {
                 let world_light = WorldLight {
                         // pos: Vec4::new_position(&Vec3::new(0.0, 2.0, 0.0)),
                         // color: Vec4::new_position(&Vec3::new(0.8, 0.8, 0.8)),
-                        pos: Vec4::new_position(&light_transform.0.pos),
+                        pos: Vec4::new_position(&light_transform.0.translation),
                         color: Vec4::new_position(&light_emitter.color),
                 };
 
