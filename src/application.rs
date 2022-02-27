@@ -11,12 +11,13 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         components::{
-                ActiveCamera, AngularVelocity, Force, ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar,
-                LightEmitter, Mass, OldTransform, OrbitalVelocity, Parent, Player, ProjectionCamera, RelativeTransform,
-                Ticktime, Transform, Velocity,
+                ActiveCamera, AngularVelocity, Children, Force, GlobalTransform, ImguiWantCaptureKeyboard,
+                ImguiWantCaptureMouse, InterpScalar, LightEmitter, Mass, OrbitalVelocity, Parent, Player,
+                PreviousGlobalTransform, ProjectionCamera, Ticktime, Transform, Velocity,
         },
         constants::{FONT_SIZE, MAX_CONCURRENT_FRAMES, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
+        hashmap::{GetOrInsertDefault, HashMap},
         input_manager::{
                 ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType,
         },
@@ -182,8 +183,7 @@ impl Application {
                 let camera = world
                         .spawn()
                         .insert(Parent(player))
-                        .insert(Transform::default())
-                        .insert(RelativeTransform(Transform::from_pos(Vec3::new(0.0, 1.0, 0.0))))
+                        .insert(Transform::from_pos(Vec3::new(0.0, 1.0, 0.0)))
                         .insert(ProjectionCamera::new(90.0f32.to_radians(), 1.0, 0.1, 100.0))
                         .id();
                 world.insert_resource(ActiveCamera(camera));
@@ -258,13 +258,17 @@ impl Application {
 
                 let first_stage = SystemStage::single_threaded()
                         .with_system(update_tps_counter)
-                        .with_system(renormalize_quaternions.label("renormalize-quaternions"))
-                        .with_system(persist_transforms.after("renormalize-quaternions"));
+                        .with_system(hierarchy_maintenance_system.label("hierarchy-maintenance"))
+                        .with_system(renormalize_quaternions.after("hierarchy-maintenance"))
+                        .with_system(init_new_transforms.label("init-new-transforms"));
                 schedule.add_stage("first", first_stage);
 
                 let update = SystemStage::single_threaded()
-                        .with_system(init_new_transforms)
-                        .with_system(process_actions.label("process-actions"))
+                        .with_system(
+                                persist_transforms.label("persist-transforms"),
+                                // .after("init-new-transforms"),
+                        )
+                        .with_system(process_actions.label("process-actions").after("persist-transforms"))
                         .with_system(apply_euler_angles.label("apply-euler-angles").after("process-actions"))
                         .with_system(integrate_force.label("linear-force").after("apply-euler-angles"))
                         .with_system(integrate_linear_velocity.label("linear-velocity").after("linear-force"))
@@ -273,8 +277,12 @@ impl Application {
                                         .label("angular-velocity")
                                         .after("linear-velocity"),
                         )
-                        .with_system(integrate_orbital_velocities.after("angular-velocity"))
-                        .with_system(relative_transform_updater);
+                        .with_system(
+                                integrate_orbital_velocities
+                                        .label("orbital-velocity")
+                                        .after("angular-velocity"),
+                        )
+                        .with_system(global_transform_system.after("orbital-velocity"));
 
                 schedule.add_stage("update", update);
 
@@ -687,7 +695,7 @@ impl MatrixStack {
 }
 
 fn update_transforms(
-        query: Query<(&InterpTransform, &ModelInstance), Changed<InterpTransform>>,
+        query: Query<(&InterpGlobalTransform, &ModelInstance), Changed<InterpGlobalTransform>>,
         asset_manager: Res<AssetManager>,
         mut transform_manager: ResMut<TransformManager>,
 ) {
@@ -786,25 +794,92 @@ fn process_actions(
         }
 }
 
-fn relative_transform_updater(
+fn hierarchy_maintenance_system(
         mut commands: Commands,
-        children: Query<(Entity, &RelativeTransform, &Parent)>,
-        transforms: Query<&Transform>,
+        new_children_query: Query<(Entity, &Parent), Added<Parent>>,
+        mut children_query: Query<&mut Children>,
 ) {
-        for (child, rel_transform, parent) in children.iter() {
-                let parent_transform = transforms.get(parent.0).unwrap();
-                let mut new_child_transform = parent_transform.clone();
-                new_child_transform.pos += rel_transform.0.pos;
-                new_child_transform.orien *= rel_transform.0.orien;
-                new_child_transform.scale += rel_transform.0.scale;
-                commands.entity(child).insert(new_child_transform);
+        let mut new_parents: HashMap<Entity, Vec<Entity>> = HashMap::new();
+
+        for (new_child, parent) in new_children_query.iter() {
+                if let Ok(mut parents_children) = children_query.get_mut(parent.0) {
+                        parents_children.0.push(new_child);
+                } else {
+                        new_parents.get_mut_or_insert_default(&parent.0).push(new_child);
+                }
+        }
+
+        for (new_parent, children) in new_parents {
+                commands.entity(new_parent).insert(Children(children));
+        }
+}
+
+fn global_transform_system(
+        mut root_query: Query<(Entity, &Transform, &mut GlobalTransform, Option<&Children>), Without<Parent>>,
+        mut transform_query: Query<(&Transform, &mut GlobalTransform), With<Parent>>,
+        changed_transform_query: Query<Entity, Changed<Transform>>,
+        children_query: Query<&Children>,
+) {
+        for (root, root_transform, mut root_global_transform, children) in root_query.iter_mut() {
+                let transform_changed = changed_transform_query.get(root).is_ok();
+                if transform_changed {
+                        root_global_transform.0 = *root_transform;
+                };
+
+                if let Some(children) = children {
+                        for &child in &children.0 {
+                                update_global_transform_recursive(
+                                        &mut transform_query,
+                                        &changed_transform_query,
+                                        &children_query,
+                                        &root_global_transform,
+                                        transform_changed,
+                                        child,
+                                );
+                        }
+                }
+        }
+}
+
+fn update_global_transform_recursive(
+        transform_query: &mut Query<(&Transform, &mut GlobalTransform), With<Parent>>,
+        changed_transform_query: &Query<Entity, Changed<Transform>>,
+        children_query: &Query<&Children>,
+        parent_transform: &GlobalTransform,
+        parent_transform_changed: bool,
+        entity: Entity,
+) {
+        let (transform, mut global_transform) = match transform_query.get_mut(entity) {
+                Ok(t) => t,
+                Err(_) => return,
+        };
+
+        let should_update_global_transform = parent_transform_changed || changed_transform_query.get(entity).is_ok();
+        if should_update_global_transform {
+                global_transform.0 = *transform * parent_transform.0;
+        }
+
+        let global_transform = *global_transform;
+
+        if let Ok(children) = children_query.get(entity) {
+                for &child in &children.0 {
+                        update_global_transform_recursive(
+                                transform_query,
+                                changed_transform_query,
+                                children_query,
+                                &global_transform,
+                                should_update_global_transform,
+                                child,
+                        );
+                }
         }
 }
 
 fn init_new_transforms(mut commands: Commands, new_transforms: Query<(Entity, &Transform), Added<Transform>>) {
         for (e, new_transform) in new_transforms.iter() {
-                commands.entity(e).insert(OldTransform(*new_transform));
-                commands.entity(e).insert(InterpTransform(*new_transform));
+                commands.entity(e).insert(GlobalTransform(*new_transform));
+                commands.entity(e).insert(PreviousGlobalTransform(*new_transform));
+                commands.entity(e).insert(InterpGlobalTransform(*new_transform));
         }
 }
 
@@ -818,9 +893,9 @@ fn renormalize_quaternions(mut transforms: Query<&mut Transform, Changed<Transfo
         }
 }
 
-fn persist_transforms(mut transforms: Query<(&Transform, &mut OldTransform)>) {
+fn persist_transforms(mut transforms: Query<(&GlobalTransform, &mut PreviousGlobalTransform)>) {
         for (transform, mut old_transform) in transforms.iter_mut() {
-                old_transform.0 = *transform;
+                old_transform.0 = transform.0;
         }
 }
 
@@ -865,9 +940,12 @@ fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transfo
         }
 }
 
-fn interpolate_transforms(mut query: Query<(&OldTransform, &Transform, &mut InterpTransform)>, t: Res<InterpScalar>) {
-        for (old_transform, new_transform, mut interp_transform) in query.iter_mut() {
-                interp_transform.0 = Transform::interp(&old_transform.0, new_transform, t.0);
+fn interpolate_transforms(
+        mut query: Query<(&PreviousGlobalTransform, &GlobalTransform, &mut InterpGlobalTransform)>,
+        t: Res<InterpScalar>,
+) {
+        for (prev_transform, curr_transform, mut interp_transform) in query.iter_mut() {
+                interp_transform.0 = Transform::interp(&prev_transform.0, &curr_transform.0, t.0);
         }
 }
 
@@ -941,7 +1019,7 @@ impl ImguiManager {
 }
 
 #[derive(Component, Debug, Clone, Copy)]
-pub struct InterpTransform(pub Transform);
+pub struct InterpGlobalTransform(pub Transform);
 
 enum WindowCommand {
         SetCursorState(CursorState),

@@ -1,3 +1,5 @@
+use std::ops::Mul;
+
 use bevy_ecs::prelude::*;
 
 use crate::my_glm::*;
@@ -12,7 +14,6 @@ pub struct InterpScalar(pub f32);
 
 pub struct ImguiWantCaptureMouse(pub bool);
 pub struct ImguiWantCaptureKeyboard(pub bool);
-
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Transform {
@@ -69,6 +70,18 @@ impl Transform {
         }
 }
 
+impl Mul<Transform> for Transform {
+        type Output = Transform;
+
+        fn mul(self, rhs: Transform) -> Self::Output {
+                Self {
+                        pos: self.pos + self.scale.component_mul(&(self.orien * rhs.pos)),
+                        orien: self.orien * rhs.orien,
+                        scale: self.scale.component_mul(&rhs.scale),
+                }
+        }
+}
+
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Velocity(pub Vec3);
 
@@ -90,11 +103,14 @@ pub struct Mass(pub f32);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Parent(pub Entity);
 
-#[derive(Component, Debug, Clone, Copy)]
-pub struct RelativeTransform(pub Transform);
+#[derive(Component, Debug, Clone)]
+pub struct Children(pub Vec<Entity>);
 
 #[derive(Component, Debug, Clone, Copy)]
-pub struct OldTransform(pub Transform);
+pub struct GlobalTransform(pub Transform);
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PreviousGlobalTransform(pub Transform);
 
 #[derive(Component, Debug, Default, Clone, Copy)]
 pub struct ProjectionCamera {

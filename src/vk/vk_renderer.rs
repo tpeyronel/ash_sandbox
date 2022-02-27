@@ -17,7 +17,7 @@ use super::{
         vk_wrapper::{VkDescriptorSetLayout, VkDevice, VkPhysicalDevice, VkPipelineLayout, VkRenderPass, VkSemaphore},
 };
 use crate::{
-        application::InterpTransform,
+        application::InterpGlobalTransform,
         asset_manager::{AssetManager, MeshId},
         components::{ActiveCamera, LightEmitter, Player, ProjectionCamera, Transform},
         model_instance_manager::TransformId,
@@ -204,8 +204,9 @@ impl Renderer for VkRenderer {
                 let player = world.get_resource::<Player>().unwrap().0;
                 let camera = world.get_resource::<ActiveCamera>().unwrap().0;
 
+                // TODO: use global transform instead of transform (GlobalTransform = fixed update);
                 let player_orien = &world.get::<Transform>(player).unwrap().orien;
-                let camera_pos = &world.get::<InterpTransform>(camera).unwrap().0.pos;
+                let camera_pos = &world.get::<InterpGlobalTransform>(camera).unwrap().0.pos;
                 let camera_projection = world.get::<ProjectionCamera>(camera).unwrap();
 
                 let inverted_view_mat = Mat4::new_translation(&camera_pos) * player_orien.to_homogeneous();
@@ -224,7 +225,7 @@ impl Renderer for VkRenderer {
                 frame_data.world_matrices_buffer.write(&world_matrices)?;
 
                 let (light_transform, light_emitter) = world
-                        .query::<(&InterpTransform, &LightEmitter)>()
+                        .query::<(&InterpGlobalTransform, &LightEmitter)>()
                         .iter(&world)
                         .next()
                         .unwrap();
