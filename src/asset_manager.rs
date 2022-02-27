@@ -490,6 +490,17 @@ impl AssetManager {
         }
 
         #[allow(dead_code)]
+        pub fn get_material(&self, material_id: MaterialId) -> Option<&Material> {
+                self.materials.get(material_id)
+        }
+
+        #[allow(dead_code)]
+        pub fn get_material_mut(&mut self, material_id: MaterialId) -> Option<&mut Material> {
+                self.events.push(AssetManagerEvent::MaterialUpdated(material_id));
+                self.materials.get_mut(material_id)
+        }
+
+        #[allow(dead_code)]
         pub fn meshes(&self) -> &SlotMap<MeshId, Mesh> {
                 &self.meshes
         }

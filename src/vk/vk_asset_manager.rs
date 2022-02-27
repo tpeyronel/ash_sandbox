@@ -8,7 +8,7 @@ use slotmap::{SecondaryMap, SlotMap};
 use crate::{
         asset_manager::{
                 AssetManager, AssetManagerEvent, BufferViewId, ComponentType, DataType, ImageFormat, ImageId,
-                MagFilter, MaterialId, Mesh, MeshId, MinFilter, SamplerId, ShaderId, WrappingMode,
+                MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, SamplerId, ShaderId, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         my_glm::{Vec2, Vec3},
@@ -288,56 +288,23 @@ impl VkAssetManager {
         }
 
         fn on_material_updated(&mut self, asset_manager: &AssetManager, material_id: MaterialId) -> AnyResult<()> {
-                let material = match asset_manager.materials().get(material_id) {
-                        Some(material) => material,
-                        None => return Ok(()),
-                };
+                match self.material_dst_sets.get(material_id) {
+                        Some(&material_dst_set) => {
+                                let material = match asset_manager.get_material(material_id) {
+                                        Some(material) => material,
+                                        None => return Ok(()),
+                                };
 
-                let [material_dst_set] = unsafe {
-                        self.device
-                                .allocate_descriptor_sets_array(*self.dst_pool, &[*self.material_dst_set_layout])?
-                };
-
-                self.material_dst_sets.insert(material_id, material_dst_set);
-
-                let base_color_texture = match material.base_color_texture {
-                        Some(t) => t,
-                        None => return Ok(()),
-                };
-
-                let color_texture = &asset_manager.textures()[base_color_texture];
-                let color_vk_image_view = &self.images[color_texture.image].image_view;
-                let color_vk_sampler = &self.samplers[color_texture.sampler];
-
-                let image_info = vk::DescriptorImageInfo {
-                        image_view: **color_vk_image_view,
-                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                        ..Default::default()
-                };
-                let image_dst_set_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                        .dst_set(material_dst_set)
-                        .dst_binding(1)
-                        .dst_array_element(0)
-                        .image_info(image_info.ref_into_slice())
-                        .build();
-
-                let sampler_info = vk::DescriptorImageInfo {
-                        sampler: **color_vk_sampler,
-                        ..Default::default()
-                };
-                let sampler_dst_set_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::SAMPLER)
-                        .dst_set(material_dst_set)
-                        .dst_binding(2)
-                        .dst_array_element(0)
-                        .image_info(sampler_info.ref_into_slice())
-                        .build();
-
-                unsafe {
-                        self.device
-                                .update_descriptor_sets(&[image_dst_set_write, sampler_dst_set_write], &[])
-                };
+                                self.update_vk_material_dst_set(asset_manager, material, material_dst_set);
+                        },
+                        None => {
+                                if let Some(material_dst_set) =
+                                        self.create_vk_material_dst_set_from_material(asset_manager, material_id)?
+                                {
+                                        self.material_dst_sets.insert(material_id, material_dst_set);
+                                }
+                        },
+                }
 
                 Ok(())
         }
@@ -566,6 +533,72 @@ impl VkAssetManager {
                 let vk_sampler = unsafe { VkSampler::new(Rc::clone(&self.device), &vk_sampler_cinfo)? };
 
                 Ok(Some(vk_sampler))
+        }
+
+        fn create_vk_material_dst_set_from_material(
+                &self,
+                asset_manager: &AssetManager,
+                material_id: MaterialId,
+        ) -> AnyResult<Option<vk::DescriptorSet>> {
+                let material = match asset_manager.get_material(material_id) {
+                        Some(material) => material,
+                        None => return Ok(None),
+                };
+
+                let [material_dst_set] = unsafe {
+                        self.device
+                                .allocate_descriptor_sets_array(*self.dst_pool, &[*self.material_dst_set_layout])?
+                };
+
+                self.update_vk_material_dst_set(asset_manager, material, material_dst_set);
+
+                Ok(Some(material_dst_set))
+        }
+
+        fn update_vk_material_dst_set(
+                &self,
+                asset_manager: &AssetManager,
+                material: &Material,
+                material_dst_set: vk::DescriptorSet,
+        ) {
+                let base_color_texture = match material.base_color_texture {
+                        Some(t) => t,
+                        None => return,
+                };
+
+                let color_texture = &asset_manager.textures()[base_color_texture];
+                let color_vk_image_view = &self.images[color_texture.image].image_view;
+                let color_vk_sampler = &self.samplers[color_texture.sampler];
+
+                let image_info = vk::DescriptorImageInfo {
+                        image_view: **color_vk_image_view,
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        ..Default::default()
+                };
+                let image_dst_set_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .dst_set(material_dst_set)
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .image_info(image_info.ref_into_slice())
+                        .build();
+
+                let sampler_info = vk::DescriptorImageInfo {
+                        sampler: **color_vk_sampler,
+                        ..Default::default()
+                };
+                let sampler_dst_set_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::SAMPLER)
+                        .dst_set(material_dst_set)
+                        .dst_binding(2)
+                        .dst_array_element(0)
+                        .image_info(sampler_info.ref_into_slice())
+                        .build();
+
+                unsafe {
+                        self.device
+                                .update_descriptor_sets(&[image_dst_set_write, sampler_dst_set_write], &[])
+                };
         }
 
         fn create_graphics_pipeline_from_vk_shader(
