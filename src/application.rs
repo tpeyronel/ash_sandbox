@@ -15,13 +15,13 @@ use crate::{
                 ImguiWantCaptureMouse, InterpScalar, LightEmitter, Mass, OrbitalVelocity, Parent, Player,
                 PreviousGlobalTransform, ProjectionCamera, Ticktime, Transform, Velocity,
         },
-        constants::{FONT_SIZE, MAX_CONCURRENT_FRAMES, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
+        constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
         hashmap::{GetOrInsertDefault, HashMap},
         input_manager::{
                 ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType,
         },
-        model_instance_manager::{ModelInstance, ModelInstanceManager, TransformManager},
+        model_instance_manager::CreateModelInstanceFromName,
         my_glm::*,
         renderer::Renderer,
         vk::vk_renderer::VkRenderer,
@@ -109,42 +109,38 @@ impl Application {
 
                                         let mut player = world.entity_mut(world.get_resource::<Player>().unwrap().0);
                                         let mut player_transform = player.get_mut::<Transform>().unwrap();
-                                        let mut player_orien = player.get_mut::<EulerAngles>().unwrap();
-
-                                        ui.text(format!(
-                                                "Pitch: {:.1}, Yaw: {:.1}, Roll: {:.1}",
-                                                player_orien.pitch().to_degrees(),
-                                                player_orien.yaw().to_degrees(),
-                                                player_orien.roll().to_degrees(),
-                                        ));
 
                                         let pos = &mut player_transform.translation;
                                         if imgui::Slider::new("translation", -2.5, 2.5).build_array(&ui, pos.into()) {
                                                 player_transform.translation = *pos;
                                         }
 
-                                        let mut pitch = player_orien.pitch();
+                                        let mut camera =
+                                                world.entity_mut(world.get_resource::<ActiveCamera>().unwrap().0);
+                                        let mut camera_orien = camera.get_mut::<EulerAngles>().unwrap();
+
+                                        let mut pitch = camera_orien.pitch();
                                         if imgui::AngleSlider::new("pitch")
                                                 .range_degrees(-90.0, 90.0)
                                                 .build(&ui, &mut pitch)
                                         {
-                                                player_orien.set_pitch(pitch);
+                                                camera_orien.set_pitch(pitch);
                                         }
 
-                                        let mut yaw = player_orien.yaw();
+                                        let mut yaw = camera_orien.yaw();
                                         if imgui::AngleSlider::new("yaw")
                                                 .range_degrees(-180.0, 180.0)
                                                 .build(&ui, &mut yaw)
                                         {
-                                                player_orien.set_yaw(yaw);
+                                                camera_orien.set_yaw(yaw);
                                         }
 
-                                        let mut roll = player_orien.roll();
+                                        let mut roll = camera_orien.roll();
                                         if imgui::AngleSlider::new("roll")
                                                 .range_degrees(-180.0, 180.0)
                                                 .build(&ui, &mut roll)
                                         {
-                                                player_orien.set_roll(roll);
+                                                camera_orien.set_roll(roll);
                                         }
                                 });
 
@@ -170,89 +166,17 @@ impl Application {
                 world.insert_resource(TPSCounter::new(20));
 
                 let asset_manager = Self::init_asset_manager()?;
-                let mut transform_manager = TransformManager::new(MAX_CONCURRENT_FRAMES);
-                let model_instance_manager = ModelInstanceManager::new();
-
-                let player = world
-                        .spawn()
-                        .insert(Transform::from_translation(Vec3::new(0.0, 0.0, 2.0)))
-                        .insert(EulerAngles::new(0.0, 0.0, 0.0))
-                        .id();
-                world.insert_resource(Player(player));
-
-                let camera = world
-                        .spawn()
-                        .insert(Parent(player))
-                        .insert(Transform::from_translation(Vec3::new(0.0, 1.0, 0.0)))
-                        .insert(ProjectionCamera::new(90.0f32.to_radians(), 1.0, 0.1, 100.0))
-                        .id();
-                world.insert_resource(ActiveCamera(camera));
-
-                let _colt = world
-                        .spawn()
-                        .insert(Transform::from_translation(Vec3::new(2.5, 0.0, 0.0)))
-                        .insert(model_instance_manager.create_model_instance(
-                                &asset_manager,
-                                &mut transform_manager,
-                                asset_manager.get_model_by_name("colt"),
-                        ))
-                        .insert(AngularVelocity(Vec3::y() * 45.0f32.to_radians()))
-                        .insert(OrbitalVelocity {
-                                origin: Vec3::new(0.0, 2.5, 0.0),
-                                velocity: (Vec3::x() + Vec3::y()).normalize() * -22.5f32.to_radians(),
-                        })
-                        .id();
-
-                let _icosphere = world
-                        .spawn()
-                        .insert(Transform::from_scale(Vec3::new(4.0, 4.0, 4.0)))
-                        .insert(model_instance_manager.create_model_instance(
-                                &asset_manager,
-                                &mut transform_manager,
-                                asset_manager.get_model_by_name("icosphere"),
-                        ))
-                        .insert(Force(Vec3::new(0.0, 0.0, 0.0)))
-                        .insert(Mass(1.0))
-                        .insert(Velocity(Vec3::new(0.0, 0.0, 0.0)))
-                        .id();
-
-                let _grass_plane = world
-                        .spawn()
-                        .insert(Transform::from_translation(Vec3::new(0.0, -1.0, 0.0)))
-                        .insert(model_instance_manager.create_model_instance(
-                                &asset_manager,
-                                &mut transform_manager,
-                                asset_manager.get_model_by_name("grass-plane"),
-                        ))
-                        .id();
-
-                let _light = world
-                        .spawn()
-                        .insert(Transform {
-                                translation: Vec3::new(1.0, 2.0, 0.0),
-                                rotation: UnitQuat::identity(),
-                                scale: Vec3::from_element(0.25),
-                        })
-                        .insert(model_instance_manager.create_model_instance(
-                                &asset_manager,
-                                &mut transform_manager,
-                                asset_manager.get_model_by_name("lit-icosphere"),
-                        ))
-                        .insert(LightEmitter {
-                                color: Vec3::new(0.9, 1.0, 0.9),
-                        })
-                        .insert(OrbitalVelocity {
-                                origin: Vec3::from_element(0.0),
-                                velocity: Vec3::y() * 45.0f32.to_radians(),
-                        })
-                        .id();
 
                 world.insert_resource(asset_manager);
-                world.insert_resource(transform_manager);
                 world.insert_resource(ControlFlow::Poll);
                 world.insert_resource(window_state.window_mode);
                 world.insert_resource(window_state.cursor_state);
                 world.insert_resource(Vec::<WindowCommand>::new());
+
+                let mut startup_schedule = Schedule::default();
+                let startup = SystemStage::single_threaded().with_system(spawn_entities);
+                startup_schedule.add_stage("startup", startup);
+                startup_schedule.run(&mut world);
 
                 let mut schedule = Schedule::default();
 
@@ -279,7 +203,11 @@ impl Application {
                                         .label("orbital-velocity")
                                         .after("angular-velocity"),
                         )
-                        .with_system(global_transform_system.after("orbital-velocity"));
+                        .with_system(
+                                global_transform_system
+                                        .label("global-transform-system")
+                                        .after("orbital-velocity"),
+                        );
 
                 schedule.add_stage("update", update);
 
@@ -288,8 +216,11 @@ impl Application {
                         "render",
                         SystemStage::single_threaded()
                                 .with_system(apply_euler_angles.label("apply-euler-angles"))
-                                .with_system(interpolate_transforms.label("interpolate-transforms"))
-                                .with_system(update_transforms.after("interpolate-transforms")),
+                                .with_system(
+                                        interpolate_transforms
+                                                .label("interpolate-transforms")
+                                                .after("apply-euler-angles"),
+                                ),
                 );
 
                 let renderer = Box::new(VkRenderer::new(Rc::clone(&window), &mut imgui_manager.imgui_context)?);
@@ -500,8 +431,10 @@ impl Application {
         fn update(&mut self, control_flow: &mut ControlFlow) -> AnyResult<()> {
                 self.input_manager.set_dispatch_actions(self.should_dispatch_actions());
 
-                let mut player = self.world.entity_mut(self.world.get_resource::<Player>().unwrap().0);
-                let mut player_orien = player.get_mut::<EulerAngles>().unwrap();
+                let mut camera = self
+                        .world
+                        .entity_mut(self.world.get_resource::<ActiveCamera>().unwrap().0);
+                let mut camera_orien = camera.get_mut::<EulerAngles>().unwrap();
 
                 for (action_id, strength) in self.action_receiver.receive(self.delta_time) {
                         if self.window_state.cursor_state != CursorState::Hidden {
@@ -509,12 +442,12 @@ impl Application {
                         }
 
                         match action_id {
-                                YAW_POSITIVE => player_orien.yaw_by(strength.0 * ROTATION_PER_SECOND),
-                                YAW_NEGATIVE => player_orien.yaw_by(-strength.0 * ROTATION_PER_SECOND),
-                                PITCH_POSITIVE => player_orien.pitch_by(strength.0 * ROTATION_PER_SECOND),
-                                PITCH_NEGATIVE => player_orien.pitch_by(-strength.0 * ROTATION_PER_SECOND),
-                                ROLL_POSITIVE => player_orien.roll_by(strength.0 * ROTATION_PER_SECOND),
-                                ROLL_NEGATIVE => player_orien.roll_by(-strength.0 * ROTATION_PER_SECOND),
+                                YAW_POSITIVE => camera_orien.yaw_by(strength.0 * ROTATION_PER_SECOND),
+                                YAW_NEGATIVE => camera_orien.yaw_by(-strength.0 * ROTATION_PER_SECOND),
+                                PITCH_POSITIVE => camera_orien.pitch_by(strength.0 * ROTATION_PER_SECOND),
+                                PITCH_NEGATIVE => camera_orien.pitch_by(-strength.0 * ROTATION_PER_SECOND),
+                                ROLL_POSITIVE => camera_orien.roll_by(strength.0 * ROTATION_PER_SECOND),
+                                ROLL_NEGATIVE => camera_orien.roll_by(-strength.0 * ROTATION_PER_SECOND),
                                 _ => continue,
                         }
                 }
@@ -666,73 +599,87 @@ pub enum WindowMode {
         Fullscreen,
 }
 
-struct MatrixStack {
-        stack: Vec<Mat4>,
-}
+fn spawn_entities(mut commands: Commands) {
+        let player = commands
+                .spawn()
+                .insert(Transform::from_translation(Vec3::new(0.0, 0.0, 2.0)))
+                .id();
+        commands.insert_resource(Player(player));
 
-impl MatrixStack {
-        fn new() -> Self {
-                Self { stack: Vec::new() }
-        }
+        let player_head = commands
+                .spawn()
+                .insert(Parent(player))
+                .insert(Transform::from_translation(Vec3::new(0.0, 1.0, 0.0)))
+                .insert(EulerAngles::new(0.0, 0.0, 0.0))
+                .insert(ProjectionCamera::new(90.0f32.to_radians(), 1.0, 0.1, 100.0))
+                .id();
+        commands.insert_resource(ActiveCamera(player_head));
 
-        fn push(&mut self, matrix: Mat4) -> Mat4 {
-                let transformed = match self.stack.last() {
-                        Some(l) => l * matrix,
-                        None => matrix,
-                };
+        let colt = commands
+                .spawn()
+                .insert(Transform::from_translation(Vec3::new(2.5, 0.0, 0.0)))
+                .insert(AngularVelocity(Vec3::y() * 45.0f32.to_radians()))
+                .insert(OrbitalVelocity {
+                        origin: Vec3::new(0.0, 2.5, 0.0),
+                        velocity: (Vec3::x() + Vec3::y()).normalize() * -22.5f32.to_radians(),
+                })
+                .id();
 
-                self.stack.push(transformed);
+        commands.add(CreateModelInstanceFromName {
+                entity: colt,
+                model_name: "colt".to_string(),
+        });
 
-                transformed
-        }
+        let icosphere = commands
+                .spawn()
+                .insert(Transform::from_scale(Vec3::new(4.0, 4.0, 4.0)))
+                .insert(Force(Vec3::new(0.0, 0.0, 0.0)))
+                .insert(Mass(1.0))
+                .insert(Velocity(Vec3::new(0.0, 0.0, 0.0)))
+                .id();
 
-        fn pop(&mut self) {
-                self.stack.pop().expect("Tried to pop matrix of empty MatrixStack!");
-        }
-}
+        commands.add(CreateModelInstanceFromName {
+                entity: icosphere,
+                model_name: "icosphere".to_string(),
+        });
 
-fn update_transforms(
-        query: Query<(&InterpGlobalTransform, &ModelInstance), Changed<InterpGlobalTransform>>,
-        asset_manager: Res<AssetManager>,
-        mut transform_manager: ResMut<TransformManager>,
-) {
-        transform_manager.on_update();
+        let grass_plane = commands
+                .spawn()
+                .insert(Transform::from_translation(Vec3::new(0.0, -1.0, 0.0)))
+                .id();
 
-        let mut matrix_stack = MatrixStack::new();
-        for (transform, model_instance) in query.iter() {
-                matrix_stack.push(transform.0.to_matrix());
-                process_model_instance(
-                        &mut matrix_stack,
-                        &mut transform_manager,
-                        &asset_manager,
-                        model_instance,
-                );
-                matrix_stack.pop();
-        }
-}
+        commands.add(CreateModelInstanceFromName {
+                entity: grass_plane,
+                model_name: "grass-plane".to_string(),
+        });
 
-fn process_model_instance(
-        matrix_stack: &mut MatrixStack,
-        transform_manager: &mut TransformManager,
-        asset_manager: &AssetManager,
-        model_instance: &ModelInstance,
-) {
-        let model = &asset_manager.models()[model_instance.model];
+        let light = commands
+                .spawn()
+                .insert(Transform {
+                        translation: Vec3::new(1.0, 2.0, 0.0),
+                        rotation: UnitQuat::identity(),
+                        scale: Vec3::from_element(0.25),
+                })
+                .insert(LightEmitter {
+                        color: Vec3::new(0.9, 1.0, 0.9),
+                })
+                .insert(OrbitalVelocity {
+                        origin: Vec3::from_element(0.0),
+                        velocity: Vec3::y() * 45.0f32.to_radians(),
+                })
+                .id();
 
-        let transform = matrix_stack.push(model.base_transform);
-        transform_manager.set_transform(model_instance.transform, &transform);
-
-        for child_model_instance in &model_instance.children {
-                process_model_instance(matrix_stack, transform_manager, asset_manager, child_model_instance);
-        }
-
-        matrix_stack.pop();
+        commands.add(CreateModelInstanceFromName {
+                entity: light,
+                model_name: "lit-icosphere".to_string(),
+        });
 }
 
 fn process_actions(
         mut commands: Commands,
         ticktime: Res<Ticktime>,
         player: Res<Player>,
+        camera: Res<ActiveCamera>,
         action_receiver: NonSend<ActionReceiver>,
         mut control_flow: ResMut<ControlFlow>,
         mut window_mode: ResMut<WindowMode>,
@@ -776,17 +723,17 @@ fn process_actions(
         }
 
         if desired_dir.norm_squared() > f32::EPSILON {
-                let mut player_transform = transforms.get_mut(player.0).unwrap();
-
-                let player_hor_orien = UnitQuat::new_normalize(Quat::new(
-                        player_transform.rotation.as_vector().w,
+                let camera_orien = &transforms.get(camera.0).unwrap().rotation;
+                let camera_hor_orien = UnitQuat::new_normalize(Quat::new(
+                        camera_orien.as_vector().w,
                         0.0,
-                        player_transform.rotation.as_vector().y,
+                        camera_orien.as_vector().y,
                         0.0,
                 ));
 
-                let move_vector = player_hor_orien * desired_dir * PLAYER_MOVEMENT_SPEED;
+                let move_vector = camera_hor_orien * desired_dir * PLAYER_MOVEMENT_SPEED;
 
+                let mut player_transform = transforms.get_mut(player.0).unwrap();
                 player_transform.translation += move_vector;
         }
 }
@@ -853,7 +800,7 @@ fn update_global_transform_recursive(
 
         let should_update_global_transform = parent_transform_changed || changed_transform_query.get(entity).is_ok();
         if should_update_global_transform {
-                global_transform.0 = *transform * parent_transform.0;
+                global_transform.0 = parent_transform.0 * *transform;
         }
 
         let global_transform = *global_transform;

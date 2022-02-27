@@ -5,7 +5,6 @@ use ash::{prelude::VkResult, vk};
 use bevy_ecs::prelude::World;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
-use slotmap::Key;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use super::{
@@ -19,8 +18,8 @@ use super::{
 use crate::{
         application::InterpGlobalTransform,
         asset_manager::{AssetManager, MeshId},
-        components::{ActiveCamera, LightEmitter, Player, ProjectionCamera, Transform},
-        model_instance_manager::TransformId,
+        components::{ActiveCamera, LightEmitter, ProjectionCamera, Transform},
+        model_instance_manager::ModelInstance,
         my_glm::*,
         renderer::Renderer,
 };
@@ -173,20 +172,6 @@ impl Renderer for VkRenderer {
                         .process_asset_manager_events(world.get_resource::<AssetManager>().unwrap())?;
                 world.get_resource_mut::<AssetManager>().unwrap().clear_events();
 
-                let transform_manager = world
-                        .get_resource::<crate::model_instance_manager::TransformManager>()
-                        .unwrap();
-                // TODO: wait for fence before updating buffers
-                let object_matrices_padded_size = self.vk_context.pdevice.padded_size_of::<ObjectMatrices>();
-                for (mesh_instance_id, mesh_transform) in transform_manager.iter_transform_updates() {
-                        let buffer_idx = mesh_instance_id.data().as_ffi() as u32 as usize;
-                        let buffer_offset = object_matrices_padded_size * buffer_idx;
-
-                        self.frames_data[self.framei]
-                                .object_matrices_buffer
-                                .write_offsetted(mesh_transform, buffer_offset)?;
-                }
-
                 if !self.should_render() {
                         return Ok(());
                 }
@@ -201,15 +186,13 @@ impl Renderer for VkRenderer {
                 let PhysicalSize { width, height } = self.window.inner_size();
                 let aspect_ratio = width as f32 / height as f32;
 
-                let player = world.get_resource::<Player>().unwrap().0;
                 let camera = world.get_resource::<ActiveCamera>().unwrap().0;
-
                 // TODO: use global transform instead of transform (GlobalTransform = fixed update);
-                let player_orien = &world.get::<Transform>(player).unwrap().rotation;
+                let camera_orien = &world.get::<Transform>(camera).unwrap().rotation;
                 let camera_pos = &world.get::<InterpGlobalTransform>(camera).unwrap().0.translation;
                 let camera_projection = world.get::<ProjectionCamera>(camera).unwrap();
 
-                let inverted_view_mat = Mat4::new_translation(&camera_pos) * player_orien.to_homogeneous();
+                let inverted_view_mat = Mat4::new_translation(&camera_pos) * camera_orien.to_homogeneous();
                 let view_mat = inverted_view_mat
                         .try_inverse()
                         .expect("Couldn't invert camera ViewMatrix!");
@@ -220,6 +203,7 @@ impl Renderer for VkRenderer {
                         view_pos: Vec4::new_position(&camera_pos),
                         view: view_mat,
                         proj: proj_mat,
+                        vp: proj_mat * view_mat,
                 };
 
                 frame_data.world_matrices_buffer.write(&world_matrices)?;
@@ -262,20 +246,24 @@ impl Renderer for VkRenderer {
 
                         let asset_manager = world.remove_resource::<AssetManager>().unwrap();
 
-                        for (minstance,) in world
-                                .query::<(&crate::model_instance_manager::ModelInstance,)>()
+                        for (buffer_transform_idx, (minstance, transform)) in world
+                                .query::<(&ModelInstance, &InterpGlobalTransform)>()
                                 .iter(world)
+                                .enumerate()
                         {
                                 Self::draw_model_instance(
                                         &self.vk_context.pdevice,
                                         &self.vk_context.device,
                                         *frame_data.draw_cmd_buffer,
+                                        &frame_data.object_matrices_buffer,
                                         frame_data.object_dst_set,
                                         *self.graphics_pipeline_layout,
                                         &asset_manager,
                                         &self.vk_asset_manager,
                                         &world_matrices,
                                         minstance,
+                                        &transform.0,
+                                        buffer_transform_idx,
                                 )?;
                         }
 
@@ -501,39 +489,6 @@ impl VkRenderer {
                 unsafe { VkDescriptorSetLayout::new(device, &create_info) }
         }
 
-        fn create_material_dst_set_layout(device: &Rc<VkDevice>) -> VkResult<VkDescriptorSetLayout> {
-                let bindings = [
-                        // Texture
-                        vk::DescriptorSetLayoutBinding {
-                                binding: 0,
-                                descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                                p_immutable_samplers: std::ptr::null(),
-                        },
-                        // Texture Sampler
-                        vk::DescriptorSetLayoutBinding {
-                                binding: 1,
-                                descriptor_type: vk::DescriptorType::SAMPLER,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                                p_immutable_samplers: std::ptr::null(),
-                        },
-                        // Material data
-                        vk::DescriptorSetLayoutBinding {
-                                binding: 2,
-                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                                p_immutable_samplers: std::ptr::null(),
-                        },
-                ];
-
-                let create_info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings);
-
-                unsafe { VkDescriptorSetLayout::new(device, &create_info) }
-        }
-
         fn create_object_dst_set_layout(device: &Rc<VkDevice>) -> VkResult<VkDescriptorSetLayout> {
                 let bindings = [
                         // ObjectMatrices
@@ -745,79 +700,63 @@ impl VkRenderer {
                 pdevice: &VkPhysicalDevice,
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
+                object_matrices_buffer: &VkBuffer,
                 object_dst_set: vk::DescriptorSet,
                 pipeline_layout: vk::PipelineLayout,
                 asset_manager: &AssetManager,
                 vk_asset_manager: &VkAssetManager,
-                matrices: &WorldMatrices,
-                minstance: &crate::model_instance_manager::ModelInstance,
+                world_matrices: &WorldMatrices,
+                minstance: &ModelInstance,
+                minstance_transform: &Transform,
+                buffer_transform_idx: usize,
         ) -> VkResult<()> {
-                // let transform_final = model_instance_transform * model.base_transform;
-
-                // let mats_m_mvp = MatricesMMvp {
-                //         model: transform_final,
-                //         mvp: matrices.proj * matrices.view * transform_final,
-                // };
-
-                // unsafe {
-                //         device.cmd_push_constants(
-                //                 draw_cmd_buffer,
-                //                 pipeline_layout,
-                //                 vk::ShaderStageFlags::VERTEX,
-                //                 0,
-                //                 slice::from_raw_parts(
-                //                         &mats_m_mvp as *const _ as *const u8,
-                //                         std::mem::size_of::<MatricesMMvp>(),
-                //                 ),
-                //         );
-                // }
-
-                // matrices.normal = glm::inverse_transpose(transform_final);
-
                 //let mut last_material = MaterialID::MAX;
 
+                let object_matrices_padded_size = pdevice.padded_size_of::<ObjectMatrices>();
+                let object_matrices_buffer_offset = object_matrices_padded_size * buffer_transform_idx;
+
+                unsafe {
+                        let model = minstance_transform.to_matrix();
+                        let mvp = world_matrices.vp * model;
+                        let normal = glm::inverse_transpose(model);
+
+                        let object_matrices = ObjectMatrices { model, mvp, normal };
+
+                        object_matrices_buffer.write_offsetted(&object_matrices, object_matrices_buffer_offset)?;
+
+                        device.cmd_bind_descriptor_sets(
+                                draw_cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                pipeline_layout,
+                                2,
+                                &[object_dst_set],
+                                &[object_matrices_buffer_offset as u32],
+                        )
+                };
+
                 let model = &asset_manager.models()[minstance.model];
+
                 for &mesh_id in &model.meshes {
                         Self::draw_mesh_instance(
-                                pdevice,
                                 device,
                                 draw_cmd_buffer,
-                                object_dst_set,
                                 pipeline_layout,
                                 asset_manager,
                                 vk_asset_manager,
                                 mesh_id,
-                                minstance.transform,
                         );
-                }
-
-                for child_minstance in &minstance.children {
-                        Self::draw_model_instance(
-                                pdevice,
-                                device,
-                                draw_cmd_buffer,
-                                object_dst_set,
-                                pipeline_layout,
-                                asset_manager,
-                                vk_asset_manager,
-                                matrices,
-                                child_minstance,
-                        )?;
                 }
 
                 Ok(())
         }
 
         fn draw_mesh_instance(
-                pdevice: &VkPhysicalDevice,
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
-                object_dst_set: vk::DescriptorSet,
                 pipeline_layout: vk::PipelineLayout,
                 asset_manager: &AssetManager,
                 vk_asset_manager: &VkAssetManager,
                 mesh_id: MeshId,
-                transform_id: TransformId,
         ) {
                 let mesh = &asset_manager.meshes()[mesh_id];
 
@@ -837,17 +776,13 @@ impl VkRenderer {
                 unsafe {
                         device.cmd_bind_pipeline(draw_cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
-                        let object_matrices_padded_size = pdevice.padded_size_of::<ObjectMatrices>();
-                        let object_matrices_buffer_idx = transform_id.data().as_ffi() as u32 as usize;
-                        let object_matrices_buffer_offset = object_matrices_padded_size * object_matrices_buffer_idx;
-
                         device.cmd_bind_descriptor_sets(
                                 draw_cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
                                 pipeline_layout,
                                 1,
-                                &[material_dst_set, object_dst_set],
-                                &[0, object_matrices_buffer_offset as u32],
+                                &[material_dst_set],
+                                &[0],
                         );
                         device.cmd_bind_vertex_buffers(
                                 draw_cmd_buffer,
@@ -928,13 +863,6 @@ impl VkFrameData {
                         Rc::clone(&vk_context.allocator),
                         object_matrices_buffer_size,
                 )?;
-
-                let object_matrices = ObjectMatrices {
-                        model: Mat4::new_translation(&Vec3::new(2.0, 0.0, 0.0)),
-                        mvp: Mat4::identity(),
-                        normal: Mat4::identity(),
-                };
-                object_matrices_buffer.write(&object_matrices)?;
 
                 let world_matrices_buffer_info = vk::DescriptorBufferInfo {
                         buffer: *world_matrices_buffer,
@@ -1030,6 +958,7 @@ struct WorldMatrices {
         view_pos: Vec4,
         view: Mat4,
         proj: Mat4,
+        vp: Mat4,
 }
 
 #[allow(dead_code)]

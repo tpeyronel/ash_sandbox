@@ -5,6 +5,7 @@ layout (set = 0, binding = 0) uniform WorldMatrices {
         vec4 view_pos;
         mat4 view;
         mat4 proj;
+        mat4 vp;
 } u_world_matrices;
 
 layout (set = 2, binding = 0) uniform ObjectMatrices {
@@ -32,10 +33,10 @@ layout (location = 2) out vec2 o_tex_coord;
 void main() {
         o_frag_pos = vec3(u_object_matrices.model * vec4(i_pos, 1.0));
 
-        // o_normal = mat3(u_object_matrices.normal) * i_normal;
-        o_normal = mat3(transpose(inverse(u_object_matrices.model))) * i_normal;
+        o_normal = mat3(u_object_matrices.normal) * i_normal;
+        // o_normal = mat3(transpose(inverse(u_object_matrices.model))) * i_normal;
 
         o_tex_coord = i_tex_coord;
 
-        gl_Position = u_world_matrices.proj * u_world_matrices.view * u_object_matrices.model * vec4(i_pos, 1.0);
+        gl_Position = u_object_matrices.mvp * vec4(i_pos, 1.0);
 }

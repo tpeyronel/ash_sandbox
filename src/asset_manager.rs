@@ -10,7 +10,7 @@ use log::{debug, error, info, trace, warn};
 use slotmap::SlotMap;
 use thiserror::Error;
 
-use crate::{hashmap::HashMap, my_glm::*};
+use crate::{components::Transform, hashmap::HashMap, my_glm::*};
 
 /*enum ComponentType {
         I8 = 1,
@@ -39,7 +39,7 @@ slotmap::new_key_type! { pub struct ModelId; }
 #[derive(Debug, Clone)]
 pub struct Model {
         pub name: Option<String>,
-        pub base_transform: Mat4,
+        pub base_transform: Transform,
         pub meshes: Vec<MeshId>,
         pub children: Vec<ModelId>,
 }
@@ -276,6 +276,8 @@ pub enum GLTFImportError {
         MeshMissingTangents,
         #[error("mesh missing indices")]
         MeshMissingIndices,
+        #[error("model uses a matrix that is not decomposed")]
+        ModelMatrixNotDecomposed,
         #[error("root model missing")]
         RootModelMissing,
         #[error("scene name missing")]
@@ -447,7 +449,7 @@ impl AssetManager {
                         self.default_material,
                         &mut self.meshes,
                 )?;
-                let model_ids = Self::load_models(&doc, &mesh_groups, &mut self.models);
+                let model_ids = Self::load_models(&doc, &mesh_groups, &mut self.models)?;
                 let root_model_id = Self::load_root_model(&doc, &model_ids, &mut self.models, &mut self.root_models)?;
 
                 Ok(root_model_id)
@@ -772,7 +774,7 @@ impl AssetManager {
                 doc: &gltf::Document,
                 mesh_groups: &Vec<MeshGroup>,
                 out_models: &mut SlotMap<ModelId, Model>,
-        ) -> Vec<ModelId> {
+        ) -> Result<Vec<ModelId>, GLTFImportError> {
                 let mut model_ids = Vec::new();
 
                 for n in doc.nodes() {
@@ -782,36 +784,41 @@ impl AssetManager {
 
                         let children = n.children().map(|n| model_ids[n.index()]).collect();
 
-                        let transform = match n.transform() {
+                        let base_transform = match &n.transform() {
                                 gltf::scene::Transform::Matrix { matrix } => unsafe {
                                         na::Matrix4::from_column_slice(std::slice::from_raw_parts(
-                                                &matrix as *const _ as *const f32,
+                                                matrix as *const _ as *const f32,
                                                 16,
-                                        ))
+                                        ));
+                                        return Err(GLTFImportError::ModelMatrixNotDecomposed);
                                 },
                                 gltf::scene::Transform::Decomposed {
-                                        ref translation,
-                                        ref rotation,
-                                        ref scale,
+                                        translation,
+                                        rotation,
+                                        scale,
                                 } => {
-                                        let t = Mat4::new_translation(&Vec3::from_column_slice(translation));
+                                        let translation = Vec3::from_column_slice(translation);
 
-                                        let r = UnitQuat::new_unchecked(Quat::new(
+                                        let rotation = UnitQuat::new_unchecked(Quat::new(
                                                 rotation[3],
                                                 rotation[0],
                                                 rotation[1],
                                                 rotation[2],
                                         ));
 
-                                        let s = Mat4::new_nonuniform_scaling(&Vec3::from_column_slice(scale));
+                                        let scale = Vec3::from_column_slice(scale);
 
-                                        t * r.to_homogeneous() * s
+                                        Transform {
+                                                translation,
+                                                rotation,
+                                                scale,
+                                        }
                                 },
                         };
 
                         let model_id = out_models.insert(Model {
                                 name: n.name().map(String::from),
-                                base_transform: transform,
+                                base_transform,
                                 meshes,
                                 children,
                         });
@@ -819,7 +826,7 @@ impl AssetManager {
                         model_ids.push(model_id);
                 }
 
-                model_ids
+                Ok(model_ids)
         }
 
         fn load_root_model(
@@ -850,7 +857,7 @@ impl AssetManager {
 
                 let model = Model {
                         name: Some(name.clone()),
-                        base_transform: Mat4::identity(),
+                        base_transform: Transform::identity(),
                         meshes: Vec::new(),
                         children,
                 };
