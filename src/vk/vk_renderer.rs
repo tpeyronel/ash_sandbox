@@ -9,16 +9,17 @@ use winit::{dpi::PhysicalSize, window::Window};
 
 use super::{
         vk_asset_manager::VkAssetManager,
-        vk_buffer::VkBuffer,
+        vk_buffer::{VkBuffer, VkDynamicUniformBuffer},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
-        vk_wrapper::{VkDescriptorSetLayout, VkDevice, VkPhysicalDevice, VkPipelineLayout, VkRenderPass, VkSemaphore},
+        vk_wrapper::{VkDescriptorSetLayout, VkDevice, VkPipelineLayout, VkRenderPass, VkSemaphore},
 };
 use crate::{
         application::InterpGlobalTransform,
         asset_manager::{AssetManager, MeshId},
         components::{ActiveCamera, LightEmitter, ProjectionCamera, Transform},
+        constants::MAX_OBJECT_MATRICES,
         model_instance_manager::ModelInstance,
         my_glm::*,
         renderer::Renderer,
@@ -252,7 +253,6 @@ impl Renderer for VkRenderer {
                                 .enumerate()
                         {
                                 Self::draw_model_instance(
-                                        &self.vk_context.pdevice,
                                         &self.vk_context.device,
                                         *frame_data.draw_cmd_buffer,
                                         &frame_data.object_matrices_buffer,
@@ -697,10 +697,9 @@ impl VkRenderer {
         }
 
         fn draw_model_instance(
-                pdevice: &VkPhysicalDevice,
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
-                object_matrices_buffer: &VkBuffer,
+                object_matrices_buffer: &VkDynamicUniformBuffer<ObjectMatrices>,
                 object_dst_set: vk::DescriptorSet,
                 pipeline_layout: vk::PipelineLayout,
                 asset_manager: &AssetManager,
@@ -712,17 +711,14 @@ impl VkRenderer {
         ) -> VkResult<()> {
                 //let mut last_material = MaterialID::MAX;
 
-                let object_matrices_padded_size = pdevice.padded_size_of::<ObjectMatrices>();
-                let object_matrices_buffer_offset = object_matrices_padded_size * buffer_transform_idx;
-
                 unsafe {
                         let model = minstance_transform.to_matrix();
                         let mvp = world_matrices.vp * model;
                         let normal = glm::inverse_transpose(model);
 
                         let object_matrices = ObjectMatrices { model, mvp, normal };
-
-                        object_matrices_buffer.write_offsetted(&object_matrices, object_matrices_buffer_offset)?;
+                        let object_matrices_offset =
+                                object_matrices_buffer.write(&object_matrices, buffer_transform_idx)?;
 
                         device.cmd_bind_descriptor_sets(
                                 draw_cmd_buffer,
@@ -730,7 +726,7 @@ impl VkRenderer {
                                 pipeline_layout,
                                 2,
                                 &[object_dst_set],
-                                &[object_matrices_buffer_offset as u32],
+                                &[object_matrices_offset as u32],
                         )
                 };
 
@@ -811,7 +807,7 @@ struct VkFrameData {
         world_matrices_buffer: VkBuffer,
         world_light_buffer: VkBuffer,
         material_data_buffer: VkBuffer,
-        object_matrices_buffer: VkBuffer,
+        object_matrices_buffer: VkDynamicUniformBuffer<ObjectMatrices>,
 }
 
 impl VkFrameData {
@@ -855,13 +851,11 @@ impl VkFrameData {
                         material_data_buffer_size,
                 )?;
 
-                const MAX_OBJECT_MATRICES: usize = 16384;
-                let object_matrices_padded_size = vk_context.pdevice.padded_size_of::<ObjectMatrices>();
-                let object_matrices_buffer_size = (object_matrices_padded_size * MAX_OBJECT_MATRICES) as vk::DeviceSize;
-                let object_matrices_buffer = VkBuffer::new_uniform_buffer(
+                let object_matrices_buffer = VkDynamicUniformBuffer::new(
+                        &vk_context.pdevice,
                         &vk_context.device,
                         Rc::clone(&vk_context.allocator),
-                        object_matrices_buffer_size,
+                        MAX_OBJECT_MATRICES,
                 )?;
 
                 let world_matrices_buffer_info = vk::DescriptorBufferInfo {
@@ -895,7 +889,7 @@ impl VkFrameData {
                 let object_matrices_buffer_info = vk::DescriptorBufferInfo {
                         buffer: *object_matrices_buffer,
                         offset: 0,
-                        range: object_matrices_padded_size as vk::DeviceSize,
+                        range: object_matrices_buffer.element_padded_size() as vk::DeviceSize,
                 };
 
                 let object_matrices_dst_write = vk::WriteDescriptorSet::builder()

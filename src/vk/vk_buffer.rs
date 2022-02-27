@@ -1,4 +1,4 @@
-use std::{cell::Cell, ops::Deref, rc::Rc};
+use std::{cell::Cell, marker::PhantomData, ops::Deref, rc::Rc};
 
 use ash::{prelude::VkResult, vk};
 #[allow(unused_imports)]
@@ -8,7 +8,9 @@ use crate::AnyResult;
 
 use super::{
         vk_command_buffer::VkReusableCommandBuffer,
-        vk_wrapper::{impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VmaAllocator},
+        vk_wrapper::{
+                impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkPhysicalDevice, VmaAllocator,
+        },
 };
 
 #[derive(Clone)]
@@ -295,3 +297,60 @@ impl_destroyable_expr!(VkBuffer, vk::Buffer, |s: &VkBuffer| {
                 s.allocator.destroy_buffer(s.handle, s.alloc);
         }
 });
+
+pub struct VkDynamicUniformBuffer<T: 'static> {
+        capacity: usize,
+        buffer: VkBuffer,
+        element_padded_size: usize,
+        _element_type: PhantomData<T>,
+}
+
+impl<T: 'static> VkDynamicUniformBuffer<T> {
+        pub fn new(
+                pdevice: &VkPhysicalDevice,
+                device: &ash::Device,
+                allocator: Rc<VmaAllocator>,
+                capacity: usize,
+        ) -> AnyResult<Self> {
+                let element_padded_size = pdevice.padded_size_of::<T>();
+                let buffer_size = (element_padded_size * capacity) as vk::DeviceSize;
+                let buffer = VkBuffer::new_uniform_buffer(&device, allocator, buffer_size)?;
+
+                Ok(Self {
+                        buffer,
+                        capacity,
+                        element_padded_size,
+                        _element_type: PhantomData,
+                })
+        }
+
+        pub fn element_padded_size(&self) -> usize {
+                self.element_padded_size
+        }
+
+        // Writes data to buffer with the specified index. Returns the element's offset.
+        pub fn write(&self, value: &T, index: usize) -> VkResult<usize> {
+                assert!(
+                        index < self.capacity,
+                        "Write to buffer with capacity {} invalid with index {}",
+                        self.capacity,
+                        index
+                );
+
+                let offset = self.element_padded_size * index;
+                self.buffer.write_offsetted(value, offset)?;
+                Ok(offset)
+        }
+
+        pub unsafe fn destroy(&self) {
+                self.buffer.destroy();
+        }
+}
+
+impl<T: 'static> Deref for VkDynamicUniformBuffer<T> {
+        type Target = vk::Buffer;
+
+        fn deref(&self) -> &Self::Target {
+                &*self.buffer
+        }
+}
