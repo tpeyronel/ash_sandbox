@@ -13,8 +13,8 @@ use crate::{
         asset_manager::*,
         components::{
                 ActiveCamera, AngularVelocity, Children, DirectionalLight, Force, GlobalTransform,
-                ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, LightEmitter, Mass, OrbitalVelocity,
-                Parent, Player, PreviousGlobalTransform, ProjectionCamera, Ticktime, Transform, Velocity,
+                ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, Mass, OrbitalVelocity, Parent, Player,
+                PointLight, PreviousGlobalTransform, ProjectionCamera, Ticktime, Transform, Velocity,
         },
         constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
@@ -161,8 +161,8 @@ impl Application {
                                                 dir_light.color = Vec3::from_column_slice(&dir_light_color);
                                         }
 
-                                        let (mut light_transform, mut light_emitter) = world
-                                                .query::<(&mut Transform, &mut LightEmitter)>()
+                                        let (mut light_transform, mut point_light) = world
+                                                .query::<(&mut Transform, &mut PointLight)>()
                                                 .iter_mut(world)
                                                 .next()
                                                 .unwrap();
@@ -174,9 +174,30 @@ impl Application {
                                                 light_transform.translation = light_translation;
                                         }
 
-                                        let mut light_color: [f32; 3] = light_emitter.color.try_into().unwrap();
+                                        let mut light_color: [f32; 3] = point_light.color.try_into().unwrap();
                                         if imgui::ColorEdit::new("point light color", &mut light_color).build(&ui) {
-                                                light_emitter.color = Vec3::from_column_slice(&light_color);
+                                                point_light.color = Vec3::from_column_slice(&light_color);
+                                        }
+
+                                        let mut point_light_kc = point_light.kc;
+                                        if imgui::Slider::new("point light constant", 0.0, 1.0)
+                                                .build(&ui, &mut point_light_kc)
+                                        {
+                                                point_light.kc = point_light_kc;
+                                        }
+
+                                        let mut point_light_kl = point_light.kl;
+                                        if imgui::Slider::new("point light linear", 0.0, 1.0)
+                                                .build(&ui, &mut point_light_kl)
+                                        {
+                                                point_light.kl = point_light_kl;
+                                        }
+
+                                        let mut point_light_kq = point_light.kq;
+                                        if imgui::Slider::new("point light quadratic", 0.0, 1.0)
+                                                .build(&ui, &mut point_light_kq)
+                                        {
+                                                point_light.kq = point_light_kq;
                                         }
 
                                         let mut asset_manager = world.get_resource_mut::<AssetManager>().unwrap();
@@ -717,8 +738,11 @@ fn spawn_entities(mut commands: Commands) {
                         rotation: UnitQuat::identity(),
                         scale: Vec3::from_element(0.25),
                 })
-                .insert(LightEmitter {
+                .insert(PointLight {
                         color: Vec3::new(0.9, 1.0, 0.9),
+                        kc: 1.0,
+                        kl: 0.0,
+                        kq: 1.0,
                 })
                 .insert(OrbitalVelocity {
                         origin: Vec3::from_element(0.0),

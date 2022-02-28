@@ -18,7 +18,7 @@ use super::{
 use crate::{
         application::InterpGlobalTransform,
         asset_manager::{AssetManager, MeshId},
-        components::{ActiveCamera, DirectionalLight, LightEmitter, ProjectionCamera, Transform},
+        components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Transform},
         constants::MAX_OBJECT_MATRICES,
         model_instance_manager::ModelInstance,
         my_glm::*,
@@ -196,20 +196,21 @@ impl Renderer for VkRenderer {
 
                 frame_data.world_matrices_buffer.write(&world_matrices)?;
 
-                let (light_transform, light_emitter) = world
-                        .query::<(&InterpGlobalTransform, &LightEmitter)>()
+                let (light_transform, point_light) = world
+                        .query::<(&InterpGlobalTransform, &PointLight)>()
                         .iter(&world)
                         .next()
                         .unwrap();
 
-                let world_light = WorldLight {
-                        // pos: Vec4::new_position(&Vec3::new(0.0, 2.0, 0.0)),
-                        // color: Vec4::new_position(&Vec3::new(0.8, 0.8, 0.8)),
+                let world_point_light = WorldPointLight {
                         pos: Vec4::new_position(&light_transform.0.translation),
-                        color: Vec4::new_position(&light_emitter.color),
+                        color: Vec4::new_position(&point_light.color),
+                        kc: point_light.kc,
+                        kl: point_light.kl,
+                        kq: point_light.kq,
                 };
 
-                frame_data.world_light_buffer.write(&world_light)?;
+                frame_data.world_point_light_buffer.write(&world_point_light)?;
 
                 let dir_light = world.query::<&DirectionalLight>().iter(&world).next().unwrap();
 
@@ -781,7 +782,7 @@ struct VkFrameData {
 
         world_matrices_buffer: VkBuffer,
         world_dir_light_buffer: VkBuffer,
-        world_light_buffer: VkBuffer,
+        world_point_light_buffer: VkBuffer,
         material_data_buffer: VkBuffer,
         object_matrices_buffer: VkDynamicUniformBuffer<ObjectMatrices>,
 }
@@ -820,11 +821,11 @@ impl VkFrameData {
                         world_dir_light_buffer_size,
                 )?;
 
-                let world_light_buffer_size = std::mem::size_of::<WorldLight>() as vk::DeviceSize;
-                let world_light_buffer = VkBuffer::new_uniform_buffer(
+                let world_point_light_buffer_size = std::mem::size_of::<WorldPointLight>() as vk::DeviceSize;
+                let world_point_light_buffer = VkBuffer::new_uniform_buffer(
                         &vk_context.device,
                         Rc::clone(&vk_context.allocator),
-                        world_light_buffer_size,
+                        world_point_light_buffer_size,
                 )?;
 
                 let material_data_buffer_size = std::mem::size_of::<MaterialData>() as vk::DeviceSize;
@@ -869,10 +870,10 @@ impl VkFrameData {
                         .buffer_info(std::slice::from_ref(&world_dir_light_buffer_info))
                         .build();
 
-                let world_light_buffer_info = vk::DescriptorBufferInfo {
-                        buffer: *world_light_buffer,
+                let world_point_light_buffer_info = vk::DescriptorBufferInfo {
+                        buffer: *world_point_light_buffer,
                         offset: 0,
-                        range: world_light_buffer_size,
+                        range: world_point_light_buffer_size,
                 };
 
                 let world_light_dst_write = vk::WriteDescriptorSet::builder()
@@ -880,7 +881,7 @@ impl VkFrameData {
                         .dst_set(world_dst_set)
                         .dst_binding(2)
                         .dst_array_element(0)
-                        .buffer_info(std::slice::from_ref(&world_light_buffer_info))
+                        .buffer_info(std::slice::from_ref(&world_point_light_buffer_info))
                         .build();
 
                 let object_matrices_buffer_info = vk::DescriptorBufferInfo {
@@ -913,7 +914,7 @@ impl VkFrameData {
                         object_dst_set,
                         world_matrices_buffer,
                         world_dir_light_buffer,
-                        world_light_buffer,
+                        world_point_light_buffer,
                         material_data_buffer,
                         object_matrices_buffer,
                 })
@@ -927,7 +928,7 @@ impl Drop for VkFrameData {
                         self.img_available_semaphore.destroy();
                         self.object_matrices_buffer.destroy();
                         self.material_data_buffer.destroy();
-                        self.world_light_buffer.destroy();
+                        self.world_point_light_buffer.destroy();
                         self.world_dir_light_buffer.destroy();
                         self.world_matrices_buffer.destroy();
                         self.draw_cmd_buffer.destroy();
@@ -962,15 +963,19 @@ struct WorldDirectionalLight {
 }
 
 #[allow(dead_code)]
-struct WorldLight {
+struct WorldPointLight {
         pos: Vec4,
         color: Vec4,
+        kc: f32,
+        kl: f32,
+        kq: f32,
 }
 
+// TODO: use this
 #[allow(dead_code)]
 struct WorldResources {
         matrices: WorldMatrices,
-        light: WorldLight,
+        light: WorldPointLight,
 }
 
 #[allow(dead_code)]

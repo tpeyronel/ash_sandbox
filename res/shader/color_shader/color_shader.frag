@@ -7,9 +7,12 @@ layout (set = 0, binding = 0) uniform WorldMatrices {
         mat4 proj;
 } u_world_matrices;
 
-layout (set = 0, binding = 2) uniform WorldLight {
+layout (set = 0, binding = 2) uniform WorldPointLight {
         vec4 pos;
         vec4 color;
+        float kc;
+        float kl;
+        float kq;
 } u_light;
 
 layout (set = 1, binding = 0) uniform texture2D u_texture;

@@ -12,9 +12,12 @@ layout (set = 0, binding = 1) uniform WorldDirectionalLight {
         vec4 color;
 } u_dir_light;
 
-layout (set = 0, binding = 2) uniform WorldLight {
+layout (set = 0, binding = 2) uniform WorldPointLight {
         vec4 pos;
         vec4 color;
+        float kc;
+        float kl;
+        float kq;
 } u_light;
 
 layout (set = 1, binding = 0) uniform MaterialData {
@@ -35,18 +38,22 @@ layout (location = 2) in vec2 i_tex_coord;
 
 layout (location = 0) out vec4 o_out_color;
 
-vec3 calculate_diffuse(float diffuse_strength, vec3 normal, vec3 light_dir, vec3 light_color) {
+vec3 calc_diffuse(float diffuse_strength, vec3 normal, vec3 light_dir, vec3 light_color) {
         float diffuse_angle = max(dot(-light_dir, normal), 0.0);
 
         return diffuse_strength * diffuse_angle * light_color;
 }
 
-vec3 calculate_specular(vec3 camera_rdir, float specular_strength, vec3 normal, vec3 light_dir, vec3 light_color, float shininess) {
+vec3 calc_specular(vec3 camera_rdir, float specular_strength, vec3 normal, vec3 light_dir, vec3 light_color, float shininess) {
         vec3 halfway = normalize(camera_rdir - light_dir);
         float specular_angle = max(dot(halfway, normal), 0.0);
         float specular_coefficient = pow(specular_angle, shininess);
 
         return specular_strength * specular_coefficient * light_color;
+}
+
+float calc_attenuation(float kc, float kl, float kq, float distance) {
+        return 1.0 / (kc + kl * distance + kq * distance * distance);
 }
 
 void main() {
@@ -61,17 +68,23 @@ void main() {
 
         vec3 camera_rdir = normalize(u_world_matrices.view_pos.xyz - i_frag_pos);
         vec3 normal = normalize(i_normal);
-        vec3 light_dir = normalize(i_frag_pos - u_light.pos.xyz);
+        vec3 light_pos = u_light.pos.xyz;
+        vec3 light_color = u_light.color.rgb;
+        vec3 light_dir = normalize(i_frag_pos - light_pos);
+        float light_attenuation = calc_attenuation(u_light.kc, u_light.kl, u_light.kq, distance(light_pos, i_frag_pos));
+        vec3 dir_light_color = u_dir_light.color.rgb;
         vec3 dir_light_dir = normalize(u_dir_light.direction.xyz);
 
-        vec3 ambient = ambient_strength * u_dir_light.color.rgb * diffuse_texel;
+        vec3 light_ambient = light_attenuation * ambient_strength * light_color;
+        vec3 dir_light_ambient = ambient_strength * dir_light_color;
+        vec3 ambient = (light_ambient + dir_light_ambient) * diffuse_texel;
 
-        vec3 light_diffuse = calculate_diffuse(diffuse_strength, normal, light_dir, u_light.color.rgb);
-        vec3 dir_light_diffuse = calculate_diffuse(diffuse_strength, normal, dir_light_dir, u_dir_light.color.rgb);
+        vec3 light_diffuse = light_attenuation * calc_diffuse(diffuse_strength, normal, light_dir, light_color);
+        vec3 dir_light_diffuse = calc_diffuse(diffuse_strength, normal, dir_light_dir, dir_light_color);
         vec3 diffuse = (light_diffuse + dir_light_diffuse) * diffuse_texel;
 
-        vec3 light_specular = calculate_specular(camera_rdir, specular_strength, normal, light_dir, u_light.color.rgb, shininess);
-        vec3 dir_light_specular = calculate_specular(camera_rdir, specular_strength, normal, dir_light_dir, u_dir_light.color.rgb, shininess);
+        vec3 light_specular = light_attenuation * calc_specular(camera_rdir, specular_strength, normal, light_dir, light_color, shininess);
+        vec3 dir_light_specular = calc_specular(camera_rdir, specular_strength, normal, dir_light_dir, dir_light_color, shininess);
         vec3 specular = (light_specular + dir_light_specular) * specular_texel;
 
         o_out_color = vec4(ambient + specular + diffuse, 1.0);
