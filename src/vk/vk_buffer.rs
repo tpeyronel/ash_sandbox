@@ -190,12 +190,16 @@ impl VkBuffer {
                 VkBuffer::new(cinfo)
         }
 
-        pub fn new_transfer_src(device: &ash::Device, allocator: Rc<VmaAllocator>, data: &[u8]) -> AnyResult<VkBuffer> {
+        pub fn new_transfer_src(
+                device: &ash::Device,
+                allocator: Rc<VmaAllocator>,
+                buffer_size: vk::DeviceSize,
+        ) -> AnyResult<VkBuffer> {
                 let staging_buffer = {
                         let buffer_cinfo = VkBufferCreateInfo {
                                 device,
                                 allocator,
-                                buffer_size: data.len() as vk::DeviceSize,
+                                buffer_size,
                                 buffer_usage: vk::BufferUsageFlags::TRANSFER_SRC,
                                 mem_usage: vma::MemoryUsage::CpuOnly,
                                 alloc_flags: vma::AllocationCreateFlags::NONE,
@@ -208,9 +212,6 @@ impl VkBuffer {
 
                         VkBuffer::new(buffer_cinfo)?
                 };
-
-                staging_buffer.write_bytes(data)?;
-                staging_buffer.unmap_memory();
 
                 Ok(staging_buffer)
         }

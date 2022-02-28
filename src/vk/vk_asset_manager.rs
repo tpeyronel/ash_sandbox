@@ -25,7 +25,10 @@ use crate::{
 use super::{
         vk_buffer::VkDynamicUniformBuffer,
         vk_renderer::MaterialData,
-        vk_wrapper::{VkDescriptorPool, VkDescriptorSetLayout, VkInstance, VkPipeline, VkShaderModule, VmaAllocator},
+        vk_wrapper::{
+                VkDescriptorPool, VkDescriptorSetLayout, VkInstance, VkPipeline, VkPipelineLayout, VkShaderModule,
+                VmaAllocator,
+        },
 };
 
 pub struct VkModelBufferView {
@@ -68,10 +71,10 @@ pub struct VkAssetManager {
         concurrent_frames: usize,
 
         material_dst_set_layout: VkDescriptorSetLayout,
+        pub graphics_pipeline_layout: VkPipelineLayout,
 
         swapchain_samples: vk::SampleCountFlags,
         render_pass: vk::RenderPass,
-        pipeline_layout: vk::PipelineLayout,
 
         pub buffer_views: SecondaryMap<BufferViewId, VkModelBufferView>,
         pub images: SecondaryMap<ImageId, VkModelImage>,
@@ -92,7 +95,8 @@ impl VkAssetManager {
                 cmd_pool: Rc<VkCommandPool>,
                 swapchain_samples: vk::SampleCountFlags,
                 render_pass: vk::RenderPass,
-                pipeline_layout: vk::PipelineLayout,
+                world_dst_set_layout: vk::DescriptorSetLayout,
+                object_dst_set_layout: vk::DescriptorSetLayout,
                 concurrent_frames: usize,
         ) -> AnyResult<Self> {
                 assert!(concurrent_frames > 0, "Frames in flight must be greater to zero");
@@ -100,6 +104,10 @@ impl VkAssetManager {
                 let dst_pool = Self::create_dst_pool(&device)?;
                 let cmd_buffer = VkReusableCommandBuffer::new(Rc::clone(&device), cmd_pool)?;
                 let material_dst_set_layout = Self::create_material_dst_set_layout(&device)?;
+                let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
+                        &device,
+                        &[world_dst_set_layout, *material_dst_set_layout, object_dst_set_layout],
+                )?;
 
                 // trace!("Creating VkShaderResources...");
                 // let vk_shader_resources = Self::create_vk_shader_resources_from_shader_resources(
@@ -123,7 +131,7 @@ impl VkAssetManager {
 
                         swapchain_samples,
                         render_pass,
-                        pipeline_layout,
+                        graphics_pipeline_layout,
 
                         buffer_views: SecondaryMap::new(),
                         images: SecondaryMap::new(),
@@ -201,6 +209,7 @@ impl VkAssetManager {
                         buffer_view.buffer.destroy();
                 });
 
+                unsafe { self.graphics_pipeline_layout.destroy() };
                 unsafe { self.material_dst_set_layout.destroy() };
                 unsafe { self.cmd_buffer.destroy() };
                 unsafe { self.dst_pool.destroy() };
@@ -235,7 +244,7 @@ impl VkAssetManager {
                         p_immutable_samplers: std::ptr::null(),
                 };
 
-                let tex_binding = vk::DescriptorSetLayoutBinding {
+                let diffuse_binding = vk::DescriptorSetLayoutBinding {
                         binding: 1,
                         descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
                         descriptor_count: 1,
@@ -243,18 +252,43 @@ impl VkAssetManager {
                         p_immutable_samplers: std::ptr::null(),
                 };
 
-                let sampler_binding = vk::DescriptorSetLayoutBinding {
+                let specular_binding = vk::DescriptorSetLayoutBinding {
                         binding: 2,
+                        descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
+                        descriptor_count: 1,
+                        stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                        p_immutable_samplers: std::ptr::null(),
+                };
+
+                let sampler_binding = vk::DescriptorSetLayoutBinding {
+                        binding: 3,
                         descriptor_type: vk::DescriptorType::SAMPLER,
                         descriptor_count: 1,
                         stage_flags: vk::ShaderStageFlags::FRAGMENT,
                         p_immutable_samplers: std::ptr::null(),
                 };
 
-                let mat_bindings = [mat_data_binding, tex_binding, sampler_binding];
+                let mat_bindings = [mat_data_binding, diffuse_binding, specular_binding, sampler_binding];
                 let mat_set_layout_cinfo = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&mat_bindings);
 
                 Ok(unsafe { VkDescriptorSetLayout::new(device, &mat_set_layout_cinfo)? })
+        }
+
+        fn create_graphics_pipeline_layout(
+                device: &Rc<VkDevice>,
+                dst_set_layouts: &[vk::DescriptorSetLayout],
+        ) -> VkResult<VkPipelineLayout> {
+                // let push_constant_range = vk::PushConstantRange {
+                //         stage_flags: vk::ShaderStageFlags::VERTEX,
+                //         offset: 0,
+                //         size: std::mem::size_of::<MatricesMMvp>() as u32,
+                // };
+
+                let layout_cinfo = vk::PipelineLayoutCreateInfo::builder()
+                        // .push_constant_ranges(std::slice::from_ref(&push_constant_range))
+                        .set_layouts(dst_set_layouts);
+
+                unsafe { VkPipelineLayout::new(device, &layout_cinfo) }
         }
 
         fn on_buffer_view_updated(
@@ -375,7 +409,7 @@ impl VkAssetManager {
                         &self.device,
                         self.swapchain_samples,
                         self.render_pass,
-                        self.pipeline_layout,
+                        *self.graphics_pipeline_layout,
                         &vk_shader,
                 )?;
 
@@ -494,7 +528,7 @@ impl VkAssetManager {
                 let vk_image_view_cinfo = vk::ImageViewCreateInfo {
                         image: *vk_image,
                         view_type: vk::ImageViewType::TYPE_2D,
-                        format: vk_image_cinfo.format,
+                        format: vk::Format::R8G8B8A8_SRGB, // vk_image_cinfo.format,
                         components: Default::default(),
                         subresource_range: vk::ImageSubresourceRange {
                                 aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -602,43 +636,55 @@ impl VkAssetManager {
                 material: &Material,
                 material_dst_set: vk::DescriptorSet,
         ) {
-                let base_color_texture = match material.base_color_texture {
-                        Some(t) => t,
-                        None => return,
-                };
+                let base_color_texture = &asset_manager.textures()[material.base_color_texture];
+                let metallic_roughness_texture = &asset_manager.textures()[material.metallic_roughness_texture];
+                let diffuse_vk_image_view = &self.images[base_color_texture.image].image_view;
+                let specular_vk_image_view = &self.images[metallic_roughness_texture.image].image_view;
+                let color_vk_sampler = &self.samplers[base_color_texture.sampler];
 
-                let color_texture = &asset_manager.textures()[base_color_texture];
-                let color_vk_image_view = &self.images[color_texture.image].image_view;
-                let color_vk_sampler = &self.samplers[color_texture.sampler];
-
-                let image_info = vk::DescriptorImageInfo {
-                        image_view: **color_vk_image_view,
+                let diffuse_image_info = vk::DescriptorImageInfo {
+                        image_view: **diffuse_vk_image_view,
                         image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                         ..Default::default()
                 };
-                let image_dst_set_write = vk::WriteDescriptorSet::builder()
+                let diffuse_image_write = vk::WriteDescriptorSet::builder()
                         .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                         .dst_set(material_dst_set)
                         .dst_binding(1)
                         .dst_array_element(0)
-                        .image_info(image_info.ref_into_slice())
+                        .image_info(diffuse_image_info.ref_into_slice())
+                        .build();
+
+                let specular_image_info = vk::DescriptorImageInfo {
+                        image_view: **specular_vk_image_view,
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        ..Default::default()
+                };
+                let specular_image_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .dst_set(material_dst_set)
+                        .dst_binding(2)
+                        .dst_array_element(0)
+                        .image_info(specular_image_info.ref_into_slice())
                         .build();
 
                 let sampler_info = vk::DescriptorImageInfo {
                         sampler: **color_vk_sampler,
                         ..Default::default()
                 };
-                let sampler_dst_set_write = vk::WriteDescriptorSet::builder()
+                let sampler_write = vk::WriteDescriptorSet::builder()
                         .descriptor_type(vk::DescriptorType::SAMPLER)
                         .dst_set(material_dst_set)
-                        .dst_binding(2)
+                        .dst_binding(3)
                         .dst_array_element(0)
                         .image_info(sampler_info.ref_into_slice())
                         .build();
 
                 unsafe {
-                        self.device
-                                .update_descriptor_sets(&[image_dst_set_write, sampler_dst_set_write], &[])
+                        self.device.update_descriptor_sets(
+                                &[diffuse_image_write, specular_image_write, sampler_write],
+                                &[],
+                        )
                 };
         }
 

@@ -127,11 +127,34 @@ impl VkImage {
                         MipLevels::N(n) => n,
                 };
 
-                let staging_buffer = VkBuffer::new_transfer_src(device, Rc::clone(&allocator), &cinfo.data)?;
+                let buffer_size = (cinfo.width * cinfo.height * 4) as vk::DeviceSize;
+                let staging_buffer = VkBuffer::new_transfer_src(device, Rc::clone(&allocator), buffer_size)?;
 
+                match cinfo.format {
+                        vk::Format::R8G8B8A8_SRGB => {
+                                staging_buffer.write_bytes(cinfo.data)?;
+                        },
+                        vk::Format::R8G8B8_SRGB => {
+                                assert_eq!(cinfo.data.len() % 3, 0);
+
+                                for (i, rgb) in cinfo.data.chunks(3).enumerate() {
+                                        staging_buffer
+                                                .write_bytes_offsetted(&[rgb[0], rgb[1], rgb[2], u8::MAX], i * 4)?;
+                                }
+                        },
+                        vk::Format::R8_SRGB => {
+                                for (i, &r) in cinfo.data.iter().enumerate() {
+                                        staging_buffer.write_bytes_offsetted(&[r, r, r, u8::MAX], i * 4)?;
+                                }
+                        },
+                        _ => panic!("Unsupported vk::Format! {:?}", cinfo.format),
+                }
+                staging_buffer.unmap_memory();
+
+                let format = vk::Format::R8G8B8A8_SRGB;
                 let vk_img_cinfo = VkImageCreateInfo {
                         image_type: vk::ImageType::TYPE_2D,
-                        format: cinfo.format,
+                        format,
                         extent: vk::Extent3D {
                                 width: cinfo.width,
                                 height: cinfo.height,

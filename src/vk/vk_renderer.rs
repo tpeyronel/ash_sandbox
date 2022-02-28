@@ -13,7 +13,7 @@ use super::{
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
-        vk_wrapper::{VkDescriptorSetLayout, VkDevice, VkPipelineLayout, VkRenderPass, VkSemaphore},
+        vk_wrapper::{VkDescriptorSetLayout, VkDevice, VkRenderPass, VkSemaphore},
 };
 use crate::{
         application::InterpGlobalTransform,
@@ -47,10 +47,7 @@ pub struct VkRenderer {
         frames_data: Vec<VkFrameData>,
 
         world_dst_set_layout: VkDescriptorSetLayout,
-        material_dst_set_layout: VkDescriptorSetLayout,
         object_dst_set_layout: VkDescriptorSetLayout,
-
-        graphics_pipeline_layout: VkPipelineLayout,
 
         imgui_renderer: Option<imgui_rs_vulkan_renderer::Renderer>,
 
@@ -97,15 +94,6 @@ impl VkRenderer {
                         .map(|_| VkFrameData::new(&vk_context, *world_dst_set_layout, *object_dst_set_layout))
                         .collect::<AnyResult<Vec<VkFrameData>>>()?;
 
-                let material_dst_set_layout = Self::create_descriptor_set_layouts(&vk_context.device)?;
-                trace!("Created VkDescriptorSets");
-
-                let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
-                        &vk_context.device,
-                        &[*world_dst_set_layout, *material_dst_set_layout, *object_dst_set_layout],
-                )?;
-                trace!("Created VkGraphicsPipelineLayout");
-
                 let vk_asset_manager = VkAssetManager::new(
                         Rc::clone(&vk_context.instance),
                         Rc::clone(&vk_context.pdevice),
@@ -115,7 +103,8 @@ impl VkRenderer {
                         Rc::clone(&vk_context.cmd_pool),
                         swapchain.samples,
                         *render_pass,
-                        *graphics_pipeline_layout,
+                        *world_dst_set_layout,
+                        *object_dst_set_layout,
                         swapchain.img_count as usize,
                 )?;
                 trace!("Created VkAssetManager");
@@ -154,10 +143,8 @@ impl VkRenderer {
                         frames_data,
 
                         world_dst_set_layout,
-                        material_dst_set_layout,
                         object_dst_set_layout,
 
-                        graphics_pipeline_layout,
                         imgui_renderer,
 
                         creation_instant: Instant::now(),
@@ -236,10 +223,11 @@ impl Renderer for VkRenderer {
                                 slice::from_ref(&self.swapchain.scissor),
                         );
 
+                        let graphics_pipeline_layout = *self.vk_asset_manager.graphics_pipeline_layout;
                         self.vk_context.device.cmd_bind_descriptor_sets(
                                 *frame_data.draw_cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
-                                *self.graphics_pipeline_layout,
+                                graphics_pipeline_layout,
                                 0,
                                 &[frame_data.world_dst_set],
                                 &[],
@@ -257,7 +245,7 @@ impl Renderer for VkRenderer {
                                         *frame_data.draw_cmd_buffer,
                                         &frame_data.object_matrices_buffer,
                                         frame_data.object_dst_set,
-                                        *self.graphics_pipeline_layout,
+                                        graphics_pipeline_layout,
                                         &asset_manager,
                                         &self.vk_asset_manager,
                                         self.framei,
@@ -290,10 +278,8 @@ impl Renderer for VkRenderer {
                 unsafe {
                         let _ = self.vk_context.device.device_wait_idle();
                         drop(self.imgui_renderer.take().unwrap());
-                        self.graphics_pipeline_layout.destroy();
                         self.frames_data.clear();
                         self.object_dst_set_layout.destroy();
-                        self.material_dst_set_layout.destroy();
                         self.world_dst_set_layout.destroy();
                         self.setup_cmd_buffer.destroy();
                         self.render_pass.destroy();
@@ -505,58 +491,6 @@ impl VkRenderer {
                 let create_info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings);
 
                 unsafe { VkDescriptorSetLayout::new(device, &create_info) }
-        }
-
-        fn create_descriptor_set_layouts(device: &Rc<VkDevice>) -> VkResult<VkDescriptorSetLayout> {
-                let material_dst_set_layout = {
-                        let mat_data_binding = vk::DescriptorSetLayoutBinding {
-                                binding: 0,
-                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                                p_immutable_samplers: std::ptr::null(),
-                        };
-
-                        let tex_binding = vk::DescriptorSetLayoutBinding {
-                                binding: 1,
-                                descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                                p_immutable_samplers: std::ptr::null(),
-                        };
-
-                        let sampler_binding = vk::DescriptorSetLayoutBinding {
-                                binding: 2,
-                                descriptor_type: vk::DescriptorType::SAMPLER,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                                p_immutable_samplers: std::ptr::null(),
-                        };
-
-                        let mat_bindings = [mat_data_binding, tex_binding, sampler_binding];
-                        let mat_set_layout_cinfo = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&mat_bindings);
-
-                        unsafe { VkDescriptorSetLayout::new(device, &mat_set_layout_cinfo)? }
-                };
-
-                Ok(material_dst_set_layout)
-        }
-
-        fn create_graphics_pipeline_layout(
-                device: &Rc<VkDevice>,
-                dst_set_layouts: &[vk::DescriptorSetLayout],
-        ) -> VkResult<VkPipelineLayout> {
-                let push_constant_range = vk::PushConstantRange {
-                        stage_flags: vk::ShaderStageFlags::VERTEX,
-                        offset: 0,
-                        size: std::mem::size_of::<MatricesMMvp>() as u32,
-                };
-
-                let layout_cinfo = vk::PipelineLayoutCreateInfo::builder()
-                        .push_constant_ranges(std::slice::from_ref(&push_constant_range))
-                        .set_layouts(dst_set_layouts);
-
-                unsafe { VkPipelineLayout::new(device, &layout_cinfo) }
         }
 
         fn should_render(&self) -> bool {

@@ -5,6 +5,7 @@ use std::{
         sync::Arc,
 };
 
+use gltf::image::Format;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use slotmap::SlotMap;
@@ -15,6 +16,7 @@ use crate::{
         constants::{DEFAULT_AMBIENT_STRENGTH, DEFAULT_DIFFUSE_STRENGTH, DEFAULT_SHININESS, DEFAULT_SPECULAR_STRENGTH},
         hashmap::HashMap,
         my_glm::*,
+        AnyResult,
 };
 
 /*enum ComponentType {
@@ -105,8 +107,8 @@ pub struct Material {
         pub specular_strength: f32,
         pub diffuse_strength: f32,
 
-        pub base_color_texture: Option<TextureId>,
-        pub metallic_roughness_texture: Option<TextureId>,
+        pub base_color_texture: TextureId,
+        pub metallic_roughness_texture: TextureId,
         pub normal_texture: Option<TextureId>,
         pub occlusion_texture: Option<TextureId>,
         pub emissive_texture: Option<TextureId>,
@@ -177,6 +179,25 @@ pub struct Shader {
         pub frag_module: Arc<ShaderModule>,
         pub resources: Vec<ShaderResourceId>,
         pub vertex_inputs: Vec<String>,
+}
+
+impl Shader {
+        pub fn from_yaml(path: &Path) -> Result<Self, ShaderLoadError> {
+                let yaml = std::fs::read_to_string(path)?;
+                let declaration: ShaderDeclaration = serde_yaml::from_str(&yaml)?;
+
+                let directory = path
+                        .parent()
+                        .ok_or_else(|| ShaderLoadError::InvalidPath(format!("Path {:?} does not have parent", path)))?;
+
+                Ok(Self {
+                        name: declaration.name.clone(),
+                        vert_module: Arc::new(ShaderModule::from_glsl_file(directory.join(&declaration.vert_shader))?),
+                        frag_module: Arc::new(ShaderModule::from_glsl_file(directory.join(&declaration.frag_shader))?),
+                        resources: declaration.uniforms,
+                        vertex_inputs: declaration.vertex_inputs,
+                })
+        }
 }
 
 #[derive(Debug)]
@@ -351,32 +372,102 @@ pub struct AssetManager {
 }
 
 impl AssetManager {
-        pub fn new(default_sampler: Sampler, default_material: Material) -> Self {
+        pub fn new() -> AnyResult<Self> {
+                let mut events = Vec::new();
+                let mut buffers = SlotMap::with_key();
+                let buffer_views = SlotMap::with_key();
+                let mut images = SlotMap::with_key();
                 let mut samplers = SlotMap::with_key();
-                let default_sampler = samplers.insert(default_sampler);
-
+                let mut textures = SlotMap::with_key();
                 let mut materials = SlotMap::with_key();
-                let default_material = materials.insert(default_material);
+                let meshes = SlotMap::with_key();
+                let models = SlotMap::with_key();
+                let mut shaders = SlotMap::with_key();
 
-                Self {
-                        events: Vec::new(),
-                        buffers: SlotMap::with_key(),
-                        buffer_views: SlotMap::with_key(),
-                        images: SlotMap::with_key(),
+                let default_sampler = samplers.insert(Sampler {
+                        name: Some("default-sampler".into()),
+                        mag_filter: MagFilter::Linear,
+                        min_filter: MinFilter::LinearMipmapLinear,
+                        wrap_s: WrappingMode::Repeat,
+                        wrap_t: WrappingMode::Repeat,
+                });
+                events.push(AssetManagerEvent::SamplerUpdated(default_sampler));
+
+                let default_diffuse_image_buffer = buffers.insert(Buffer::new(vec![u8::MAX; 4]));
+
+                let default_diffuse_image = images.insert(Image {
+                        pixels: default_diffuse_image_buffer,
+                        width: 1,
+                        height: 1,
+                        format: Format::R8G8B8A8,
+                });
+                events.push(AssetManagerEvent::ImageUpdated(default_diffuse_image));
+
+                let default_diffuse_texture = textures.insert(Texture {
+                        name: Some("default-diffuse-texture".into()),
+                        image: default_diffuse_image,
+                        sampler: default_sampler,
+                });
+
+                let default_specular_image_buffer = buffers.insert(Buffer::new(vec![u8::MAX; 4]));
+
+                let default_specular_image = images.insert(Image {
+                        pixels: default_specular_image_buffer,
+                        width: 1,
+                        height: 1,
+                        format: Format::R8G8B8A8,
+                });
+                events.push(AssetManagerEvent::ImageUpdated(default_specular_image));
+
+                let default_specular_texture = textures.insert(Texture {
+                        name: Some("default-specular-texture".into()),
+                        image: default_specular_image,
+                        sampler: default_sampler,
+                });
+
+                let default_shader = shaders.insert(Shader::from_yaml(Path::new(
+                        "res/shader/basic_shader/basic_shader.yaml",
+                ))?);
+                events.push(AssetManagerEvent::ShaderUpdated(default_shader));
+
+                let default_material = materials.insert(Material {
+                        name: Some("default-material".into()),
+                        shader: default_shader,
+                        base_color_factor: Vec4::from_element(1.0),
+                        metallic_factor: 1.0,
+                        roughness_factor: 1.0,
+                        shininess: DEFAULT_SHININESS,
+                        ambient_strength: DEFAULT_AMBIENT_STRENGTH,
+                        specular_strength: DEFAULT_SPECULAR_STRENGTH,
+                        diffuse_strength: DEFAULT_DIFFUSE_STRENGTH,
+                        base_color_texture: default_diffuse_texture,
+                        metallic_roughness_texture: default_specular_texture,
+                        normal_texture: None,
+                        occlusion_texture: None,
+                        emissive_texture: None,
+                        emissive_factor: Vec3::from_element(0.0),
+                });
+                events.push(AssetManagerEvent::MaterialUpdated(default_material));
+
+                Ok(Self {
+                        events,
+                        buffers,
+                        buffer_views,
+                        images,
                         samplers,
-                        textures: SlotMap::with_key(),
-                        materials: SlotMap::with_key(),
-                        meshes: SlotMap::with_key(),
-                        models: SlotMap::with_key(),
+                        textures,
+                        materials,
+                        meshes,
+                        models,
                         root_models: HashMap::new(),
 
                         shader_resources: HashMap::new(),
-                        shaders: SlotMap::with_key(),
+                        shaders,
                         shader_names: HashMap::new(),
 
                         default_sampler,
                         default_material,
-                }
+                })
         }
 
         pub fn events(&self) -> &Vec<AssetManagerEvent> {
@@ -396,29 +487,17 @@ impl AssetManager {
         }
 
         pub fn load_shader_from_yaml(&mut self, path: &Path) -> Result<ShaderId, ShaderLoadError> {
-                let yaml = std::fs::read_to_string(path)?;
-                let declaration: ShaderDeclaration = serde_yaml::from_str(&yaml)?;
-
-                if self.shader_names.contains_key(&declaration.name) {
-                        return Err(ShaderLoadError::ShaderNameAlreadyRegistered(declaration.name));
+                let shader = Shader::from_yaml(path)?;
+                if self.shader_names.contains_key(&shader.name) {
+                        return Err(ShaderLoadError::ShaderNameAlreadyRegistered(shader.name));
                 }
 
-                let directory = path
-                        .parent()
-                        .ok_or_else(|| ShaderLoadError::InvalidPath(format!("Path {:?} does not have parent", path)))?;
-
-                let shader = Shader {
-                        name: declaration.name.clone(),
-                        vert_module: Arc::new(ShaderModule::from_glsl_file(directory.join(&declaration.vert_shader))?),
-                        frag_module: Arc::new(ShaderModule::from_glsl_file(directory.join(&declaration.frag_shader))?),
-                        resources: declaration.uniforms,
-                        vertex_inputs: declaration.vertex_inputs,
-                };
-
-                debug!("Loaded shader with name: {}", declaration.name);
-
+                let shader_name = shader.name.clone();
                 let shader_id = self.shaders.insert(shader);
-                self.shader_names.insert(declaration.name, shader_id);
+
+                debug!("Loaded shader with name: {}", shader_name);
+
+                self.shader_names.insert(shader_name, shader_id);
 
                 self.events.push(AssetManagerEvent::ShaderUpdated(shader_id));
 
@@ -428,7 +507,7 @@ impl AssetManager {
         pub fn import_gltf_file(&mut self, gltf_path: &Path) -> Result<ModelId, GLTFImportError> {
                 scoped_timer!("Loaded model in ", Millis);
 
-                let (doc, buffers, images) = gltf::import(gltf_path).map_err(|e| GLTFImportError::GLTFCrateError(e))?;
+                let (doc, buffers, images) = gltf::import(gltf_path)?;
 
                 let buffers = Self::load_buffers(buffers, &mut self.buffers);
                 let buffer_view_ids =
@@ -450,6 +529,7 @@ impl AssetManager {
                         &texture_ids,
                         &mut self.events,
                         &mut self.materials,
+                        self.default_material,
                 );
                 let mesh_groups = Self::load_meshes(
                         &doc,
@@ -639,6 +719,8 @@ impl AssetManager {
                 type Format = gltf::image::Format;
 
                 match format {
+                        Format::R8 => true,
+                        Format::R8G8B8 => true,
                         Format::R8G8B8A8 => true,
                         _ => false,
                 }
@@ -693,20 +775,26 @@ impl AssetManager {
                 texture_ids: &Vec<TextureId>,
                 out_events: &mut Vec<AssetManagerEvent>,
                 out_materials: &mut SlotMap<MaterialId, Material>,
+                default_material: MaterialId,
         ) -> Vec<MaterialId> {
                 doc.materials()
                         .map(|m| {
+                                let default_material = &out_materials[default_material];
+
                                 // TODO: handle textures better
                                 let pbr_mr = m.pbr_metallic_roughness();
 
                                 let base_color_factor = pbr_mr.base_color_factor().into();
                                 let metallic_factor = pbr_mr.metallic_factor();
                                 let roughness_factor = pbr_mr.roughness_factor();
-                                let base_color_texture =
-                                        pbr_mr.base_color_texture().map(|t| texture_ids[t.texture().index()]);
+                                let base_color_texture = pbr_mr
+                                        .base_color_texture()
+                                        .map(|t| texture_ids[t.texture().index()])
+                                        .unwrap_or(default_material.base_color_texture);
                                 let metallic_roughness_texture = pbr_mr
                                         .metallic_roughness_texture()
-                                        .map(|t| texture_ids[t.texture().index()]);
+                                        .map(|t| texture_ids[t.texture().index()])
+                                        .unwrap_or(default_material.metallic_roughness_texture);
                                 let normal_texture = m.normal_texture().map(|t| texture_ids[t.texture().index()]);
                                 let occlusion_texture = m.occlusion_texture().map(|t| texture_ids[t.texture().index()]);
                                 let emissive_texture = m.emissive_texture().map(|t| texture_ids[t.texture().index()]);

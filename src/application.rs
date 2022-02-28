@@ -327,34 +327,7 @@ impl Application {
         }
 
         fn init_asset_manager() -> AnyResult<AssetManager> {
-                let dsampler = Sampler {
-                        name: Some(String::from("Default Sampler")),
-                        mag_filter: MagFilter::Linear,
-                        min_filter: MinFilter::LinearMipmapLinear,
-                        wrap_s: WrappingMode::Repeat,
-                        wrap_t: WrappingMode::Repeat,
-                };
-
-                // TODO: improve default shader.
-                let dmaterial = Material {
-                        name: Some(String::from("Default Material")),
-                        shader: ShaderId::from(slotmap::KeyData::default()),
-                        base_color_factor: Vec4::new(0.8, 0.8, 0.8, 1.0),
-                        metallic_factor: 0.0,
-                        roughness_factor: 1.0,
-                        shininess: DEFAULT_SHININESS,
-                        ambient_strength: DEFAULT_AMBIENT_STRENGTH,
-                        specular_strength: DEFAULT_SPECULAR_STRENGTH,
-                        diffuse_strength: DEFAULT_DIFFUSE_STRENGTH,
-                        base_color_texture: None,
-                        metallic_roughness_texture: None,
-                        normal_texture: None,
-                        occlusion_texture: None,
-                        emissive_texture: None,
-                        emissive_factor: Vec3::from_element(0.0),
-                };
-
-                let mut asset_manager = AssetManager::new(dsampler, dmaterial);
+                let mut asset_manager = AssetManager::new()?;
 
                 // asset_manager.register_shader_resource(
                 //         "matrices".to_string(),
@@ -401,6 +374,8 @@ impl Application {
                         asset_manager.import_gltf_file(Path::new("res/model/icosphere/icosphere.gltf"))?;
                 let _model_lit_icosphere = asset_manager
                         .import_gltf_file(std::path::Path::new("res/model/lit-icosphere/lit-icosphere.gltf"))?;
+                let _model_backpack =
+                        asset_manager.import_gltf_file(std::path::Path::new("res/model/backpack/backpack.gltf"))?;
 
                 trace!("Initialized AssetManager");
                 Ok(asset_manager)
@@ -671,6 +646,25 @@ fn spawn_entities(mut commands: Commands) {
         commands.add(CreateModelInstanceFromName {
                 entity: icosphere,
                 model_name: "icosphere".to_string(),
+        });
+
+        let backpack = commands
+                .spawn()
+                .insert(Transform {
+                        translation: Vec3::new(2.0, 0.0, 0.0),
+                        scale: Vec3::from_element(5.0),
+                        ..Transform::identity()
+                })
+                .insert(AngularVelocity(Vec3::y() * 22.5f32.to_radians()))
+                .insert(OrbitalVelocity {
+                        origin: Vec3::new(0.0, 0.0, 0.0),
+                        velocity: Vec3::y() * -22.5f32.to_radians(),
+                })
+                .id();
+
+        commands.add(CreateModelInstanceFromName {
+                entity: backpack,
+                model_name: "backpack".to_string(),
         });
 
         let grass_plane = commands

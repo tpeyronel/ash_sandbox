@@ -19,8 +19,9 @@ layout (set = 1, binding = 0) uniform MaterialData {
         vec2 shininess_and_ambient_strength;
         vec2 specular_strength_and_diffuse_strength;
 } u_material;
-layout (set = 1, binding = 1) uniform texture2D u_texture;
-layout (set = 1, binding = 2) uniform sampler u_sampler;
+layout (set = 1, binding = 1) uniform texture2D u_diffuse_map;
+layout (set = 1, binding = 2) uniform texture2D u_specular_map;
+layout (set = 1, binding = 3) uniform sampler u_sampler;
 
 
 layout (location = 0) in vec3 i_frag_pos;
@@ -36,24 +37,24 @@ void main() {
         float specular_strength = u_material.specular_strength_and_diffuse_strength.x;
         float diffuse_strength = u_material.specular_strength_and_diffuse_strength.y;
 
-        vec4 ambient = ambient_strength * u_light.color;
+        vec4 diffuse_texel = texture(sampler2D(u_diffuse_map, u_sampler), i_tex_coord);
+        vec4 specular_texel = texture(sampler2D(u_specular_map, u_sampler), i_tex_coord);
+
+        vec4 ambient = ambient_strength * u_light.color * diffuse_texel;
 
         vec3 normal = normalize(i_normal);
         vec3 light_dir = normalize(i_frag_pos - u_light.pos.xyz);
 
         float diffuse_angle = max(dot(-light_dir, normal), 0.0);
-        vec4 diffuse = diffuse_strength * diffuse_angle * u_light.color;
+        vec4 diffuse = diffuse_strength * diffuse_angle * u_light.color * diffuse_texel;
 
         vec3 camera_rdir = normalize(u_world_matrices.view_pos.xyz - i_frag_pos);
         vec3 halfway = normalize(camera_rdir - light_dir);
         float specular_angle = max(dot(halfway, normal), 0.0);
         float specular_coefficient = pow(specular_angle, shininess);
-        vec4 specular = (specular_strength * specular_coefficient) * u_light.color;
+        vec4 specular = (specular_strength * specular_coefficient) * u_light.color * specular_texel;
 
-        vec4 texture = texture(sampler2D(u_texture, u_sampler), i_tex_coord);
-
-        vec4 light_amount = ambient + specular + diffuse;
-        o_out_color = light_amount * texture;
+        o_out_color = ambient + specular + diffuse;
 
 
 
