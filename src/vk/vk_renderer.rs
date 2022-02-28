@@ -18,7 +18,7 @@ use super::{
 use crate::{
         application::InterpGlobalTransform,
         asset_manager::{AssetManager, MeshId},
-        components::{ActiveCamera, LightEmitter, ProjectionCamera, Transform},
+        components::{ActiveCamera, DirectionalLight, LightEmitter, ProjectionCamera, Transform},
         constants::MAX_OBJECT_MATRICES,
         model_instance_manager::ModelInstance,
         my_glm::*,
@@ -210,6 +210,15 @@ impl Renderer for VkRenderer {
                 };
 
                 frame_data.world_light_buffer.write(&world_light)?;
+
+                let dir_light = world.query::<&DirectionalLight>().iter(&world).next().unwrap();
+
+                let world_dir_light = WorldDirectionalLight {
+                        direction: Vec4::new_direction(&dir_light.direction),
+                        color: Vec4::new_position(&dir_light.color),
+                };
+
+                frame_data.world_dir_light_buffer.write(&world_dir_light)?;
 
                 unsafe {
                         self.vk_context.device.cmd_set_viewport(
@@ -461,9 +470,17 @@ impl VkRenderer {
                                 stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                                 p_immutable_samplers: std::ptr::null(),
                         },
-                        // WorldLight
+                        // WorldDirectionalLight
                         vk::DescriptorSetLayoutBinding {
                                 binding: 1,
+                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                                descriptor_count: 1,
+                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                                p_immutable_samplers: std::ptr::null(),
+                        },
+                        // WorldLight
+                        vk::DescriptorSetLayoutBinding {
+                                binding: 2,
                                 descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
                                 descriptor_count: 1,
                                 stage_flags: vk::ShaderStageFlags::FRAGMENT,
@@ -763,6 +780,7 @@ struct VkFrameData {
         object_dst_set: vk::DescriptorSet,
 
         world_matrices_buffer: VkBuffer,
+        world_dir_light_buffer: VkBuffer,
         world_light_buffer: VkBuffer,
         material_data_buffer: VkBuffer,
         object_matrices_buffer: VkDynamicUniformBuffer<ObjectMatrices>,
@@ -793,6 +811,13 @@ impl VkFrameData {
                         &vk_context.device,
                         Rc::clone(&vk_context.allocator),
                         std::mem::size_of::<WorldMatrices>() as vk::DeviceSize,
+                )?;
+
+                let world_dir_light_buffer_size = std::mem::size_of::<WorldDirectionalLight>() as vk::DeviceSize;
+                let world_dir_light_buffer = VkBuffer::new_uniform_buffer(
+                        &vk_context.device,
+                        Rc::clone(&vk_context.allocator),
+                        world_dir_light_buffer_size,
                 )?;
 
                 let world_light_buffer_size = std::mem::size_of::<WorldLight>() as vk::DeviceSize;
@@ -830,6 +855,20 @@ impl VkFrameData {
                         .buffer_info(std::slice::from_ref(&world_matrices_buffer_info))
                         .build();
 
+                let world_dir_light_buffer_info = vk::DescriptorBufferInfo {
+                        buffer: *world_dir_light_buffer,
+                        offset: 0,
+                        range: world_dir_light_buffer_size,
+                };
+
+                let world_dir_light_dst_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .dst_set(world_dst_set)
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .buffer_info(std::slice::from_ref(&world_dir_light_buffer_info))
+                        .build();
+
                 let world_light_buffer_info = vk::DescriptorBufferInfo {
                         buffer: *world_light_buffer,
                         offset: 0,
@@ -839,7 +878,7 @@ impl VkFrameData {
                 let world_light_dst_write = vk::WriteDescriptorSet::builder()
                         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                         .dst_set(world_dst_set)
-                        .dst_binding(1)
+                        .dst_binding(2)
                         .dst_array_element(0)
                         .buffer_info(std::slice::from_ref(&world_light_buffer_info))
                         .build();
@@ -860,6 +899,7 @@ impl VkFrameData {
 
                 let writes = [
                         world_matrices_dst_write,
+                        world_dir_light_dst_write,
                         world_light_dst_write,
                         object_matrices_dst_write,
                 ];
@@ -872,6 +912,7 @@ impl VkFrameData {
                         world_dst_set,
                         object_dst_set,
                         world_matrices_buffer,
+                        world_dir_light_buffer,
                         world_light_buffer,
                         material_data_buffer,
                         object_matrices_buffer,
@@ -887,6 +928,7 @@ impl Drop for VkFrameData {
                         self.object_matrices_buffer.destroy();
                         self.material_data_buffer.destroy();
                         self.world_light_buffer.destroy();
+                        self.world_dir_light_buffer.destroy();
                         self.world_matrices_buffer.destroy();
                         self.draw_cmd_buffer.destroy();
                 }
@@ -911,6 +953,12 @@ struct WorldMatrices {
         view: Mat4,
         proj: Mat4,
         vp: Mat4,
+}
+
+#[allow(dead_code)]
+struct WorldDirectionalLight {
+        direction: Vec4,
+        color: Vec4,
 }
 
 #[allow(dead_code)]

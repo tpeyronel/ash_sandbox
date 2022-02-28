@@ -1,4 +1,5 @@
 use std::{
+        convert::TryInto,
         path::Path,
         rc::Rc,
         time::{Duration, Instant},
@@ -11,14 +12,11 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         components::{
-                ActiveCamera, AngularVelocity, Children, Force, GlobalTransform, ImguiWantCaptureKeyboard,
-                ImguiWantCaptureMouse, InterpScalar, LightEmitter, Mass, OrbitalVelocity, Parent, Player,
-                PreviousGlobalTransform, ProjectionCamera, Ticktime, Transform, Velocity,
+                ActiveCamera, AngularVelocity, Children, DirectionalLight, Force, GlobalTransform,
+                ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, LightEmitter, Mass, OrbitalVelocity,
+                Parent, Player, PreviousGlobalTransform, ProjectionCamera, Ticktime, Transform, Velocity,
         },
-        constants::{
-                DEFAULT_AMBIENT_STRENGTH, DEFAULT_DIFFUSE_STRENGTH, DEFAULT_SHININESS, DEFAULT_SPECULAR_STRENGTH,
-                FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND,
-        },
+        constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
         hashmap::{GetOrInsertDefault, HashMap},
         input_manager::{
@@ -144,6 +142,41 @@ impl Application {
                                                 .build(&ui, &mut roll)
                                         {
                                                 camera_orien.set_roll(roll);
+                                        }
+
+                                        let mut dir_light =
+                                                world.query::<&mut DirectionalLight>().iter_mut(world).next().unwrap();
+
+                                        let mut dir_light_direction = dir_light.direction;
+                                        if imgui::Slider::new("directional light direction", -1.0, 1.0)
+                                                .build_array(&ui, (&mut dir_light_direction).into())
+                                        {
+                                                dir_light.direction = dir_light_direction;
+                                        }
+
+                                        let mut dir_light_color: [f32; 3] = dir_light.color.try_into().unwrap();
+                                        if imgui::ColorEdit::new("directional light color", &mut dir_light_color)
+                                                .build(&ui)
+                                        {
+                                                dir_light.color = Vec3::from_column_slice(&dir_light_color);
+                                        }
+
+                                        let (mut light_transform, mut light_emitter) = world
+                                                .query::<(&mut Transform, &mut LightEmitter)>()
+                                                .iter_mut(world)
+                                                .next()
+                                                .unwrap();
+
+                                        let mut light_translation = light_transform.translation;
+                                        if imgui::Slider::new("point light translation", -2.5, 2.5)
+                                                .build_array(&ui, (&mut light_translation).into())
+                                        {
+                                                light_transform.translation = light_translation;
+                                        }
+
+                                        let mut light_color: [f32; 3] = light_emitter.color.try_into().unwrap();
+                                        if imgui::ColorEdit::new("point light color", &mut light_color).build(&ui) {
+                                                light_emitter.color = Vec3::from_column_slice(&light_color);
                                         }
 
                                         let mut asset_manager = world.get_resource_mut::<AssetManager>().unwrap();
@@ -697,6 +730,14 @@ fn spawn_entities(mut commands: Commands) {
                 entity: light,
                 model_name: "lit-icosphere".to_string(),
         });
+
+        let _dir_light = commands
+                .spawn()
+                .insert(DirectionalLight {
+                        direction: Vec3::new(1.0, -1.0, 0.0),
+                        color: Vec3::new(0.9, 1.0, 0.9),
+                })
+                .id();
 }
 
 fn process_actions(

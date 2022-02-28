@@ -138,3 +138,9 @@ impl ProjectionCamera {
 pub struct LightEmitter {
         pub color: Vec3,
 }
+
+#[derive(Component, Debug)]
+pub struct DirectionalLight {
+        pub direction: Vec3,
+        pub color: Vec3,
+}

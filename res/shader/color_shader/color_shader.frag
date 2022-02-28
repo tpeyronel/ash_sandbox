@@ -7,7 +7,7 @@ layout (set = 0, binding = 0) uniform WorldMatrices {
         mat4 proj;
 } u_world_matrices;
 
-layout (set = 0, binding = 1) uniform WorldLight {
+layout (set = 0, binding = 2) uniform WorldLight {
         vec4 pos;
         vec4 color;
 } u_light;
@@ -29,6 +29,6 @@ layout (location = 0) out vec4 o_out_color;
 void main() {
         o_out_color = vec4(u_light.color.rgb, 1.0);
 
-        // float gamma = 2.2;
-        // o_out_color.rgb = pow(o_out_color.rgb, vec3(1.0 / gamma));
+        float gamma = 2.2;
+        o_out_color.rgb = pow(o_out_color.rgb, vec3(1.0 / gamma));
 }
