@@ -14,7 +14,7 @@ use crate::{
         components::{
                 ActiveCamera, AngularVelocity, Children, DirectionalLight, Force, GlobalTransform,
                 ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, Mass, OrbitalVelocity, Parent, Player,
-                PointLight, PreviousGlobalTransform, ProjectionCamera, Ticktime, Transform, Velocity,
+                PointLight, PreviousGlobalTransform, ProjectionCamera, Spotlight, Ticktime, Transform, Velocity,
         },
         constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
@@ -198,6 +198,24 @@ impl Application {
                                                 .build(&ui, &mut point_light_kq)
                                         {
                                                 point_light.kq = point_light_kq;
+                                        }
+
+                                        let mut spotlight =
+                                                world.query::<&mut Spotlight>().iter_mut(world).next().unwrap();
+
+                                        let mut spotlight_angle = spotlight.radius_angle;
+                                        if imgui::AngleSlider::new("spotlight cutoff angle")
+                                                .range_degrees(0.0, 90.0)
+                                                .build(&ui, &mut spotlight_angle)
+                                        {
+                                                spotlight.radius_angle = spotlight_angle;
+                                        }
+
+                                        let mut spotlight_inner_circle = spotlight.inner_radius_percentage;
+                                        if imgui::Slider::new("spotlight inner circle", 0.0, 1.0)
+                                                .build(&ui, &mut spotlight_inner_circle)
+                                        {
+                                                spotlight.inner_radius_percentage = spotlight_inner_circle;
                                         }
 
                                         let mut asset_manager = world.get_resource_mut::<AssetManager>().unwrap();
@@ -671,6 +689,14 @@ fn spawn_entities(mut commands: Commands) {
                 .insert(Transform::from_translation(Vec3::new(0.0, 1.0, 0.0)))
                 .insert(EulerAngles::new(0.0, 0.0, 0.0))
                 .insert(ProjectionCamera::new(90.0f32.to_radians(), 1.0, 0.1, 100.0))
+                .insert(Spotlight {
+                        radius_angle: 45.0f32.to_radians(),
+                        inner_radius_percentage: 0.5,
+                        color: Vec3::new(1.0, 1.0, 1.0),
+                        kc: 1.0,
+                        kl: 0.0,
+                        kq: 1.0,
+                })
                 .id();
         commands.insert_resource(ActiveCamera(player_head));
 

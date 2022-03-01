@@ -18,7 +18,7 @@ use super::{
 use crate::{
         application::InterpGlobalTransform,
         asset_manager::{AssetManager, MeshId},
-        components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Transform},
+        components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight, Transform},
         constants::MAX_OBJECT_MATRICES,
         model_instance_manager::ModelInstance,
         my_glm::*,
@@ -202,24 +202,43 @@ impl Renderer for VkRenderer {
                         .next()
                         .unwrap();
 
-                let world_point_light = WorldPointLight {
+                let point_light = WorldPointLight {
                         pos: Vec4::new_position(&light_transform.0.translation),
                         color: Vec4::new_position(&point_light.color),
-                        kc: point_light.kc,
-                        kl: point_light.kl,
-                        kq: point_light.kq,
+                        kc_kl_kq: Vec4::new(point_light.kc, point_light.kl, point_light.kq, 0.0),
                 };
-
-                frame_data.world_point_light_buffer.write(&world_point_light)?;
 
                 let dir_light = world.query::<&DirectionalLight>().iter(&world).next().unwrap();
 
-                let world_dir_light = WorldDirectionalLight {
+                let dir_light = WorldDirectionalLight {
                         direction: Vec4::new_direction(&dir_light.direction),
                         color: Vec4::new_position(&dir_light.color),
                 };
 
-                frame_data.world_dir_light_buffer.write(&world_dir_light)?;
+                let (spotlight_transform, spotlight_component) = world
+                        .query::<(&InterpGlobalTransform, &Spotlight)>()
+                        .iter(&world)
+                        .next()
+                        .unwrap();
+
+                let spotlight_dir = spotlight_transform.0.rotation * Vec3::new(0.0, 0.0, -1.0);
+                let spotlight = WorldSpotlight {
+                        pos: Vec4::new_position(&spotlight_transform.0.translation),
+                        dir: Vec4::new_vec3_and_w(&spotlight_dir, spotlight_component.radius_angle.cos()),
+                        color: Vec4::new_position(&spotlight_component.color),
+                        kc_kl_kq_inner: Vec4::new(
+                                spotlight_component.kc,
+                                spotlight_component.kl,
+                                spotlight_component.kq,
+                                spotlight_component.inner_radius_percentage,
+                        ),
+                };
+
+                frame_data.world_lights_buffer.write(&WorldLights {
+                        dir_light,
+                        point_light,
+                        spotlight,
+                })?;
 
                 unsafe {
                         self.vk_context.device.cmd_set_viewport(
@@ -781,8 +800,7 @@ struct VkFrameData {
         object_dst_set: vk::DescriptorSet,
 
         world_matrices_buffer: VkBuffer,
-        world_dir_light_buffer: VkBuffer,
-        world_point_light_buffer: VkBuffer,
+        world_lights_buffer: VkBuffer,
         material_data_buffer: VkBuffer,
         object_matrices_buffer: VkDynamicUniformBuffer<ObjectMatrices>,
 }
@@ -814,18 +832,11 @@ impl VkFrameData {
                         std::mem::size_of::<WorldMatrices>() as vk::DeviceSize,
                 )?;
 
-                let world_dir_light_buffer_size = std::mem::size_of::<WorldDirectionalLight>() as vk::DeviceSize;
-                let world_dir_light_buffer = VkBuffer::new_uniform_buffer(
+                let world_lights_buffer_size = std::mem::size_of::<WorldLights>() as vk::DeviceSize;
+                let world_lights_buffer = VkBuffer::new_uniform_buffer(
                         &vk_context.device,
                         Rc::clone(&vk_context.allocator),
-                        world_dir_light_buffer_size,
-                )?;
-
-                let world_point_light_buffer_size = std::mem::size_of::<WorldPointLight>() as vk::DeviceSize;
-                let world_point_light_buffer = VkBuffer::new_uniform_buffer(
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        world_point_light_buffer_size,
+                        world_lights_buffer_size,
                 )?;
 
                 let material_data_buffer_size = std::mem::size_of::<MaterialData>() as vk::DeviceSize;
@@ -856,32 +867,18 @@ impl VkFrameData {
                         .buffer_info(std::slice::from_ref(&world_matrices_buffer_info))
                         .build();
 
-                let world_dir_light_buffer_info = vk::DescriptorBufferInfo {
-                        buffer: *world_dir_light_buffer,
+                let world_lights_buffer_info = vk::DescriptorBufferInfo {
+                        buffer: *world_lights_buffer,
                         offset: 0,
-                        range: world_dir_light_buffer_size,
+                        range: world_lights_buffer_size,
                 };
 
-                let world_dir_light_dst_write = vk::WriteDescriptorSet::builder()
+                let world_lights_dst_write = vk::WriteDescriptorSet::builder()
                         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                         .dst_set(world_dst_set)
                         .dst_binding(1)
                         .dst_array_element(0)
-                        .buffer_info(std::slice::from_ref(&world_dir_light_buffer_info))
-                        .build();
-
-                let world_point_light_buffer_info = vk::DescriptorBufferInfo {
-                        buffer: *world_point_light_buffer,
-                        offset: 0,
-                        range: world_point_light_buffer_size,
-                };
-
-                let world_light_dst_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .dst_set(world_dst_set)
-                        .dst_binding(2)
-                        .dst_array_element(0)
-                        .buffer_info(std::slice::from_ref(&world_point_light_buffer_info))
+                        .buffer_info(std::slice::from_ref(&world_lights_buffer_info))
                         .build();
 
                 let object_matrices_buffer_info = vk::DescriptorBufferInfo {
@@ -900,8 +897,7 @@ impl VkFrameData {
 
                 let writes = [
                         world_matrices_dst_write,
-                        world_dir_light_dst_write,
-                        world_light_dst_write,
+                        world_lights_dst_write,
                         object_matrices_dst_write,
                 ];
                 unsafe { vk_context.device.update_descriptor_sets(&writes, &[]) };
@@ -913,8 +909,7 @@ impl VkFrameData {
                         world_dst_set,
                         object_dst_set,
                         world_matrices_buffer,
-                        world_dir_light_buffer,
-                        world_point_light_buffer,
+                        world_lights_buffer,
                         material_data_buffer,
                         object_matrices_buffer,
                 })
@@ -928,8 +923,7 @@ impl Drop for VkFrameData {
                         self.img_available_semaphore.destroy();
                         self.object_matrices_buffer.destroy();
                         self.material_data_buffer.destroy();
-                        self.world_point_light_buffer.destroy();
-                        self.world_dir_light_buffer.destroy();
+                        self.world_lights_buffer.destroy();
                         self.world_matrices_buffer.destroy();
                         self.draw_cmd_buffer.destroy();
                 }
@@ -966,16 +960,22 @@ struct WorldDirectionalLight {
 struct WorldPointLight {
         pos: Vec4,
         color: Vec4,
-        kc: f32,
-        kl: f32,
-        kq: f32,
+        kc_kl_kq: Vec4,
 }
 
-// TODO: use this
 #[allow(dead_code)]
-struct WorldResources {
-        matrices: WorldMatrices,
-        light: WorldPointLight,
+struct WorldSpotlight {
+        pos: Vec4,
+        dir: Vec4, // xyz=direction w=angle
+        color: Vec4,
+        kc_kl_kq_inner: Vec4, // w=inner radius percentage
+}
+
+#[allow(dead_code)]
+struct WorldLights {
+        dir_light: WorldDirectionalLight,
+        point_light: WorldPointLight,
+        spotlight: WorldSpotlight,
 }
 
 #[allow(dead_code)]

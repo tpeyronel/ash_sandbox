@@ -147,3 +147,13 @@ pub struct DirectionalLight {
         pub direction: Vec3,
         pub color: Vec3,
 }
+
+#[derive(Component, Debug)]
+pub struct Spotlight {
+        pub radius_angle: f32,
+        pub inner_radius_percentage: f32,
+        pub color: Vec3,
+        pub kc: f32,
+        pub kl: f32,
+        pub kq: f32,
+}

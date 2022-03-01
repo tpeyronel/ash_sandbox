@@ -54,6 +54,7 @@ pub type Mat4 = glm::Mat4;
 pub trait VectorUtil<T: Scalar> {
         fn new_position(pos: &TVec3<T>) -> Self;
         fn new_direction(dir: &TVec3<T>) -> Self;
+        fn new_vec3_and_w(vec: &TVec3<T>, w: T) -> Self;
 }
 
 // impl <T: Scalar> VectorUtil<T> for TVec4<T> {
@@ -70,6 +71,10 @@ impl VectorUtil<f32> for TVec4<f32> {
         fn new_direction(dir: &TVec3<f32>) -> Self {
                 Self::new(dir.x, dir.y, dir.z, 0.0)
         }
+
+        fn new_vec3_and_w(vec: &TVec3<f32>, w: f32) -> Self {
+                Self::new(vec.x, vec.y, vec.z, w)
+        }
 }
 
 impl VectorUtil<f64> for TVec4<f64> {
@@ -79,5 +84,9 @@ impl VectorUtil<f64> for TVec4<f64> {
 
         fn new_direction(dir: &TVec3<f64>) -> Self {
                 Self::new(dir.x, dir.y, dir.z, 0.0)
+        }
+
+        fn new_vec3_and_w(vec: &TVec3<f64>, w: f64) -> Self {
+                Self::new(vec.x, vec.y, vec.z, w)
         }
 }
