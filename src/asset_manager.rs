@@ -794,7 +794,7 @@ impl AssetManager {
                                 let metallic_roughness_texture = pbr_mr
                                         .metallic_roughness_texture()
                                         .map(|t| texture_ids[t.texture().index()])
-                                        .unwrap_or(default_material.metallic_roughness_texture);
+                                        .unwrap_or(base_color_texture);
                                 let normal_texture = m.normal_texture().map(|t| texture_ids[t.texture().index()]);
                                 let occlusion_texture = m.occlusion_texture().map(|t| texture_ids[t.texture().index()]);
                                 let emissive_texture = m.emissive_texture().map(|t| texture_ids[t.texture().index()]);
