@@ -18,7 +18,7 @@ use crate::{
         constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
         hashmap::{GetOrInsertDefault, HashMap},
-        imgui_util::ImguiObject,
+        imgui_util::{self},
         input_manager::{
                 ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType,
         },
@@ -109,37 +109,38 @@ impl Application {
                                         ui.separator();
 
                                         let mut player = world.entity_mut(world.get_resource::<Player>().unwrap().0);
-                                        player.get_mut::<Transform>().unwrap().build_imgui_ui(&ui);
+                                        imgui_util::transform_mut(ui, &mut player.get_mut::<Transform>().unwrap());
 
                                         let mut camera =
                                                 world.entity_mut(world.get_resource::<ActiveCamera>().unwrap().0);
-                                        camera.get_mut::<EulerAngles>().unwrap().build_imgui_ui(&ui);
+                                        imgui_util::euler_angles_mut(ui, &mut camera.get_mut::<EulerAngles>().unwrap());
 
-                                        imgui::TreeNode::new("directional light").build(&ui, || {
-                                                world.query::<&mut DirectionalLight>()
+                                        imgui::TreeNode::new("directional light").build(ui, || {
+                                                let mut dir_light = world
+                                                        .query::<&mut DirectionalLight>()
                                                         .iter_mut(world)
                                                         .next()
-                                                        .unwrap()
-                                                        .build_imgui_ui(ui);
+                                                        .unwrap();
+
+                                                imgui_util::dir_light_mut(ui, &mut dir_light);
                                         });
 
-                                        imgui::TreeNode::new("point light").build(&ui, || {
+                                        imgui::TreeNode::new("point light").build(ui, || {
                                                 let (mut point_light_transform, mut point_light) = world
                                                         .query::<(&mut Transform, &mut PointLight)>()
                                                         .iter_mut(world)
                                                         .next()
                                                         .unwrap();
 
-                                                point_light_transform.build_imgui_ui(ui);
-                                                point_light.build_imgui_ui(ui);
+                                                imgui_util::transform_mut(ui, &mut point_light_transform);
+                                                imgui_util::point_light_mut(ui, &mut point_light);
                                         });
 
                                         imgui::TreeNode::new("spotlight").build(&ui, || {
-                                                world.query::<&mut Spotlight>()
-                                                        .iter_mut(world)
-                                                        .next()
-                                                        .unwrap()
-                                                        .build_imgui_ui(ui);
+                                                let mut spotlight =
+                                                        world.query::<&mut Spotlight>().iter_mut(world).next().unwrap();
+
+                                                imgui_util::spotlight_mut(ui, &mut spotlight);
                                         });
 
                                         let mut asset_manager = world.get_resource_mut::<AssetManager>().unwrap();
@@ -153,7 +154,7 @@ impl Application {
                                                         );
 
                                                         imgui::TreeNode::new(material_name).build(ui, || {
-                                                                material.build_imgui_ui(ui);
+                                                                imgui_util::material_mut(ui, material);
                                                         });
                                                 }
                                         });
