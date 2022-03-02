@@ -97,7 +97,10 @@ impl ImguiObject for Mut<'_, PointLight> {
                 }
 
                 let mut kq = self.kq;
-                if imgui::Slider::new("quadratic", 0.0, 1.0).build(&ui, &mut kq) {
+                if imgui::Slider::new("quadratic", 0.0, 1.0)
+                        .flags(imgui::SliderFlags::LOGARITHMIC)
+                        .build(&ui, &mut kq)
+                {
                         self.kq = kq;
                 }
         }
@@ -138,7 +141,10 @@ impl ImguiObject for Mut<'_, Spotlight> {
                 }
 
                 let mut kq = self.kq;
-                if imgui::Slider::new("quadratic", 0.0, 1.0).build(&ui, &mut kq) {
+                if imgui::Slider::new("quadratic", 0.0, 1.0)
+                        .flags(imgui::SliderFlags::LOGARITHMIC)
+                        .build(&ui, &mut kq)
+                {
                         self.kq = kq;
                 }
         }
