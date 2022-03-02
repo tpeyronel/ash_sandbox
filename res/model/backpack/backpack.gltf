@@ -80,14 +80,14 @@
             "uri" : "normal.png"
         },
         {
-            "mimeType" : "image/jpeg",
-            "name" : "diffuse.jpg.002",
-            "uri" : "diffuse.jpg"
+            "mimeType" : "image/png",
+            "name" : "diffuse.png.002",
+            "uri" : "diffuse.png"
         },
         {
-            "mimeType" : "image/jpeg",
-            "name" : "specular.jpg.002",
-            "uri" : "specular.jpg"
+            "mimeType" : "image/png",
+            "name" : "specular.png.002",
+            "uri" : "specular.png"
         }
     ],
     "accessors" : [

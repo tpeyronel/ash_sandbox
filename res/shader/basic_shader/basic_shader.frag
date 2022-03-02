@@ -112,7 +112,17 @@ vec3 calc_point_light(
         return ambient + diffuse + specular;
 }
 
-vec3 calc_spotlight(Spotlight spotlight, vec3 frag_pos, vec3 diffuse_texel) {
+vec3 calc_spotlight(
+        Spotlight spotlight,
+        float specular_strength,
+        float diffuse_strength,
+        float shininess,
+        vec3 camera_rdir,
+        vec3 normal,
+        vec3 frag_pos,
+        vec3 diffuse_texel,
+        vec3 specular_texel
+) {
         vec3 spotlight_pos = spotlight.pos.xyz;
         vec3 spotlight_color = spotlight.color.rgb;
         vec3 spotlight_dir_to_frag = normalize(frag_pos - spotlight_pos);
@@ -120,7 +130,7 @@ vec3 calc_spotlight(Spotlight spotlight, vec3 frag_pos, vec3 diffuse_texel) {
         float spotlight_cutoff_angle = spotlight.dir.w;
         float spotlight_inner_radius_percentage = spotlight.kc_kl_kq_inner.w;
         float spotlight_angle = dot(spotlight_dir_to_frag, spotlight_dir);
-        float spotlight_attenuation = calc_attenuation(spotlight.kc_kl_kq_inner.xyz, distance(spotlight_pos, frag_pos));
+        float attenuation = calc_attenuation(spotlight.kc_kl_kq_inner.xyz, distance(spotlight_pos, frag_pos));
 
         // 0.0 = 0°  ---  1.0 = 90°
         float spotlight_normalized_angle = 1.0 - spotlight_angle;
@@ -132,9 +142,19 @@ vec3 calc_spotlight(Spotlight spotlight, vec3 frag_pos, vec3 diffuse_texel) {
                 spotlight_normalized_angle
         );
 
-        vec3 spotlight_diffuse = diffuse_texel * spotlight_color * spotlight_attenuation * spotlight_coefficient;
+        vec3 diffuse =
+                spotlight_coefficient
+                * attenuation
+                * diffuse_texel
+                * calc_diffuse(diffuse_strength, normal, spotlight_dir_to_frag, spotlight_color);
 
-        return spotlight_diffuse;
+        vec3 specular =
+                spotlight_coefficient
+                * attenuation
+                * specular_texel
+                * calc_specular(camera_rdir, specular_strength, normal, spotlight_dir_to_frag, spotlight_color, shininess);
+
+        return diffuse + specular;
 }
 
 void main() {
@@ -176,7 +196,17 @@ void main() {
                 specular_texel
         );
 
-        output_color += calc_spotlight(u_lights.spotlight, i_frag_pos, diffuse_texel);
+        output_color += calc_spotlight(
+                u_lights.spotlight,
+                specular_strength,
+                diffuse_strength,
+                shininess,
+                camera_rdir,
+                normal,
+                i_frag_pos,
+                diffuse_texel,
+                specular_texel
+        );
 
         float gamma = 2.2;
         output_color = pow(output_color, vec3(1.0 / gamma));
