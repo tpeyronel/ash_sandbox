@@ -12,7 +12,35 @@ pub struct EulerAngles {
 
 impl EulerAngles {
         pub fn new(pitch: f32, yaw: f32, roll: f32) -> Self {
-                Self { angles: [pitch, yaw, roll] }
+                Self {
+                        angles: [pitch, yaw, roll],
+                }
+        }
+
+        pub fn from_quat(quat: &UnitQuat) -> Self {
+                let q = quat.as_vector();
+
+                // roll
+                let sinr_cosp = 2.0 * (q.w * q.z + q.x * q.y);
+                let cosr_cosp = 1.0 - 2.0 * (q.z * q.z + q.x * q.x);
+                let roll = f32::atan2(sinr_cosp, cosr_cosp);
+
+                // pitch
+                let sinp = 2.0 * (q.w * q.x - q.y * q.z);
+                let pitch = if sinp.abs() >= 1.0 {
+                        f32::copysign(std::f32::consts::PI / 2.0, sinp)
+                } else {
+                        f32::asin(sinp)
+                };
+
+                // yaw
+                let siny_cosp = 2.0 * (q.w * q.y + q.z * q.x);
+                let cosy_cosp = 1.0 - 2.0 * (q.x * q.x + q.y * q.y);
+                let yaw = f32::atan2(siny_cosp, cosy_cosp);
+
+                Self {
+                        angles: [pitch, yaw, roll],
+                }
         }
 
         pub fn to_quat(&self) -> UnitQuat {

@@ -719,7 +719,8 @@ fn process_actions(
         mut cursor_state: ResMut<CursorState>,
         // TODO: make commands by observing modifications to Res<WindowMode>, etc.
         mut window_commands: ResMut<Vec<WindowCommand>>,
-        mut transforms: Query<&mut Transform>,
+        global_transform_query: Query<&GlobalTransform>,
+        mut transform_query: Query<&mut Transform>,
 ) {
         let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
 
@@ -756,7 +757,7 @@ fn process_actions(
         }
 
         if desired_dir.norm_squared() > f32::EPSILON {
-                let camera_orien = &transforms.get(camera.0).unwrap().rotation;
+                let camera_orien = &global_transform_query.get(camera.0).unwrap().0.rotation;
                 let camera_hor_orien = UnitQuat::new_normalize(Quat::new(
                         camera_orien.as_vector().w,
                         0.0,
@@ -766,7 +767,7 @@ fn process_actions(
 
                 let move_vector = camera_hor_orien * desired_dir * PLAYER_MOVEMENT_SPEED;
 
-                let mut player_transform = transforms.get_mut(player.0).unwrap();
+                let mut player_transform = transform_query.get_mut(player.0).unwrap();
                 player_transform.translation += move_vector;
         }
 }
@@ -920,10 +921,24 @@ fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transfo
 fn interpolate_transforms(
         mut query: Query<(&PreviousGlobalTransform, &GlobalTransform, &mut InterpGlobalTransform)>,
         t: Res<InterpScalar>,
+        euler_angles_query: Query<&EulerAngles>,
+        parent_query: Query<&Parent>,
+        camera: Res<ActiveCamera>,
 ) {
         for (prev_transform, curr_transform, mut interp_transform) in query.iter_mut() {
                 interp_transform.0 = Transform::interp(&prev_transform.0, &curr_transform.0, t.0);
         }
+
+        let mut camera_global_rotation = euler_angles_query.get(camera.0).unwrap().to_quat();
+
+        if let Ok(camera_parent) = parent_query.get(camera.0) {
+                if let Ok((_, _, parent_transform)) = query.get(camera_parent.0) {
+                        camera_global_rotation = parent_transform.0.rotation * camera_global_rotation
+                }
+        };
+
+        let (_, _, mut interp_transform) = query.get_mut(camera.0).unwrap();
+        interp_transform.0.rotation = camera_global_rotation;
 }
 
 pub struct ImguiManager {

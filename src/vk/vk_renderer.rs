@@ -175,8 +175,7 @@ impl Renderer for VkRenderer {
                 let aspect_ratio = width as f32 / height as f32;
 
                 let camera = world.get_resource::<ActiveCamera>().unwrap().0;
-                // TODO: use global transform instead of transform (GlobalTransform = fixed update);
-                let camera_orien = &world.get::<Transform>(camera).unwrap().rotation;
+                let camera_orien = &world.get::<InterpGlobalTransform>(camera).unwrap().0.rotation;
                 let camera_pos = &world.get::<InterpGlobalTransform>(camera).unwrap().0.translation;
                 let camera_projection = world.get::<ProjectionCamera>(camera).unwrap();
 
@@ -933,13 +932,6 @@ impl Drop for VkFrameData {
 enum BeginFrameResult {
         Draw { imagei: u32 },
         Skip,
-}
-
-#[allow(dead_code)]
-struct MatricesVPN {
-        view: Mat4,
-        proj: Mat4,
-        normal: Mat4,
 }
 
 #[allow(dead_code)]

@@ -28,16 +28,24 @@ pub fn transform(ui: &imgui::Ui<'_>, mut transform: Transform) -> Option<Transfo
                 changed = true;
         }
 
-        let (yaw, pitch, roll) = transform.rotation.euler_angles();
+        let euler_angles = EulerAngles::from_quat(&transform.rotation);
         if let Some(xyz) = imgui_vec3(
                 &ui,
                 "rotation",
                 -180.0,
                 180.0,
-                Vec3::new(pitch.to_degrees(), yaw.to_degrees(), roll.to_degrees()),
+                Vec3::new(
+                        euler_angles.pitch().to_degrees(),
+                        euler_angles.yaw().to_degrees(),
+                        euler_angles.roll().to_degrees(),
+                ),
         ) {
-                transform.rotation =
-                        EulerAngles::new(xyz.x.to_radians(), xyz.y.to_radians(), xyz.z.to_radians()).to_quat();
+                transform.rotation = EulerAngles::new(
+                        xyz.x.clamp(-90.0, 90.0).to_radians(),
+                        xyz.y.to_radians(),
+                        xyz.z.to_radians(),
+                )
+                .to_quat();
                 changed = true;
         }
 
