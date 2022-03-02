@@ -10,6 +10,7 @@ mod constants;
 mod euler_angles;
 mod hashmap;
 mod image;
+mod imgui_util;
 mod input_manager;
 mod model_instance_manager;
 mod my_glm;

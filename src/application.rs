@@ -1,5 +1,4 @@
 use std::{
-        convert::TryInto,
         path::Path,
         rc::Rc,
         time::{Duration, Instant},
@@ -19,6 +18,7 @@ use crate::{
         constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
         hashmap::{GetOrInsertDefault, HashMap},
+        imgui_util::ImguiObject,
         input_manager::{
                 ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType,
         },
@@ -109,118 +109,42 @@ impl Application {
                                         ui.separator();
 
                                         let mut player = world.entity_mut(world.get_resource::<Player>().unwrap().0);
-                                        let mut player_transform = player.get_mut::<Transform>().unwrap();
-
-                                        let pos = &mut player_transform.translation;
-                                        if imgui::Slider::new("translation", -2.5, 2.5).build_array(&ui, pos.into()) {
-                                                player_transform.translation = *pos;
-                                        }
+                                        player.get_mut::<Transform>().unwrap().build_imgui_ui(&ui);
 
                                         let mut camera =
                                                 world.entity_mut(world.get_resource::<ActiveCamera>().unwrap().0);
-                                        let mut camera_orien = camera.get_mut::<EulerAngles>().unwrap();
+                                        camera.get_mut::<EulerAngles>().unwrap().build_imgui_ui(&ui);
 
-                                        let mut pitch = camera_orien.pitch();
-                                        if imgui::AngleSlider::new("pitch")
-                                                .range_degrees(-90.0, 90.0)
-                                                .build(&ui, &mut pitch)
-                                        {
-                                                camera_orien.set_pitch(pitch);
-                                        }
+                                        imgui::TreeNode::new("directional light").build(&ui, || {
+                                                world.query::<&mut DirectionalLight>()
+                                                        .iter_mut(world)
+                                                        .next()
+                                                        .unwrap()
+                                                        .build_imgui_ui(ui);
+                                        });
 
-                                        let mut yaw = camera_orien.yaw();
-                                        if imgui::AngleSlider::new("yaw")
-                                                .range_degrees(-180.0, 180.0)
-                                                .build(&ui, &mut yaw)
-                                        {
-                                                camera_orien.set_yaw(yaw);
-                                        }
+                                        imgui::TreeNode::new("point light").build(&ui, || {
+                                                let (mut point_light_transform, mut point_light) = world
+                                                        .query::<(&mut Transform, &mut PointLight)>()
+                                                        .iter_mut(world)
+                                                        .next()
+                                                        .unwrap();
 
-                                        let mut roll = camera_orien.roll();
-                                        if imgui::AngleSlider::new("roll")
-                                                .range_degrees(-180.0, 180.0)
-                                                .build(&ui, &mut roll)
-                                        {
-                                                camera_orien.set_roll(roll);
-                                        }
+                                                point_light_transform.build_imgui_ui(ui);
+                                                point_light.build_imgui_ui(ui);
+                                        });
 
-                                        let mut dir_light =
-                                                world.query::<&mut DirectionalLight>().iter_mut(world).next().unwrap();
-
-                                        let mut dir_light_direction = dir_light.direction;
-                                        if imgui::Slider::new("directional light direction", -1.0, 1.0)
-                                                .build_array(&ui, (&mut dir_light_direction).into())
-                                        {
-                                                dir_light.direction = dir_light_direction;
-                                        }
-
-                                        let mut dir_light_color: [f32; 3] = dir_light.color.try_into().unwrap();
-                                        if imgui::ColorEdit::new("directional light color", &mut dir_light_color)
-                                                .build(&ui)
-                                        {
-                                                dir_light.color = Vec3::from_column_slice(&dir_light_color);
-                                        }
-
-                                        let (mut light_transform, mut point_light) = world
-                                                .query::<(&mut Transform, &mut PointLight)>()
-                                                .iter_mut(world)
-                                                .next()
-                                                .unwrap();
-
-                                        let mut light_translation = light_transform.translation;
-                                        if imgui::Slider::new("point light translation", -2.5, 2.5)
-                                                .build_array(&ui, (&mut light_translation).into())
-                                        {
-                                                light_transform.translation = light_translation;
-                                        }
-
-                                        let mut light_color: [f32; 3] = point_light.color.try_into().unwrap();
-                                        if imgui::ColorEdit::new("point light color", &mut light_color).build(&ui) {
-                                                point_light.color = Vec3::from_column_slice(&light_color);
-                                        }
-
-                                        let mut point_light_kc = point_light.kc;
-                                        if imgui::Slider::new("point light constant", 0.0, 1.0)
-                                                .build(&ui, &mut point_light_kc)
-                                        {
-                                                point_light.kc = point_light_kc;
-                                        }
-
-                                        let mut point_light_kl = point_light.kl;
-                                        if imgui::Slider::new("point light linear", 0.0, 1.0)
-                                                .build(&ui, &mut point_light_kl)
-                                        {
-                                                point_light.kl = point_light_kl;
-                                        }
-
-                                        let mut point_light_kq = point_light.kq;
-                                        if imgui::Slider::new("point light quadratic", 0.0, 1.0)
-                                                .build(&ui, &mut point_light_kq)
-                                        {
-                                                point_light.kq = point_light_kq;
-                                        }
-
-                                        let mut spotlight =
-                                                world.query::<&mut Spotlight>().iter_mut(world).next().unwrap();
-
-                                        let mut spotlight_angle = spotlight.radius_angle;
-                                        if imgui::AngleSlider::new("spotlight cutoff angle")
-                                                .range_degrees(0.0, 90.0)
-                                                .build(&ui, &mut spotlight_angle)
-                                        {
-                                                spotlight.radius_angle = spotlight_angle;
-                                        }
-
-                                        let mut spotlight_inner_circle = spotlight.inner_radius_percentage;
-                                        if imgui::Slider::new("spotlight inner circle", 0.0, 1.0)
-                                                .build(&ui, &mut spotlight_inner_circle)
-                                        {
-                                                spotlight.inner_radius_percentage = spotlight_inner_circle;
-                                        }
+                                        imgui::TreeNode::new("spotlight").build(&ui, || {
+                                                world.query::<&mut Spotlight>()
+                                                        .iter_mut(world)
+                                                        .next()
+                                                        .unwrap()
+                                                        .build_imgui_ui(ui);
+                                        });
 
                                         let mut asset_manager = world.get_resource_mut::<AssetManager>().unwrap();
 
-                                        imgui::TreeNode::new("Materials").build(ui, || {
+                                        imgui::TreeNode::new("materials").build(ui, || {
                                                 for (material_id, material) in asset_manager.iter_materials_mut() {
                                                         let material_name = format!(
                                                                 "{:?} - {}",
@@ -229,14 +153,7 @@ impl Application {
                                                         );
 
                                                         imgui::TreeNode::new(material_name).build(ui, || {
-                                                                imgui::Slider::new("shininess", 0.0f32, 256.0)
-                                                                        .build(&ui, &mut material.shininess);
-                                                                imgui::Slider::new("ambient strength", 0.0f32, 1.0)
-                                                                        .build(&ui, &mut material.ambient_strength);
-                                                                imgui::Slider::new("specular strength", 0.0f32, 1.0)
-                                                                        .build(&ui, &mut material.specular_strength);
-                                                                imgui::Slider::new("diffuse strength", 0.0f32, 1.0)
-                                                                        .build(&ui, &mut material.diffuse_strength);
+                                                                material.build_imgui_ui(ui);
                                                         });
                                                 }
                                         });
