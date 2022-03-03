@@ -90,3 +90,38 @@ impl VectorUtil<f64> for TVec4<f64> {
                 Self::new(vec.x, vec.y, vec.z, w)
         }
 }
+
+pub trait WorldDirections {
+        fn forward() -> Vec3;
+        fn backward() -> Vec3;
+        fn right() -> Vec3;
+        fn left() -> Vec3;
+        fn up() -> Vec3;
+        fn down() -> Vec3;
+}
+
+impl WorldDirections for Vec3 {
+        fn forward() -> Vec3 {
+                Vec3::new(0.0, 0.0, -1.0)
+        }
+
+        fn backward() -> Vec3 {
+                Vec3::new(0.0, 0.0, 1.0)
+        }
+
+        fn right() -> Vec3 {
+                Vec3::new(1.0, 0.0, 0.0)
+        }
+
+        fn left() -> Vec3 {
+                Vec3::new(-1.0, 0.0, 0.0)
+        }
+
+        fn up() -> Vec3 {
+                Vec3::new(0.0, 1.0, 0.0)
+        }
+
+        fn down() -> Vec3 {
+                Vec3::new(0.0, -1.0, 0.0)
+        }
+}

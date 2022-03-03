@@ -46,7 +46,7 @@ slotmap::new_key_type! { pub struct ModelId; }
 #[derive(Debug, Clone)]
 pub struct Model {
         pub name: Option<String>,
-        pub base_transform: Transform,
+        pub base_transform: Mat4,
         pub meshes: Vec<MeshId>,
         pub children: Vec<ModelId>,
 }
@@ -307,8 +307,6 @@ pub enum GLTFImportError {
         #[error("mesh missing indices")]
         MeshMissingIndices,
         #[error("model uses a matrix that is not decomposed")]
-        ModelMatrixNotDecomposed,
-        #[error("root model missing")]
         RootModelMissing,
         #[error("scene name missing")]
         SceneNameMissing,
@@ -907,11 +905,10 @@ impl AssetManager {
 
                         let base_transform = match &n.transform() {
                                 gltf::scene::Transform::Matrix { matrix } => unsafe {
-                                        na::Matrix4::from_column_slice(std::slice::from_raw_parts(
+                                        Mat4::from_column_slice(std::slice::from_raw_parts(
                                                 matrix as *const _ as *const f32,
                                                 16,
-                                        ));
-                                        return Err(GLTFImportError::ModelMatrixNotDecomposed);
+                                        ))
                                 },
                                 gltf::scene::Transform::Decomposed {
                                         translation,
@@ -929,11 +926,9 @@ impl AssetManager {
 
                                         let scale = Vec3::from_column_slice(scale);
 
-                                        Transform {
-                                                translation,
-                                                rotation,
-                                                scale,
-                                        }
+                                        Mat4::new_translation(&translation)
+                                                * rotation.to_homogeneous()
+                                                * Mat4::new_nonuniform_scaling(&scale)
                                 },
                         };
 
@@ -978,7 +973,8 @@ impl AssetManager {
 
                 let model = Model {
                         name: Some(name.clone()),
-                        base_transform: Transform::identity(),
+                        base_transform: Mat4::from_scaled_axis(Vec3::up() * 180.0f32.to_radians()),
+                        // base_transform: Mat4::identity(),
                         meshes: Vec::new(),
                         children,
                 };

@@ -37,42 +37,40 @@ pub struct CreateModelInstance {
 
 impl Command for CreateModelInstance {
         fn write(self, world: &mut World) {
-                Self::create_model_instance_recursive(world, self.entity, self.model);
+                let child = Self::create_model_instance_recursive(world, self.entity, self.model);
+
+                let mut entity_mut = world.entity_mut(self.entity);
+
+                if let Some(mut children) = entity_mut.get_mut::<Children>() {
+                        children.0.push(child);
+                } else {
+                        entity_mut.insert(Children(vec![child]));
+                }
         }
 }
 
 impl CreateModelInstance {
-        fn create_model_instance_recursive(world: &mut World, entity: Entity, model_id: ModelId) {
+        fn create_model_instance_recursive(world: &mut World, parent: Entity, model_id: ModelId) -> Entity {
+                let entity_id = world.spawn().id();
+
                 let model = &world.get_resource::<AssetManager>().unwrap().models()[model_id];
                 let model_children = model.children.clone();
-                let model_transform = model.base_transform;
 
-                let children: Vec<Entity> = model_children
-                        .iter()
-                        .map(|&child_model_id| {
-                                let entity = world.spawn().insert(Parent(entity)).id();
-                                Self::create_model_instance_recursive(world, entity, child_model_id);
-                                entity
-                        })
-                        .collect();
+                let children: Vec<Entity> =
+                        model_children
+                                .iter()
+                                .map(|&child_model_id| {
+                                        Self::create_model_instance_recursive(world, entity_id, child_model_id)
+                                })
+                                .collect();
 
-                let mut entity_mut = world.entity_mut(entity);
+                world.entity_mut(entity_id)
+                        .insert(Parent(parent))
+                        .insert(Children(children))
+                        // .insert(model_transform)
+                        .insert(Transform::identity())
+                        .insert(ModelInstance { model: model_id });
 
-                match entity_mut.get_mut::<Transform>() {
-                        Some(mut transform) => {
-                                *transform = model_transform * *transform;
-                        },
-                        None => {
-                                entity_mut.insert(model_transform);
-                        },
-                }
-
-                entity_mut.insert(ModelInstance { model: model_id });
-
-                if let Some(mut entity_children) = entity_mut.get_mut::<Children>() {
-                        entity_children.0.extend(children.iter());
-                } else {
-                        entity_mut.insert(Children(children));
-                }
+                entity_id
         }
 }

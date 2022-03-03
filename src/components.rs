@@ -157,3 +157,6 @@ pub struct Spotlight {
         pub kl: f32,
         pub kq: f32,
 }
+
+#[derive(Component, Debug)]
+pub struct Billboard;

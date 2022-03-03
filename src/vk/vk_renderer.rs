@@ -279,7 +279,7 @@ impl Renderer for VkRenderer {
                                         self.framei,
                                         &world_matrices,
                                         minstance,
-                                        &transform.0,
+                                        transform.0.to_matrix(),
                                         buffer_transform_idx,
                                 )?;
                         }
@@ -678,13 +678,15 @@ impl VkRenderer {
                 framei: usize,
                 world_matrices: &WorldMatrices,
                 minstance: &ModelInstance,
-                minstance_transform: &Transform,
+                model_matrix: Mat4,
                 buffer_transform_idx: usize,
         ) -> VkResult<()> {
                 //let mut last_material = MaterialID::MAX;
 
+                let model = &asset_manager.models()[minstance.model];
+
                 unsafe {
-                        let model = minstance_transform.to_matrix();
+                        let model = model_matrix * model.base_transform;
                         let mvp = world_matrices.vp * model;
                         let normal = glm::inverse_transpose(model);
 
@@ -701,8 +703,6 @@ impl VkRenderer {
                                 &[object_matrices_offset as u32],
                         )
                 };
-
-                let model = &asset_manager.models()[minstance.model];
 
                 for &mesh_id in &model.meshes {
                         Self::draw_mesh_instance(

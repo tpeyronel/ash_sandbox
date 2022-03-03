@@ -11,7 +11,7 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         components::{
-                ActiveCamera, AngularVelocity, Children, DirectionalLight, Force, GlobalTransform,
+                ActiveCamera, AngularVelocity, Billboard, Children, DirectionalLight, Force, GlobalTransform,
                 ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, Mass, OrbitalVelocity, Parent, Player,
                 PointLight, PreviousGlobalTransform, ProjectionCamera, Spotlight, Ticktime, Transform, Velocity,
         },
@@ -219,10 +219,11 @@ impl Application {
                                         .label("orbital-velocity")
                                         .after("angular-velocity"),
                         )
+                        .with_system(billboard_system.label("billboard-sytem").after("orbital-velocity"))
                         .with_system(
                                 global_transform_system
                                         .label("global-transform-system")
-                                        .after("orbital-velocity"),
+                                        .after("billboard-sytem"),
                         );
 
                 schedule.add_stage("update", update);
@@ -366,6 +367,8 @@ impl Application {
                         .import_gltf_file(std::path::Path::new("res/model/lit-icosphere/lit-icosphere.gltf"))?;
                 let _model_backpack =
                         asset_manager.import_gltf_file(std::path::Path::new("res/model/backpack/backpack.gltf"))?;
+                let _model_landscape =
+                        asset_manager.import_gltf_file(std::path::Path::new("res/model/landscape/landscape.gltf"))?;
 
                 trace!("Initialized AssetManager");
                 Ok(asset_manager)
@@ -650,7 +653,7 @@ fn spawn_entities(mut commands: Commands) {
                 .spawn()
                 .insert(Transform {
                         translation: Vec3::new(2.0, 0.0, 0.0),
-                        scale: Vec3::from_element(5.0),
+                        scale: Vec3::new(5.0, 5.0, 5.0),
                         ..Transform::identity()
                 })
                 .insert(AngularVelocity(Vec3::y() * 22.5f32.to_radians()))
@@ -663,6 +666,22 @@ fn spawn_entities(mut commands: Commands) {
         commands.add(CreateModelInstanceFromName {
                 entity: backpack,
                 model_name: "backpack".to_string(),
+        });
+
+        let billboard = commands
+                .spawn()
+                .insert(Transform {
+                        translation: Vec3::new(0.0, 0.5, 0.0),
+                        scale: Vec3::new(1.0, 1.0, 1.0),
+                        ..Transform::identity()
+                })
+                .insert(Billboard)
+                .insert(Parent(backpack))
+                .id();
+
+        commands.add(CreateModelInstanceFromName {
+                entity: billboard,
+                model_name: "landscape".to_string(),
         });
 
         let grass_plane = commands
@@ -939,6 +958,31 @@ fn interpolate_transforms(
 
         let (_, _, mut interp_transform) = query.get_mut(camera.0).unwrap();
         interp_transform.0.rotation = camera_global_rotation;
+}
+
+fn billboard_system(
+        mut transform_billboard_query: Query<(Entity, &GlobalTransform, &mut Transform), With<Billboard>>,
+        global_transform_query: Query<&GlobalTransform, Without<Billboard>>,
+        parent_query: Query<&Parent>,
+        camera: Res<ActiveCamera>,
+) {
+        let camera_transform = global_transform_query.get(camera.0).unwrap();
+        let up = Vec3::up();
+
+        for (billboard, global_transform, mut transform) in transform_billboard_query.iter_mut() {
+                let object_to_camera = camera_transform.0.translation - global_transform.0.translation;
+
+                let mut desired_global_rotation = UnitQuat::face_towards(&object_to_camera, &up);
+
+                if let Ok(parent) = parent_query.get(billboard) {
+                        if let Ok(parent_global_transform) = global_transform_query.get(parent.0) {
+                                desired_global_rotation =
+                                        parent_global_transform.0.rotation.inverse() * desired_global_rotation;
+                        }
+                }
+
+                transform.rotation = desired_global_rotation;
+        }
 }
 
 pub struct ImguiManager {
