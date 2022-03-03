@@ -1,7 +1,4 @@
-use std::{
-        convert::TryInto,
-        ops::{Deref, DerefMut},
-};
+use std::ops::{Deref, DerefMut};
 
 use crate::{
         asset_manager::Material,
@@ -10,9 +7,10 @@ use crate::{
         my_glm::*,
 };
 
-pub fn imgui_vec3<T: AsRef<str>>(ui: &imgui::Ui<'_>, label: T, min: f32, max: f32, mut vec: Vec3) -> Option<Vec3> {
-        if imgui::Slider::new(label, min, max).build_array(&ui, (&mut vec).into()) {
-                Some(vec)
+pub fn imgui_vec3<T: AsRef<str>>(ui: &imgui::Ui<'_>, label: T, min: f32, max: f32, vec: Vec3) -> Option<Vec3> {
+        let mut v: [f32; 3] = vec.into();
+        if imgui::Slider::new(label, min, max).build_array(&ui, &mut v) {
+                Some(Vec3::from_slice(&v))
         } else {
                 None
         }
@@ -21,14 +19,16 @@ pub fn imgui_vec3<T: AsRef<str>>(ui: &imgui::Ui<'_>, label: T, min: f32, max: f3
 pub fn transform(ui: &imgui::Ui<'_>, mut transform: Transform) -> Option<Transform> {
         let mut changed = false;
 
+        let mut translation: [f32; 3] = transform.translation.into();
         if imgui::Drag::new("translation")
                 .speed(0.1)
-                .build_array(ui, (&mut transform.translation).into())
+                .build_array(ui, &mut translation)
         {
+                transform.translation = Vec3::from_slice(&translation);
                 changed = true;
         }
 
-        let euler_angles = EulerAngles::from_quat(&transform.rotation);
+        let euler_angles = EulerAngles::from_quat(transform.rotation);
         if let Some(xyz) = imgui_vec3(
                 &ui,
                 "rotation",
@@ -104,17 +104,17 @@ where
         T: Deref<Target = DirectionalLight> + DerefMut,
 {
         if ui.button("disable") {
-                dir_light.color = Vec3::from_element(0.0);
+                dir_light.color = Vec3::splat(0.0);
         }
 
-        let mut direction = dir_light.direction;
-        if imgui::Slider::new("direction", -1.0, 1.0).build_array(&ui, (&mut direction).into()) {
-                dir_light.direction = direction;
+        let mut direction: [f32; 3] = dir_light.direction.into();
+        if imgui::Slider::new("direction", -1.0, 1.0f32).build_array(&ui, &mut direction) {
+                dir_light.direction = Vec3::from_slice(&direction);
         }
 
-        let mut color: [f32; 3] = dir_light.color.try_into().unwrap();
+        let mut color: [f32; 3] = dir_light.color.into();
         if imgui::ColorEdit::new("color", &mut color).build(&ui) {
-                dir_light.color = Vec3::from_column_slice(&color);
+                dir_light.color = Vec3::from_slice(&color);
         }
 }
 
@@ -123,12 +123,12 @@ where
         T: Deref<Target = PointLight> + DerefMut,
 {
         if ui.button("disable") {
-                point_light.color = Vec3::from_element(0.0);
+                point_light.color = Vec3::splat(0.0);
         }
 
-        let mut color: [f32; 3] = point_light.color.try_into().unwrap();
+        let mut color: [f32; 3] = point_light.color.into();
         if imgui::ColorEdit::new("color", &mut color).build(&ui) {
-                point_light.color = Vec3::from_column_slice(&color);
+                point_light.color = Vec3::from_slice(&color);
         }
 
         let mut kc = point_light.kc;
@@ -155,12 +155,12 @@ where
         T: Deref<Target = Spotlight> + DerefMut,
 {
         if ui.button("disable") {
-                spotlight.color = Vec3::from_element(0.0);
+                spotlight.color = Vec3::splat(0.0);
         }
 
-        let mut color: [f32; 3] = spotlight.color.try_into().unwrap();
+        let mut color: [f32; 3] = spotlight.color.into();
         if imgui::ColorEdit::new("color", &mut color).build(&ui) {
-                spotlight.color = Vec3::from_column_slice(&color);
+                spotlight.color = Vec3::from_slice(&color);
         }
 
         let mut angle = spotlight.radius_angle;

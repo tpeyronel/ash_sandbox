@@ -17,8 +17,8 @@ pub struct Camera {
         near: f32,
         far: f32,
 
-        orien: UnitQuat,
-        hor_orien: UnitQuat,
+        orien: Quat,
+        hor_orien: Quat,
         view: Mat4,
         proj: Mat4,
         orien_outdated: bool,
@@ -29,7 +29,7 @@ pub struct Camera {
 
 impl Camera {
         pub fn new(
-                pos: &Vec3,
+                pos: Vec3,
                 pitch: f32,
                 yaw: f32,
                 roll: f32,
@@ -44,12 +44,12 @@ impl Camera {
 
                 let aspect_ratio = width as f32 / height as f32;
                 let orien = Self::calc_orientation(pitch, yaw, roll);
-                let hor_orien = Self::calc_hor_orien(&orien);
-                let view = Self::calc_view_matrix(pos, &orien);
+                let hor_orien = Self::calc_hor_orien(orien);
+                let view = Self::calc_view_matrix(pos, orien);
                 let proj = Self::calc_proj_matrix(fovy, zoom, aspect_ratio, near, far);
 
                 Self {
-                        pos: *pos,
+                        pos,
                         pitch,
                         yaw,
                         roll,
@@ -85,28 +85,28 @@ impl Camera {
                 self.zoom
         }
 
-        pub fn orien(&mut self) -> &UnitQuat {
+        pub fn orien(&mut self) -> Quat {
                 if self.orien_outdated {
                         self.orien = Self::calc_orientation(self.pitch, self.yaw, self.roll);
                         self.orien_outdated = false;
                 }
 
-                &self.orien
+                self.orien
         }
 
-        pub fn hor_orien(&mut self) -> &UnitQuat {
+        pub fn hor_orien(&mut self) -> Quat {
                 if self.hor_orien_outdated {
                         self.hor_orien = Self::calc_hor_orien(self.orien());
                         self.hor_orien_outdated = false;
                 }
 
-                &self.hor_orien
+                self.hor_orien
         }
 
         pub fn view(&mut self) -> &Mat4 {
                 if self.view_outdated {
                         self.orien();
-                        self.view = Self::calc_view_matrix(&self.pos, &self.orien);
+                        self.view = Self::calc_view_matrix(self.pos, self.orien);
                         self.view_outdated = false;
                 }
 
@@ -218,29 +218,27 @@ impl Camera {
                 self.proj_outdated = true;
         }
 
-        fn calc_orientation(pitch: f32, yaw: f32, roll: f32) -> UnitQuat {
+        fn calc_orientation(pitch: f32, yaw: f32, roll: f32) -> Quat {
                 let fpitch2 = pitch / 2.0;
                 let fyaw2 = yaw / 2.0;
                 let froll2 = roll / 2.0;
 
-                let qyaw = UnitQuat::new_unchecked(Quat::new(fyaw2.cos(), 0.0, fyaw2.sin(), 0.0));
-                let qpitch = UnitQuat::new_unchecked(Quat::new(fpitch2.cos(), -fpitch2.sin(), 0.0, 0.0));
-                let qroll = UnitQuat::new_unchecked(Quat::new(froll2.cos(), 0.0, 0.0, -froll2.sin()));
+                let qyaw = Quat::from_xyzw(0.0, fyaw2.sin(), 0.0, fyaw2.cos());
+                let qpitch = Quat::from_xyzw(-fpitch2.sin(), 0.0, 0.0, fpitch2.cos());
+                let qroll = Quat::from_xyzw(0.0, 0.0, -froll2.sin(), froll2.cos());
 
                 qyaw * qpitch * qroll
         }
 
-        fn calc_hor_orien(orien: &UnitQuat) -> UnitQuat {
-                UnitQuat::new_normalize(Quat::new(orien.as_vector().w, 0.0, orien.as_vector().y, 0.0))
+        fn calc_hor_orien(orien: Quat) -> Quat {
+                Quat::from_xyzw(0.0, orien.y, 0.0, orien.w).normalize()
         }
 
-        fn calc_view_matrix(pos: &Vec3, orien: &UnitQuat) -> Mat4 {
-                (Mat4::new_translation(pos) * orien.to_homogeneous())
-                        .try_inverse()
-                        .expect("Couldn't invert camera ViewMatrix!")
+        fn calc_view_matrix(pos: Vec3, orien: Quat) -> Mat4 {
+                (Mat4::from_translation(pos) * Mat4::from_quat(orien)).inverse()
         }
 
         fn calc_proj_matrix(fovy: f32, zoom: f32, aspect_ratio: f32, near: f32, far: f32) -> Mat4 {
-                glm::perspective_rh_zo(aspect_ratio, fovy / zoom, near, far)
+                Mat4::perspective_rh(fovy / zoom, aspect_ratio, near, far)
         }
 }

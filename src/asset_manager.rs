@@ -431,7 +431,7 @@ impl AssetManager {
                 let default_material = materials.insert(Material {
                         name: Some("default-material".into()),
                         shader: default_shader,
-                        base_color_factor: Vec4::from_element(1.0),
+                        base_color_factor: Vec4::splat(1.0),
                         metallic_factor: 1.0,
                         roughness_factor: 1.0,
                         shininess: DEFAULT_SHININESS,
@@ -443,7 +443,7 @@ impl AssetManager {
                         normal_texture: None,
                         occlusion_texture: None,
                         emissive_texture: None,
-                        emissive_factor: Vec3::from_element(0.0),
+                        emissive_factor: Vec3::splat(0.0),
                 });
                 events.push(AssetManagerEvent::MaterialUpdated(default_material));
 
@@ -796,9 +796,9 @@ impl AssetManager {
                                 let normal_texture = m.normal_texture().map(|t| texture_ids[t.texture().index()]);
                                 let occlusion_texture = m.occlusion_texture().map(|t| texture_ids[t.texture().index()]);
                                 let emissive_texture = m.emissive_texture().map(|t| texture_ids[t.texture().index()]);
-                                let emissive_factor = Vec3::from_column_slice(&m.emissive_factor());
+                                let emissive_factor = Vec3::from_slice(&m.emissive_factor());
 
-                                let shader = if emissive_factor.norm_squared() == 0.0 {
+                                let shader = if emissive_factor.length_squared() == 0.0 {
                                         shader_names["basic-shader"]
                                 } else {
                                         shader_names["color-shader"]
@@ -905,7 +905,7 @@ impl AssetManager {
 
                         let base_transform = match &n.transform() {
                                 gltf::scene::Transform::Matrix { matrix } => unsafe {
-                                        Mat4::from_column_slice(std::slice::from_raw_parts(
+                                        Mat4::from_cols_slice(std::slice::from_raw_parts(
                                                 matrix as *const _ as *const f32,
                                                 16,
                                         ))
@@ -915,20 +915,15 @@ impl AssetManager {
                                         rotation,
                                         scale,
                                 } => {
-                                        let translation = Vec3::from_column_slice(translation);
+                                        let translation = Vec3::from_slice(translation);
 
-                                        let rotation = UnitQuat::new_unchecked(Quat::new(
-                                                rotation[3],
-                                                rotation[0],
-                                                rotation[1],
-                                                rotation[2],
-                                        ));
+                                        let rotation = Quat::from_slice(rotation).normalize();
 
-                                        let scale = Vec3::from_column_slice(scale);
+                                        let scale = Vec3::from_slice(scale);
 
-                                        Mat4::new_translation(&translation)
-                                                * rotation.to_homogeneous()
-                                                * Mat4::new_nonuniform_scaling(&scale)
+                                        Mat4::from_translation(translation)
+                                                * Mat4::from_quat(rotation)
+                                                * Mat4::from_scale(scale)
                                 },
                         };
 
@@ -973,7 +968,7 @@ impl AssetManager {
 
                 let model = Model {
                         name: Some(name.clone()),
-                        base_transform: Mat4::from_scaled_axis(Vec3::up() * 180.0f32.to_radians()),
+                        base_transform: Mat4::from_axis_angle(Vec3::UP, 180.0f32.to_radians()),
                         // base_transform: Mat4::identity(),
                         meshes: Vec::new(),
                         children,
@@ -1034,16 +1029,16 @@ impl AssetManager {
                                 ref rotation,
                                 ref scale,
                         } => {
-                                let t = Mat4::new_translation(&Vec3::from_column_slice(translation));
+                                let t = Mat4::from_translation(&Vec3::from_slice(translation));
 
-                                let r = UnitQuat::new_unchecked(Quat::new(
+                                let r = Quat::new_unchecked(Quat::new(
                                         rotation[3],
                                         rotation[0],
                                         rotation[1],
                                         rotation[2],
                                 ));
 
-                                let s = Mat4::new_nonuniform_scaling(&Vec3::from_column_slice(scale));
+                                let s = Mat4::new_nonuniform_scaling(&Vec3::from_slice(scale));
 
                                 t * r.to_homogeneous() * s
                         }

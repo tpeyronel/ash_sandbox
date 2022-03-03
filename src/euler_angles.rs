@@ -1,6 +1,6 @@
 use bevy_ecs::prelude::Component;
 
-use crate::my_glm::{UnitQuat, Vec3};
+use crate::my_glm::{Quat, Vec3};
 
 const PITCH_MAX: f32 = (std::f32::consts::TAU / 4.0) - 0.0001;
 const PITCH_MIN: f32 = -PITCH_MAX;
@@ -17,9 +17,7 @@ impl EulerAngles {
                 }
         }
 
-        pub fn from_quat(quat: &UnitQuat) -> Self {
-                let q = quat.as_vector();
-
+        pub fn from_quat(q: Quat) -> Self {
                 // roll
                 let sinr_cosp = 2.0 * (q.w * q.z + q.x * q.y);
                 let cosr_cosp = 1.0 - 2.0 * (q.z * q.z + q.x * q.x);
@@ -43,8 +41,8 @@ impl EulerAngles {
                 }
         }
 
-        pub fn to_quat(&self) -> UnitQuat {
-                // UnitQuat::from_euler_angles();
+        pub fn to_quat(&self) -> Quat {
+                // Quat::from_euler_angles();
 
                 // let cy = f32::cos(self.yaw * 0.5);
                 // let sy = f32::sin(self.yaw * 0.5);
@@ -53,16 +51,16 @@ impl EulerAngles {
                 // let cr = f32::cos(self.roll * 0.5);
                 // let sr = f32::sin(self.roll * 0.5);
 
-                // UnitQuat::new_unchecked(Quat::new(
+                // Quat::new_unchecked(Quat::new(
                 //         cr * cp * cy + sr * sp * sy,
                 //         cr * sp * cy + sr * cp * sy,
                 //         cr * cp * sy - sr * sp * cy,
                 //         sr * cp * cy - cr * sp * sy,
                 // ))
 
-                UnitQuat::from_axis_angle(&Vec3::y_axis(), self.yaw())
-                        * UnitQuat::from_axis_angle(&Vec3::x_axis(), self.pitch())
-                        * UnitQuat::from_axis_angle(&Vec3::z_axis(), self.roll())
+                Quat::from_axis_angle(Vec3::Y, self.yaw())
+                        * Quat::from_axis_angle(Vec3::X, self.pitch())
+                        * Quat::from_axis_angle(Vec3::Z, self.roll())
         }
 
         pub fn pitch(&self) -> f32 {

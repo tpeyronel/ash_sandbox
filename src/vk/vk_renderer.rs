@@ -175,19 +175,17 @@ impl Renderer for VkRenderer {
                 let aspect_ratio = width as f32 / height as f32;
 
                 let camera = world.get_resource::<ActiveCamera>().unwrap().0;
-                let camera_orien = &world.get::<InterpGlobalTransform>(camera).unwrap().0.rotation;
-                let camera_pos = &world.get::<InterpGlobalTransform>(camera).unwrap().0.translation;
+                let camera_orien = world.get::<InterpGlobalTransform>(camera).unwrap().0.rotation;
+                let camera_pos = world.get::<InterpGlobalTransform>(camera).unwrap().0.translation;
                 let camera_projection = world.get::<ProjectionCamera>(camera).unwrap();
 
-                let inverted_view_mat = Mat4::new_translation(&camera_pos) * camera_orien.to_homogeneous();
-                let view_mat = inverted_view_mat
-                        .try_inverse()
-                        .expect("Couldn't invert camera ViewMatrix!");
+                let inverted_view_mat = Mat4::from_translation(camera_pos) * Mat4::from_quat(camera_orien);
+                let view_mat = inverted_view_mat.inverse();
 
                 let proj_mat = camera_projection.calc_proj_matrix(aspect_ratio);
 
                 let world_matrices = WorldMatrices {
-                        view_pos: Vec4::new_position(&camera_pos),
+                        view_pos: Vec4::from((camera_pos, 1.0)),
                         view: view_mat,
                         proj: proj_mat,
                         vp: proj_mat * view_mat,
@@ -202,16 +200,16 @@ impl Renderer for VkRenderer {
                         .unwrap();
 
                 let point_light = WorldPointLight {
-                        pos: Vec4::new_position(&light_transform.0.translation),
-                        color: Vec4::new_position(&point_light.color),
+                        pos: Vec4::from((light_transform.0.translation, 1.0)),
+                        color: Vec4::from((point_light.color, 1.0)),
                         kc_kl_kq: Vec4::new(point_light.kc, point_light.kl, point_light.kq, 0.0),
                 };
 
                 let dir_light = world.query::<&DirectionalLight>().iter(&world).next().unwrap();
 
                 let dir_light = WorldDirectionalLight {
-                        direction: Vec4::new_direction(&dir_light.direction),
-                        color: Vec4::new_position(&dir_light.color),
+                        direction: Vec4::from((dir_light.direction, 0.0)),
+                        color: Vec4::from((dir_light.color, 1.0)),
                 };
 
                 let (spotlight_transform, spotlight_component) = world
@@ -222,9 +220,9 @@ impl Renderer for VkRenderer {
 
                 let spotlight_dir = spotlight_transform.0.rotation * Vec3::new(0.0, 0.0, -1.0);
                 let spotlight = WorldSpotlight {
-                        pos: Vec4::new_position(&spotlight_transform.0.translation),
-                        dir: Vec4::new_vec3_and_w(&spotlight_dir, spotlight_component.radius_angle.cos()),
-                        color: Vec4::new_position(&spotlight_component.color),
+                        pos: Vec4::from((spotlight_transform.0.translation, 1.0)),
+                        dir: Vec4::from((spotlight_dir, spotlight_component.radius_angle.cos())),
+                        color: Vec4::from((spotlight_component.color, 1.0)),
                         kc_kl_kq_inner: Vec4::new(
                                 spotlight_component.kc,
                                 spotlight_component.kl,
@@ -688,7 +686,7 @@ impl VkRenderer {
                 unsafe {
                         let model = model_matrix * model.base_transform;
                         let mvp = world_matrices.vp * model;
-                        let normal = glm::inverse_transpose(model);
+                        let normal = model.inverse().transpose();
 
                         let object_matrices = ObjectMatrices { model, mvp, normal };
                         let object_matrices_offset =

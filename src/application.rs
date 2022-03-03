@@ -624,10 +624,10 @@ fn spawn_entities(mut commands: Commands) {
         let colt = commands
                 .spawn()
                 .insert(Transform::from_translation(Vec3::new(2.5, 0.0, 0.0)))
-                .insert(AngularVelocity(Vec3::y() * 45.0f32.to_radians()))
+                .insert(AngularVelocity(Vec3::Y * 45.0f32.to_radians()))
                 .insert(OrbitalVelocity {
                         origin: Vec3::new(0.0, 2.5, 0.0),
-                        velocity: (Vec3::x() + Vec3::y()).normalize() * -22.5f32.to_radians(),
+                        velocity: (Vec3::X + Vec3::Y).normalize() * -22.5f32.to_radians(),
                 })
                 .id();
 
@@ -656,10 +656,10 @@ fn spawn_entities(mut commands: Commands) {
                         scale: Vec3::new(5.0, 5.0, 5.0),
                         ..Transform::identity()
                 })
-                .insert(AngularVelocity(Vec3::y() * 22.5f32.to_radians()))
+                .insert(AngularVelocity(Vec3::Y * 22.5f32.to_radians()))
                 .insert(OrbitalVelocity {
                         origin: Vec3::new(0.0, 0.0, 0.0),
-                        velocity: Vec3::y() * -22.5f32.to_radians(),
+                        velocity: Vec3::Y * -22.5f32.to_radians(),
                 })
                 .id();
 
@@ -698,8 +698,8 @@ fn spawn_entities(mut commands: Commands) {
                 .spawn()
                 .insert(Transform {
                         translation: Vec3::new(1.0, 2.0, 0.0),
-                        rotation: UnitQuat::identity(),
-                        scale: Vec3::from_element(0.25),
+                        rotation: Quat::IDENTITY,
+                        scale: Vec3::splat(0.25),
                 })
                 .insert(PointLight {
                         color: Vec3::new(0.9, 1.0, 0.9),
@@ -708,8 +708,8 @@ fn spawn_entities(mut commands: Commands) {
                         kq: 1.0,
                 })
                 .insert(OrbitalVelocity {
-                        origin: Vec3::from_element(0.0),
-                        velocity: Vec3::y() * 45.0f32.to_radians(),
+                        origin: Vec3::splat(0.0),
+                        velocity: Vec3::Y * 45.0f32.to_radians(),
                 })
                 .id();
 
@@ -775,14 +775,9 @@ fn process_actions(
                 }
         }
 
-        if desired_dir.norm_squared() > f32::EPSILON {
-                let camera_orien = &global_transform_query.get(camera.0).unwrap().0.rotation;
-                let camera_hor_orien = UnitQuat::new_normalize(Quat::new(
-                        camera_orien.as_vector().w,
-                        0.0,
-                        camera_orien.as_vector().y,
-                        0.0,
-                ));
+        if desired_dir.length_squared() > f32::EPSILON {
+                let camera_orien = global_transform_query.get(camera.0).unwrap().0.rotation;
+                let camera_hor_orien = Quat::from_xyzw(0.0, camera_orien.y, 0.0, camera_orien.w).normalize();
 
                 let move_vector = camera_hor_orien * desired_dir * PLAYER_MOVEMENT_SPEED;
 
@@ -886,7 +881,7 @@ fn update_tps_counter(mut tps_counter: ResMut<TPSCounter>) {
 
 fn renormalize_quaternions(mut transforms: Query<&mut Transform, Changed<Transform>>) {
         for mut transform in transforms.iter_mut() {
-                transform.rotation = UnitQuat::new_normalize(*transform.rotation);
+                transform.rotation = transform.rotation.normalize();
         }
 }
 
@@ -922,14 +917,14 @@ fn integrate_linear_velocity(mut query: Query<(&Velocity, &mut Transform)>, tick
 
 fn integrate_angular_velocities(mut query: Query<(&AngularVelocity, &mut Transform)>, ticktime: Res<Ticktime>) {
         for (angular_velocity, mut transform) in query.iter_mut() {
-                transform.rotation *= UnitQuat::new(angular_velocity.0 * ticktime.0);
+                transform.rotation *= Quat::from_scaled_axis(angular_velocity.0 * ticktime.0);
         }
 }
 
 fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transform)>, ticktime: Res<Ticktime>) {
         for (orbital_velocity, mut transform) in query.iter_mut() {
                 let orbital_pos = transform.translation - orbital_velocity.origin;
-                let orbital_rot = UnitQuat::new(orbital_velocity.velocity * ticktime.0);
+                let orbital_rot = Quat::from_scaled_axis(orbital_velocity.velocity * ticktime.0);
                 let new_orbital_pos = orbital_rot * orbital_pos;
                 let delta_pos = new_orbital_pos - orbital_pos;
 
@@ -967,12 +962,15 @@ fn billboard_system(
         camera: Res<ActiveCamera>,
 ) {
         let camera_transform = global_transform_query.get(camera.0).unwrap();
-        let up = Vec3::up();
 
         for (billboard, global_transform, mut transform) in transform_billboard_query.iter_mut() {
-                let object_to_camera = camera_transform.0.translation - global_transform.0.translation;
+                let desired_dir = Vec3::normalize(camera_transform.0.translation - global_transform.0.translation);
 
-                let mut desired_global_rotation = UnitQuat::face_towards(&object_to_camera, &up);
+                let forward = desired_dir;
+                let right = Vec3::UP.cross(desired_dir).normalize();
+                let up = forward.cross(right);
+
+                let mut desired_global_rotation = Quat::from_mat3(&Mat3::from_cols(right, up, forward));
 
                 if let Ok(parent) = parent_query.get(billboard) {
                         if let Ok(parent_global_transform) = global_transform_query.get(parent.0) {

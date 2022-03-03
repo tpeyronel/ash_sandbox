@@ -342,8 +342,7 @@ impl VkSwapchain {
         }
 
         fn clamp_image_count(image_count: u32, surface_capabilities: &vk::SurfaceCapabilitiesKHR) -> u32 {
-                na::clamp(
-                        image_count,
+                image_count.clamp(
                         surface_capabilities.min_image_count,
                         match surface_capabilities.max_image_count {
                                 0 => u32::MAX,

@@ -18,7 +18,7 @@ pub struct ImguiWantCaptureKeyboard(pub bool);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Transform {
         pub translation: Vec3,
-        pub rotation: UnitQuat,
+        pub rotation: Quat,
         pub scale: Vec3,
 }
 
@@ -31,17 +31,23 @@ impl Default for Transform {
 impl Transform {
         pub fn interp(&self, other: &Self, t: f32) -> Self {
                 Self {
-                        translation: Vec3::lerp(&self.translation, &other.translation, t),
-                        rotation: UnitQuat::try_slerp(&self.rotation, &other.rotation, t, 0.0)
-                                .unwrap_or_else(|| UnitQuat::nlerp(&self.rotation, &other.rotation, t)),
-                        scale: Vec3::lerp(&self.scale, &other.scale, t),
+                        translation: Vec3::lerp(self.translation, other.translation, t),
+                        rotation: Quat::slerp(
+                                if Quat::dot(self.rotation, other.rotation) >= 0.0 {
+                                        self.rotation
+                                } else {
+                                        -self.rotation
+                                },
+                                other.rotation,
+                                t,
+                        ),
+                        scale: Vec3::lerp(self.scale, other.scale, t),
                 }
         }
 
         pub fn to_matrix(&self) -> Mat4 {
-                Mat4::new_translation(&self.translation)
-                        * UnitQuat::to_homogeneous(&self.rotation)
-                        * Mat4::new_nonuniform_scaling(&self.scale)
+                // Mat4::from_translation(self.translation) * Mat4::from_quat(self.rotation) * Mat4::from_scale(self.scale)
+                Mat4::from_scale_rotation_translation(self.scale, self.rotation, self.translation)
         }
 
         pub fn from_translation(translation: Vec3) -> Self {
@@ -51,7 +57,7 @@ impl Transform {
                 }
         }
 
-        pub fn from_rotation(rotation: UnitQuat) -> Self {
+        pub fn from_rotation(rotation: Quat) -> Self {
                 Self {
                         rotation,
                         ..Self::identity()
@@ -67,9 +73,9 @@ impl Transform {
 
         pub fn identity() -> Self {
                 Self {
-                        translation: Vec3::from_element(0.0),
-                        rotation: UnitQuat::identity(),
-                        scale: Vec3::from_element(1.0),
+                        translation: Vec3::ZERO,
+                        rotation: Quat::IDENTITY,
+                        scale: Vec3::ONE,
                 }
         }
 }
@@ -79,9 +85,10 @@ impl Mul<Transform> for Transform {
 
         fn mul(self, rhs: Transform) -> Self::Output {
                 Self {
-                        translation: self.translation + self.scale.component_mul(&(self.rotation * rhs.translation)),
+                        // translation: self.translation + (self.scale * (self.rotation * rhs.translation)),
+                        translation: self.translation + (self.rotation * (rhs.translation * self.scale)),
                         rotation: self.rotation * rhs.rotation,
-                        scale: self.scale.component_mul(&rhs.scale),
+                        scale: self.scale * rhs.scale,
                 }
         }
 }
@@ -130,7 +137,7 @@ impl ProjectionCamera {
         }
 
         pub fn calc_proj_matrix(&self, aspect_ratio: f32) -> Mat4 {
-                glm::perspective_rh_zo(aspect_ratio, self.fovy / self.zoom, self.near, self.far)
+                Mat4::perspective_rh(self.fovy / self.zoom, aspect_ratio, self.near, self.far)
         }
 }
 
