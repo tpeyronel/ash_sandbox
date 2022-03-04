@@ -18,7 +18,7 @@ use super::{
 use crate::{
         application::InterpGlobalTransform,
         asset_manager::{AssetManager, MeshId},
-        components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight, Transform},
+        components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
         constants::MAX_OBJECT_MATRICES,
         model_instance_manager::ModelInstance,
         my_glm::*,
@@ -681,10 +681,8 @@ impl VkRenderer {
         ) -> VkResult<()> {
                 //let mut last_material = MaterialID::MAX;
 
-                let model = &asset_manager.models()[minstance.model];
-
                 unsafe {
-                        let model = model_matrix * model.base_transform;
+                        let model = model_matrix;
                         let mvp = world_matrices.vp * model;
                         let normal = model.inverse().transpose();
 
@@ -701,6 +699,8 @@ impl VkRenderer {
                                 &[object_matrices_offset as u32],
                         )
                 };
+
+                let model = &asset_manager.models()[minstance.model];
 
                 for &mesh_id in &model.meshes {
                         Self::draw_mesh_instance(

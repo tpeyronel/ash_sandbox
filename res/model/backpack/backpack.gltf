@@ -15,13 +15,7 @@
     "nodes" : [
         {
             "mesh" : 0,
-            "name" : "backpack-node",
-            "rotation" : [
-                0.7071068286895752,
-                0,
-                0,
-                0.7071067094802856
-            ]
+            "name" : "backpack-node"
         }
     ],
     "materials" : [
@@ -81,12 +75,12 @@
         },
         {
             "mimeType" : "image/png",
-            "name" : "diffuse.png.002",
+            "name" : "diffuse.png",
             "uri" : "diffuse.png"
         },
         {
             "mimeType" : "image/png",
-            "name" : "specular.png.002",
+            "name" : "specular.png",
             "uri" : "specular.png"
         }
     ],
@@ -94,35 +88,35 @@
         {
             "bufferView" : 0,
             "componentType" : 5126,
-            "count" : 63937,
+            "count" : 64120,
             "max" : [
                 0.15595600008964539,
-                0.06785000115633011,
-                0.14929500222206116
+                0.2473759949207306,
+                0.06784997880458832
             ],
             "min" : [
                 -0.1643490046262741,
-                -0.2295989990234375,
-                -0.2473759949207306
+                -0.14929501712322235,
+                -0.2295989841222763
             ],
             "type" : "VEC3"
         },
         {
             "bufferView" : 1,
             "componentType" : 5126,
-            "count" : 63937,
+            "count" : 64120,
             "type" : "VEC3"
         },
         {
             "bufferView" : 2,
             "componentType" : 5126,
-            "count" : 63937,
+            "count" : 64120,
             "type" : "VEC4"
         },
         {
             "bufferView" : 3,
             "componentType" : 5126,
-            "count" : 63937,
+            "count" : 64120,
             "type" : "VEC2"
         },
         {
@@ -135,28 +129,28 @@
     "bufferViews" : [
         {
             "buffer" : 0,
-            "byteLength" : 767244,
+            "byteLength" : 769440,
             "byteOffset" : 0
         },
         {
             "buffer" : 0,
-            "byteLength" : 767244,
-            "byteOffset" : 767244
+            "byteLength" : 769440,
+            "byteOffset" : 769440
         },
         {
             "buffer" : 0,
-            "byteLength" : 1022992,
-            "byteOffset" : 1534488
+            "byteLength" : 1025920,
+            "byteOffset" : 1538880
         },
         {
             "buffer" : 0,
-            "byteLength" : 511496,
-            "byteOffset" : 2557480
+            "byteLength" : 512960,
+            "byteOffset" : 2564800
         },
         {
             "buffer" : 0,
             "byteLength" : 407442,
-            "byteOffset" : 3068976
+            "byteOffset" : 3077760
         }
     ],
     "samplers" : [
@@ -167,7 +161,7 @@
     ],
     "buffers" : [
         {
-            "byteLength" : 3476420,
+            "byteLength" : 3485204,
             "uri" : "backpack.bin"
         }
     ]

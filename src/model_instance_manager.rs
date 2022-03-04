@@ -2,7 +2,7 @@ use bevy_ecs::{prelude::*, system::Command};
 
 use crate::{
         asset_manager::{AssetManager, ModelId},
-        components::{Children, Parent, Transform},
+        components::{Children, Parent},
 };
 
 #[derive(Component, Debug, Clone)]
@@ -54,6 +54,7 @@ impl CreateModelInstance {
                 let entity_id = world.spawn().id();
 
                 let model = &world.get_resource::<AssetManager>().unwrap().models()[model_id];
+                let model_transform = model.base_transform;
                 let model_children = model.children.clone();
 
                 let children: Vec<Entity> =
@@ -67,8 +68,7 @@ impl CreateModelInstance {
                 world.entity_mut(entity_id)
                         .insert(Parent(parent))
                         .insert(Children(children))
-                        // .insert(model_transform)
-                        .insert(Transform::identity())
+                        .insert(model_transform)
                         .insert(ModelInstance { model: model_id });
 
                 entity_id

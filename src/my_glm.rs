@@ -85,3 +85,23 @@ impl WorldDirections for Vec3 {
 
         const DOWN: Vec3 = glam::const_vec3!([0.0, -1.0, 0.0]);
 }
+
+pub trait FaceTowards {
+        fn face_towards(eye: Vec3, target: Vec3, up: Vec3) -> Self;
+}
+
+impl FaceTowards for Mat3 {
+        fn face_towards(eye: Vec3, target: Vec3, up: Vec3) -> Self {
+                let backward = Vec3::normalize(eye - target);
+                let right = up.cross(backward).normalize();
+                let up = backward.cross(right);
+
+                Mat3::from_cols(right, up, backward)
+        }
+}
+
+impl FaceTowards for Quat {
+        fn face_towards(eye: Vec3, target: Vec3, up: Vec3) -> Self {
+                Quat::from_mat3(&Mat3::face_towards(eye, target, up))
+        }
+}

@@ -653,7 +653,7 @@ fn spawn_entities(mut commands: Commands) {
                 .spawn()
                 .insert(Transform {
                         translation: Vec3::new(2.0, 0.0, 0.0),
-                        scale: Vec3::new(5.0, 5.0, 5.0),
+                        scale: Vec3::new(5.0, 2.5, 5.0),
                         ..Transform::identity()
                 })
                 .insert(AngularVelocity(Vec3::Y * 22.5f32.to_radians()))
@@ -964,13 +964,8 @@ fn billboard_system(
         let camera_transform = global_transform_query.get(camera.0).unwrap();
 
         for (billboard, global_transform, mut transform) in transform_billboard_query.iter_mut() {
-                let desired_dir = Vec3::normalize(camera_transform.0.translation - global_transform.0.translation);
-
-                let forward = desired_dir;
-                let right = Vec3::UP.cross(desired_dir).normalize();
-                let up = forward.cross(right);
-
-                let mut desired_global_rotation = Quat::from_mat3(&Mat3::from_cols(right, up, forward));
+                let mut desired_global_rotation =
+                        Quat::face_towards(global_transform.0.translation, camera_transform.0.translation, Vec3::UP);
 
                 if let Ok(parent) = parent_query.get(billboard) {
                         if let Ok(parent_global_transform) = global_transform_query.get(parent.0) {

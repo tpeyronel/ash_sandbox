@@ -46,7 +46,7 @@ slotmap::new_key_type! { pub struct ModelId; }
 #[derive(Debug, Clone)]
 pub struct Model {
         pub name: Option<String>,
-        pub base_transform: Mat4,
+        pub base_transform: Transform,
         pub meshes: Vec<MeshId>,
         pub children: Vec<ModelId>,
 }
@@ -905,10 +905,12 @@ impl AssetManager {
 
                         let base_transform = match &n.transform() {
                                 gltf::scene::Transform::Matrix { matrix } => unsafe {
-                                        Mat4::from_cols_slice(std::slice::from_raw_parts(
+                                        let mat = Mat4::from_cols_slice(std::slice::from_raw_parts(
                                                 matrix as *const _ as *const f32,
                                                 16,
-                                        ))
+                                        ));
+
+                                        Transform::from_mat4(&mat)
                                 },
                                 gltf::scene::Transform::Decomposed {
                                         translation,
@@ -921,9 +923,11 @@ impl AssetManager {
 
                                         let scale = Vec3::from_slice(scale);
 
-                                        Mat4::from_translation(translation)
-                                                * Mat4::from_quat(rotation)
-                                                * Mat4::from_scale(scale)
+                                        Transform {
+                                                translation,
+                                                rotation,
+                                                scale,
+                                        }
                                 },
                         };
 
@@ -968,8 +972,10 @@ impl AssetManager {
 
                 let model = Model {
                         name: Some(name.clone()),
-                        base_transform: Mat4::from_axis_angle(Vec3::UP, 180.0f32.to_radians()),
-                        // base_transform: Mat4::identity(),
+                        base_transform: Transform::from_rotation(Quat::from_axis_angle(
+                                Vec3::UP,
+                                180.0f32.to_radians(),
+                        )),
                         meshes: Vec::new(),
                         children,
                 };

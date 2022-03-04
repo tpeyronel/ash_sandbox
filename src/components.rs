@@ -71,6 +71,16 @@ impl Transform {
                 }
         }
 
+        pub fn from_mat4(mat: &Mat4) -> Self {
+                let (scale, rotation, translation) = mat.to_scale_rotation_translation();
+
+                Self {
+                        translation,
+                        rotation,
+                        scale,
+                }
+        }
+
         pub fn identity() -> Self {
                 Self {
                         translation: Vec3::ZERO,
@@ -85,10 +95,10 @@ impl Mul<Transform> for Transform {
 
         fn mul(self, rhs: Transform) -> Self::Output {
                 Self {
-                        // translation: self.translation + (self.scale * (self.rotation * rhs.translation)),
-                        translation: self.translation + (self.rotation * (rhs.translation * self.scale)),
+                        translation: self.translation + (self.rotation * (self.scale * rhs.translation)),
                         rotation: self.rotation * rhs.rotation,
                         scale: self.scale * rhs.scale,
+                        // scale:  (rhs.rotation.inverse() * self.scale).abs() * rhs.scale,
                 }
         }
 }
