@@ -433,6 +433,7 @@ impl VkSwapchain {
         ) -> VkResult<(VkImage, VkImageView)> {
                 let color_img = unsafe {
                         let depth_img_cinfo = VkImageCreateInfo {
+                                flags: Default::default(),
                                 image_type: vk::ImageType::TYPE_2D,
                                 format,
                                 extent: vk::Extent3D {
@@ -489,6 +490,7 @@ impl VkSwapchain {
         ) -> VkResult<(VkImage, VkImageView)> {
                 let depth_img = unsafe {
                         let depth_img_cinfo = VkImageCreateInfo {
+                                flags: Default::default(),
                                 image_type: vk::ImageType::TYPE_2D,
                                 format,
                                 extent: vk::Extent3D {

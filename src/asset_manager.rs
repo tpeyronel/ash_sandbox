@@ -5,9 +5,13 @@ use std::{
         sync::Arc,
 };
 
-use gltf::image::Format;
+use gltf::{
+        accessor::{DataType, Dimensions},
+        image::Format,
+};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
+use serde::Deserialize;
 use slotmap::SlotMap;
 use thiserror::Error;
 
@@ -38,9 +42,6 @@ enum DataType {
         Mat4,
 }*/
 
-pub type ComponentType = gltf::accessor::DataType;
-pub type DataType = gltf::accessor::Dimensions;
-
 slotmap::new_key_type! { pub struct ModelId; }
 
 #[derive(Debug, Clone)]
@@ -57,38 +58,19 @@ slotmap::new_key_type! { pub struct MeshId; }
 
 #[derive(Debug, Clone)]
 pub struct Mesh {
-        pub positions: BufferViewId,
-        pub tex_coords: BufferViewId,
-        pub normals: BufferViewId,
-        pub tangents: BufferViewId,
-        pub indices: BufferViewId,
+        pub positions: Vec<Vec3>,
+        pub tex_coords: Vec<Vec2>,
+        pub normals: Vec<Vec3>,
+        pub tangents: Vec<Vec4>,
+        pub indices: IndicesVec,
         pub material: MaterialId,
         pub bounding_box: BoundingBox,
 }
 
-slotmap::new_key_type! { pub struct BufferViewId; }
-
 #[derive(Debug, Clone)]
-pub struct BufferView {
-        pub buffer: BufferId,
-        pub byte_length: usize,
-        pub byte_offset: usize,
-        pub component_type: ComponentType,
-        pub data_type: DataType,
-        pub element_count: usize,
-}
-
-slotmap::new_key_type! { pub struct BufferId; }
-
-#[derive(Debug, Clone)]
-pub struct Buffer {
-        pub bytes: Arc<Vec<u8>>,
-}
-
-impl Buffer {
-        fn new(bytes: Vec<u8>) -> Self {
-                Self { bytes: Arc::new(bytes) }
-        }
+pub enum IndicesVec {
+        U16(Vec<u16>),
+        U32(Vec<u32>),
 }
 
 slotmap::new_key_type! { pub struct MaterialId; }
@@ -131,10 +113,28 @@ slotmap::new_key_type! { pub struct ImageId; }
 #[derive(Debug, Clone)]
 pub struct Image {
         // name: Option<String>,
-        pub pixels: BufferId,
+        pub pixels: Vec<u8>,
         pub width: u32,
         pub height: u32,
         pub format: ImageFormat,
+}
+
+impl Image {
+        pub fn from_file(path: &Path) -> AnyResult<Self> {
+                let image = image::open(path)?;
+
+                match image {
+                        image::DynamicImage::ImageRgba8(_) => (),
+                        _ => panic!("Unsupported image format!"),
+                }
+
+                Ok(Self {
+                        width: image.width(),
+                        height: image.height(),
+                        pixels: image.into_bytes(),
+                        format: ImageFormat::R8G8B8A8,
+                })
+        }
 }
 
 pub type MagFilter = gltf::texture::MagFilter;
@@ -152,6 +152,22 @@ pub struct Sampler {
         pub wrap_t: WrappingMode,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub enum CullMode {
+        #[serde(rename = "none")]
+        None,
+        #[serde(rename = "front")]
+        Front,
+        #[serde(rename = "back")]
+        Back,
+}
+
+impl Default for CullMode {
+        fn default() -> Self {
+                Self::Back
+        }
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct ShaderDeclaration {
         pub name: String,
@@ -161,6 +177,13 @@ pub struct ShaderDeclaration {
 
         #[serde(rename = "fragment-shader")]
         pub frag_shader: PathBuf,
+
+        // default is false
+        #[serde(rename = "disable-depth-test", default)]
+        pub disable_depth_test: bool,
+
+        #[serde(rename = "cull-mode", default)]
+        pub cull_mode: CullMode,
 
         pub uniforms: Vec<String>,
 
@@ -177,6 +200,8 @@ pub struct Shader {
         pub name: String,
         pub vert_module: Arc<ShaderModule>,
         pub frag_module: Arc<ShaderModule>,
+        pub disable_depth_test: bool,
+        pub cull_mode: CullMode,
         pub resources: Vec<ShaderResourceId>,
         pub vertex_inputs: Vec<String>,
 }
@@ -194,6 +219,8 @@ impl Shader {
                         name: declaration.name.clone(),
                         vert_module: Arc::new(ShaderModule::from_glsl_file(directory.join(&declaration.vert_shader))?),
                         frag_module: Arc::new(ShaderModule::from_glsl_file(directory.join(&declaration.frag_shader))?),
+                        disable_depth_test: declaration.disable_depth_test,
+                        cull_mode: declaration.cull_mode,
                         resources: declaration.uniforms,
                         vertex_inputs: declaration.vertex_inputs,
                 })
@@ -338,6 +365,13 @@ impl From<OsString> for ShaderLoadError {
         }
 }
 
+slotmap::new_key_type! { pub struct CubemapId; }
+
+#[derive(Debug, Clone)]
+pub struct Cubemap {
+        pub faces: [Image; 6],
+}
+
 /* pub struct AssetManagerBuilder {
         gltf_paths: Vec<PathBuf>,
 }
@@ -351,8 +385,6 @@ impl AssetManagerBuilder {
 #[derive(Debug, Clone)]
 pub struct AssetManager {
         events: Vec<AssetManagerEvent>,
-        buffers: SlotMap<BufferId, Buffer>,
-        buffer_views: SlotMap<BufferViewId, BufferView>,
         images: SlotMap<ImageId, Image>,
         samplers: SlotMap<SamplerId, Sampler>,
         textures: SlotMap<TextureId, Texture>,
@@ -361,25 +393,27 @@ pub struct AssetManager {
         models: SlotMap<ModelId, Model>,
         root_models: HashMap<String, ModelId>,
 
+        cubemaps: SlotMap<CubemapId, Cubemap>,
+
         shader_resources: HashMap<ShaderResourceId, ShaderResource>,
         shaders: SlotMap<ShaderId, Shader>,
         shader_names: HashMap<String, ShaderId>,
 
         default_sampler: SamplerId,
         default_material: MaterialId,
+        pub default_cubemap: CubemapId,
 }
 
 impl AssetManager {
         pub fn new() -> AnyResult<Self> {
                 let mut events = Vec::new();
-                let mut buffers = SlotMap::with_key();
-                let buffer_views = SlotMap::with_key();
                 let mut images = SlotMap::with_key();
                 let mut samplers = SlotMap::with_key();
                 let mut textures = SlotMap::with_key();
                 let mut materials = SlotMap::with_key();
                 let meshes = SlotMap::with_key();
                 let models = SlotMap::with_key();
+                let mut cubemaps = SlotMap::with_key();
                 let mut shaders = SlotMap::with_key();
 
                 let default_sampler = samplers.insert(Sampler {
@@ -391,10 +425,8 @@ impl AssetManager {
                 });
                 events.push(AssetManagerEvent::SamplerUpdated(default_sampler));
 
-                let default_diffuse_image_buffer = buffers.insert(Buffer::new(vec![u8::MAX; 4]));
-
                 let default_diffuse_image = images.insert(Image {
-                        pixels: default_diffuse_image_buffer,
+                        pixels: vec![u8::MAX; 4],
                         width: 1,
                         height: 1,
                         format: Format::R8G8B8A8,
@@ -407,10 +439,8 @@ impl AssetManager {
                         sampler: default_sampler,
                 });
 
-                let default_specular_image_buffer = buffers.insert(Buffer::new(vec![u8::MAX; 4]));
-
                 let default_specular_image = images.insert(Image {
-                        pixels: default_specular_image_buffer,
+                        pixels: vec![u8::MAX; 4],
                         width: 1,
                         height: 1,
                         format: Format::R8G8B8A8,
@@ -447,16 +477,27 @@ impl AssetManager {
                 });
                 events.push(AssetManagerEvent::MaterialUpdated(default_material));
 
-                Ok(Self {
+                let default_cubemap = cubemaps.insert(Cubemap {
+                        faces: [
+                                Image::from_file(Path::new("res/image/skybox/right.png"))?,
+                                Image::from_file(Path::new("res/image/skybox/left.png"))?,
+                                Image::from_file(Path::new("res/image/skybox/up.png"))?,
+                                Image::from_file(Path::new("res/image/skybox/down.png"))?,
+                                Image::from_file(Path::new("res/image/skybox/front.png"))?,
+                                Image::from_file(Path::new("res/image/skybox/back.png"))?,
+                        ],
+                });
+                events.push(AssetManagerEvent::CubemapUpdated(default_cubemap));
+
+                let mut s = Self {
                         events,
-                        buffers,
-                        buffer_views,
                         images,
                         samplers,
                         textures,
                         materials,
                         meshes,
                         models,
+                        cubemaps,
                         root_models: HashMap::new(),
 
                         shader_resources: HashMap::new(),
@@ -465,7 +506,19 @@ impl AssetManager {
 
                         default_sampler,
                         default_material,
-                })
+                        default_cubemap,
+                };
+
+                let skybox_shader =
+                        s.load_shader_from_yaml(Path::new("res/shader/skybox_shader/skybox_shader.yaml"))?;
+
+                let cube_model_id = s.import_gltf_file(Path::new("res/model/cube/cube.gltf"))?;
+                let cube_model = &s.models[cube_model_id];
+                let cube_material = &mut s.materials[s.meshes[s.models[cube_model.children[0]].meshes[0]].material];
+
+                cube_material.shader = skybox_shader;
+
+                Ok(s)
         }
 
         pub fn events(&self) -> &Vec<AssetManagerEvent> {
@@ -507,17 +560,7 @@ impl AssetManager {
 
                 let (doc, buffers, images) = gltf::import(gltf_path)?;
 
-                let buffers = Self::load_buffers(buffers, &mut self.buffers);
-                let buffer_view_ids =
-                        Self::load_buffer_views(&doc, &buffers, &mut self.events, &mut self.buffer_views)?;
-                let image_ids = Self::load_images(
-                        gltf_path,
-                        &doc,
-                        images,
-                        &mut self.events,
-                        &mut self.buffers,
-                        &mut self.images,
-                )?;
+                let image_ids = Self::load_images(gltf_path, &doc, images, &mut self.events, &mut self.images)?;
                 let sampler_ids = Self::load_samplers(&doc, self.default_sampler, &mut self.events, &mut self.samplers);
                 let texture_ids =
                         Self::load_textures(&doc, &image_ids, &sampler_ids, self.default_sampler, &mut self.textures);
@@ -531,9 +574,10 @@ impl AssetManager {
                 );
                 let mesh_groups = Self::load_meshes(
                         &doc,
-                        &buffer_view_ids,
+                        buffers,
                         &material_ids,
                         self.default_material,
+                        &mut self.events,
                         &mut self.meshes,
                 )?;
                 let model_ids = Self::load_models(&doc, &mesh_groups, &mut self.models)?;
@@ -544,16 +588,6 @@ impl AssetManager {
 
         pub fn get_model_by_name(&self, name: &str) -> ModelId {
                 *self.root_models.get(name).unwrap()
-        }
-
-        #[allow(dead_code)]
-        pub fn buffers(&self) -> &SlotMap<BufferId, Buffer> {
-                &self.buffers
-        }
-
-        #[allow(dead_code)]
-        pub fn buffer_views(&self) -> &SlotMap<BufferViewId, BufferView> {
-                &self.buffer_views
         }
 
         #[allow(dead_code)]
@@ -626,45 +660,9 @@ impl AssetManager {
                 &self.shader_resources
         }
 
-        fn load_buffers(
-                buffers_data: Vec<gltf::buffer::Data>,
-                out_buffers: &mut SlotMap<BufferId, Buffer>,
-        ) -> Vec<BufferId> {
-                buffers_data
-                        .into_iter()
-                        .map(|b| out_buffers.insert(Buffer::new(b.0)))
-                        .collect()
-        }
-
-        fn load_buffer_views(
-                doc: &gltf::Document,
-                buffers: &Vec<BufferId>,
-                out_events: &mut Vec<AssetManagerEvent>,
-                out_buffer_views: &mut SlotMap<BufferViewId, BufferView>,
-        ) -> Result<Vec<BufferViewId>, GLTFImportError> {
-                doc.accessors()
-                        .map(|a| {
-                                let bview = match a.view() {
-                                        Some(bview) => bview,
-                                        None => {
-                                                error!("Accessor is missing buffer view index!");
-                                                return Err(GLTFImportError::AccessorMissingBufferView);
-                                        },
-                                };
-
-                                let buffer_view_id = out_buffer_views.insert(BufferView {
-                                        buffer: buffers[bview.buffer().index()],
-                                        byte_length: bview.length(),
-                                        byte_offset: bview.offset() + a.offset(),
-                                        component_type: a.data_type(),
-                                        data_type: a.dimensions(),
-                                        element_count: a.count(),
-                                });
-                                out_events.push(AssetManagerEvent::BufferViewUpdated(buffer_view_id));
-
-                                Ok(buffer_view_id)
-                        })
-                        .collect()
+        #[allow(dead_code)]
+        pub fn cubemaps(&self) -> &SlotMap<CubemapId, Cubemap> {
+                &self.cubemaps
         }
 
         fn load_images(
@@ -672,7 +670,6 @@ impl AssetManager {
                 doc: &gltf::Document,
                 images: Vec<gltf::image::Data>,
                 out_events: &mut Vec<AssetManagerEvent>,
-                out_buffers: &mut SlotMap<BufferId, Buffer>,
                 out_images: &mut SlotMap<ImageId, Image>,
         ) -> Result<Vec<ImageId>, GLTFImportError> {
                 images.into_iter()
@@ -698,10 +695,8 @@ impl AssetManager {
                                         },
                                 };
 
-                                let pixels_buffer_id = out_buffers.insert(Buffer::new(image.pixels));
-
                                 let image_id = out_images.insert(Image {
-                                        pixels: pixels_buffer_id,
+                                        pixels: image.pixels,
                                         width: image.width,
                                         height: image.height,
                                         format: image.format,
@@ -831,39 +826,56 @@ impl AssetManager {
 
         fn load_meshes(
                 doc: &gltf::Document,
-                buffer_view_ids: &Vec<BufferViewId>,
+                buffers: Vec<gltf::buffer::Data>,
                 material_ids: &Vec<MaterialId>,
                 default_material: MaterialId,
+                out_events: &mut Vec<AssetManagerEvent>,
                 out_meshes: &mut SlotMap<MeshId, Mesh>,
         ) -> Result<Vec<MeshGroup>, GLTFImportError> {
                 let mut mesh_groups = Vec::new();
+
+                let accessors: Vec<gltf::Accessor> = doc.accessors().collect();
 
                 for m in doc.meshes() {
                         let mut mesh_group = MeshGroup(Vec::new());
 
                         for p in m.primitives() {
                                 let positions = match p.get(&gltf::Semantic::Positions) {
-                                        Some(positions) => buffer_view_ids[positions.index()],
+                                        Some(positions) => read_gltf_accessor(&buffers, &accessors[positions.index()]),
                                         None => return Err(GLTFImportError::MeshMissingPositions),
                                 };
 
                                 let tex_coords = match p.get(&gltf::Semantic::TexCoords(0)) {
-                                        Some(tex_coords) => buffer_view_ids[tex_coords.index()],
+                                        Some(tex_coords) => {
+                                                read_gltf_accessor(&buffers, &accessors[tex_coords.index()])
+                                        },
                                         None => return Err(GLTFImportError::MeshMissingTexCoords),
                                 };
 
                                 let normals = match p.get(&gltf::Semantic::Normals) {
-                                        Some(normals) => buffer_view_ids[normals.index()],
+                                        Some(normals) => read_gltf_accessor(&buffers, &accessors[normals.index()]),
                                         None => return Err(GLTFImportError::MeshMissingNormals),
                                 };
 
                                 let tangents = match p.get(&gltf::Semantic::Tangents) {
-                                        Some(tangents) => buffer_view_ids[tangents.index()],
+                                        Some(tangents) => read_gltf_accessor(&buffers, &accessors[tangents.index()]),
                                         None => return Err(GLTFImportError::MeshMissingTangents),
                                 };
 
                                 let indices = match p.indices() {
-                                        Some(indices) => buffer_view_ids[indices.index()],
+                                        Some(indices) => {
+                                                let accessor = &accessors[indices.index()];
+
+                                                match accessor.data_type() {
+                                                        DataType::U16 => {
+                                                                IndicesVec::U16(read_gltf_accessor(&buffers, accessor))
+                                                        },
+                                                        DataType::U32 => {
+                                                                IndicesVec::U32(read_gltf_accessor(&buffers, accessor))
+                                                        },
+                                                        _ => panic!("Invalid indices data type"),
+                                                }
+                                        },
                                         None => return Err(GLTFImportError::MeshMissingIndices),
                                 };
 
@@ -880,6 +892,7 @@ impl AssetManager {
                                 };
 
                                 let mesh_id = out_meshes.insert(mesh);
+                                out_events.push(AssetManagerEvent::MeshUpdated(mesh_id));
                                 mesh_group.0.push(mesh_id);
                         }
 
@@ -1061,12 +1074,84 @@ impl AssetManager {
         } */
 }
 
+trait GltfElement {
+        fn data_type() -> DataType;
+        fn dimensions() -> Dimensions;
+}
+
+impl GltfElement for Vec2 {
+        fn data_type() -> DataType {
+                DataType::F32
+        }
+
+        fn dimensions() -> Dimensions {
+                Dimensions::Vec2
+        }
+}
+
+impl GltfElement for Vec3 {
+        fn data_type() -> DataType {
+                DataType::F32
+        }
+
+        fn dimensions() -> Dimensions {
+                Dimensions::Vec3
+        }
+}
+
+impl GltfElement for Vec4 {
+        fn data_type() -> DataType {
+                DataType::F32
+        }
+
+        fn dimensions() -> Dimensions {
+                Dimensions::Vec4
+        }
+}
+
+impl GltfElement for u16 {
+        fn data_type() -> DataType {
+                DataType::U16
+        }
+
+        fn dimensions() -> Dimensions {
+                Dimensions::Scalar
+        }
+}
+
+impl GltfElement for u32 {
+        fn data_type() -> DataType {
+                DataType::U32
+        }
+
+        fn dimensions() -> Dimensions {
+                Dimensions::Scalar
+        }
+}
+
+fn read_gltf_accessor<T: GltfElement + Clone>(buffers: &[gltf::buffer::Data], accessor: &gltf::Accessor) -> Vec<T> {
+        let buffer_view = accessor.view().expect("Accessor is missing buffer view index!");
+        let buffer_data = &buffers[buffer_view.buffer().index()];
+
+        assert_eq!(accessor.data_type(), T::data_type());
+        assert_eq!(accessor.dimensions(), T::dimensions());
+
+        let byte_offset = buffer_view.offset() + accessor.offset();
+        let byte_length = buffer_view.length();
+
+        let element_count = accessor.count();
+
+        assert!((byte_offset + byte_length) <= buffer_data.0.len());
+        let data = unsafe { buffer_data.0.as_ptr().offset(byte_offset as isize) };
+
+        assert_eq!(byte_length, element_count * std::mem::size_of::<T>());
+        let slice = unsafe { std::slice::from_raw_parts(data as *const T, element_count) };
+
+        slice.to_vec()
+}
+
 #[derive(Debug, Clone)]
 pub enum AssetManagerEvent {
-        // BufferCreated(BufferId),
-        // BufferDeleted(BufferId),
-        BufferViewUpdated(BufferViewId),
-        BufferViewDeleted(BufferViewId),
         ImageUpdated(ImageId),
         ImageDeleted(ImageId),
         SamplerUpdated(SamplerId),
@@ -1075,10 +1160,12 @@ pub enum AssetManagerEvent {
         // TextureDeleted(TextureId),
         MaterialUpdated(MaterialId),
         MaterialDeleted(MaterialId),
-        // MeshUpdated(MeshId),
-        // MeshDeleted(MeshId),
+        MeshUpdated(MeshId),
+        MeshDeleted(MeshId),
         // ModelUpdated(ModelId),
         // ModelDeleted(ModelId),
         ShaderUpdated(ShaderId),
         ShaderDeleted(ShaderId),
+        CubemapUpdated(CubemapId),
+        CubemapDeleted(CubemapId),
 }

@@ -18,7 +18,7 @@ pub trait RefIntoSlice {
                 Self: Sized;
 }
 
-impl<T> RefIntoSlice for T {
+impl<T: 'static> RefIntoSlice for T {
         fn ref_into_slice(&self) -> &[Self] {
                 std::slice::from_ref(self)
         }
@@ -30,7 +30,7 @@ pub trait DerefIntoSlice<D> {
                 D: Sized;
 }
 
-impl<T: Deref<Target = D>, D> DerefIntoSlice<D> for T {
+impl<T: Deref<Target = D>, D: 'static> DerefIntoSlice<D> for T {
         fn deref_into_slice(&self) -> &[D] {
                 std::slice::from_ref(&**self)
         }

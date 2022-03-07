@@ -1,0 +1,11 @@
+---
+name: "skybox-shader"
+vertex-shader: "skybox_shader.vert"
+fragment-shader: "skybox_shader.frag"
+disable-depth-test: true
+cull-mode: "front"
+uniforms:
+  - "matrices"
+  - "skybox-texture-sampler"
+vertex-inputs:
+  - "positions"

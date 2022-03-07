@@ -1,14 +1,17 @@
 use std::{ffi::CString, rc::Rc};
 
-use ash::{prelude::VkResult, vk};
+use ash::{
+        prelude::VkResult,
+        vk::{self, BufferUsageFlags},
+};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
-use slotmap::{SecondaryMap, SlotMap};
+use slotmap::SecondaryMap;
 
 use crate::{
         asset_manager::{
-                AssetManager, AssetManagerEvent, BufferViewId, ComponentType, DataType, ImageFormat, ImageId,
-                MagFilter, Material, MaterialId, Mesh, MeshId, MinFilter, SamplerId, ShaderId, WrappingMode,
+                AssetManager, AssetManagerEvent, CubemapId, CullMode, ImageFormat, ImageId, IndicesVec, MagFilter,
+                Material, MaterialId, MeshId, MinFilter, SamplerId, ShaderId, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         my_glm::{Vec2, Vec3},
@@ -24,6 +27,7 @@ use crate::{
 
 use super::{
         vk_buffer::VkDynamicUniformBuffer,
+        vk_image::VkImageCubemapCreateInfo,
         vk_renderer::MaterialData,
         vk_wrapper::{
                 VkDescriptorPool, VkDescriptorSetLayout, VkInstance, VkPipeline, VkPipelineLayout, VkShaderModule,
@@ -31,11 +35,18 @@ use super::{
         },
 };
 
-pub struct VkModelBufferView {
+pub struct VkMesh {
+        pub positions: VkBuffer,
+        pub tex_coords: VkBuffer,
+        pub normals: VkBuffer,
+        pub tangents: VkBuffer,
+        pub indices: VkIndexBuffer,
+}
+
+pub struct VkIndexBuffer {
         pub buffer: VkBuffer,
-        pub format: vk::Format,
         pub index_type: vk::IndexType,
-        pub element_count: usize,
+        pub index_count: u32,
 }
 
 pub struct VkModelImage {
@@ -53,6 +64,12 @@ pub struct VkShader {
         pub frag_module: VkShaderModule,
         pub vertex_input_bindings: Vec<vk::VertexInputBindingDescription>,
         pub vertex_input_attributes: Vec<vk::VertexInputAttributeDescription>,
+}
+
+pub struct VkCubemap {
+        pub image: VkImage,
+        pub image_view: VkImageView,
+        pub sampler: VkSampler,
 }
 
 // pub struct VkShaderResource {
@@ -76,13 +93,14 @@ pub struct VkAssetManager {
         swapchain_samples: vk::SampleCountFlags,
         render_pass: vk::RenderPass,
 
-        pub buffer_views: SecondaryMap<BufferViewId, VkModelBufferView>,
+        pub meshes: SecondaryMap<MeshId, VkMesh>,
         pub images: SecondaryMap<ImageId, VkModelImage>,
         pub samplers: SecondaryMap<SamplerId, VkSampler>,
         pub materials: SecondaryMap<MaterialId, VkMaterial>,
         // pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
         pub shaders: SecondaryMap<ShaderId, VkShader>,
         pub pipelines: SecondaryMap<ShaderId, VkPipeline>,
+        pub cubemaps: SecondaryMap<CubemapId, VkCubemap>,
 }
 
 impl VkAssetManager {
@@ -133,23 +151,24 @@ impl VkAssetManager {
                         render_pass,
                         graphics_pipeline_layout,
 
-                        buffer_views: SecondaryMap::new(),
+                        meshes: SecondaryMap::new(),
                         images: SecondaryMap::new(),
                         samplers: SecondaryMap::new(),
                         materials: SecondaryMap::new(),
                         // shader_resources: HashMap::new(),
                         shaders: SecondaryMap::new(),
                         pipelines: SecondaryMap::new(),
+                        cubemaps: SecondaryMap::new(),
                 })
         }
 
         pub fn process_asset_manager_events(&mut self, asset_manager: &AssetManager) -> AnyResult<()> {
                 for e in asset_manager.events() {
                         match *e {
-                                AssetManagerEvent::BufferViewUpdated(buffer_view_id) => {
-                                        self.on_buffer_view_updated(asset_manager, buffer_view_id)?;
+                                AssetManagerEvent::MeshUpdated(mesh_id) => {
+                                        self.on_mesh_updated(asset_manager, mesh_id)?;
                                 },
-                                AssetManagerEvent::BufferViewDeleted(_) => todo!(),
+                                AssetManagerEvent::MeshDeleted(_) => todo!(),
                                 AssetManagerEvent::ImageUpdated(image_id) => {
                                         self.on_image_updated(asset_manager, image_id)?;
                                 },
@@ -166,6 +185,10 @@ impl VkAssetManager {
                                         self.on_shader_updated(asset_manager, shader_id)?;
                                 },
                                 AssetManagerEvent::ShaderDeleted(_) => todo!(),
+                                AssetManagerEvent::CubemapUpdated(cubemap_id) => {
+                                        self.on_cubemap_updated(asset_manager, cubemap_id)?;
+                                },
+                                AssetManagerEvent::CubemapDeleted(_) => todo!(),
                                 // AssetManagerEvent::TextureUpdated(texture_id) => todo!(),
                                 // AssetManagerEvent::TextureDeleted(_) => todo!(),
                                 // AssetManagerEvent::MeshUpdated(mid) => todo!(),
@@ -179,6 +202,12 @@ impl VkAssetManager {
         }
 
         pub fn destroy(&mut self) {
+                self.cubemaps.drain().for_each(|(_, cubemap)| unsafe {
+                        cubemap.image.destroy();
+                        cubemap.image_view.destroy();
+                        cubemap.sampler.destroy();
+                });
+
                 self.pipelines.drain().for_each(|(_, pipeline)| unsafe {
                         pipeline.destroy();
                 });
@@ -205,8 +234,12 @@ impl VkAssetManager {
                         image.image_view.destroy();
                 });
 
-                self.buffer_views.drain().for_each(|(_, buffer_view)| unsafe {
-                        buffer_view.buffer.destroy();
+                self.meshes.drain().for_each(|(_, mesh)| unsafe {
+                        mesh.positions.destroy();
+                        mesh.tex_coords.destroy();
+                        mesh.normals.destroy();
+                        mesh.tangents.destroy();
+                        mesh.indices.buffer.destroy();
                 });
 
                 unsafe { self.graphics_pipeline_layout.destroy() };
@@ -291,20 +324,12 @@ impl VkAssetManager {
                 unsafe { VkPipelineLayout::new(device, &layout_cinfo) }
         }
 
-        fn on_buffer_view_updated(
-                &mut self,
-                asset_manager: &AssetManager,
-                buffer_view_id: BufferViewId,
-        ) -> AnyResult<()> {
-                if self.buffer_views.contains_key(buffer_view_id) {
-                        // TODO: handle buffer update.
+        fn on_mesh_updated(&mut self, asset_manager: &AssetManager, mesh_id: MeshId) -> AnyResult<()> {
+                if self.meshes.contains_key(mesh_id) {
+                        // TODO: handle mesh update.
                         todo!();
                 } else {
-                        if let Some(vk_buffer) =
-                                self.create_vk_buffer_from_buffer_view(asset_manager, buffer_view_id)?
-                        {
-                                self.buffer_views.insert(buffer_view_id, vk_buffer);
-                        }
+                        self.create_vk_mesh(asset_manager, mesh_id)?;
                 }
 
                 Ok(())
@@ -410,6 +435,8 @@ impl VkAssetManager {
                         self.swapchain_samples,
                         self.render_pass,
                         *self.graphics_pipeline_layout,
+                        !shader.disable_depth_test,
+                        shader.cull_mode.into(),
                         &vk_shader,
                 )?;
 
@@ -419,79 +446,153 @@ impl VkAssetManager {
                 Ok(())
         }
 
-        fn create_vk_buffer_from_buffer_view(
-                &self,
-                asset_manager: &AssetManager,
-                buffer_view_id: BufferViewId,
-        ) -> AnyResult<Option<VkModelBufferView>> {
-                let buffer_view = match asset_manager.buffer_views().get(buffer_view_id) {
-                        Some(buffer_view) => buffer_view,
-                        None => return Ok(None),
+        fn on_cubemap_updated(&mut self, asset_manager: &AssetManager, cubemap_id: CubemapId) -> AnyResult<()> {
+                let cubemap = match asset_manager.cubemaps().get(cubemap_id) {
+                        Some(cubemap) => cubemap,
+                        None => return Ok(()),
                 };
 
-                let buffer = match asset_manager.buffers().get(buffer_view.buffer) {
-                        Some(buffer) => buffer,
-                        None => panic!(), // return Ok(()),
+                let width = cubemap.faces[0].width;
+                let height = cubemap.faces[0].width;
+
+                for face in &cubemap.faces {
+                        assert_eq!(width, face.width);
+                        assert_eq!(height, face.height);
+                }
+
+                let faces_data = [
+                        cubemap.faces[0].pixels.as_slice(),
+                        cubemap.faces[1].pixels.as_slice(),
+                        cubemap.faces[2].pixels.as_slice(),
+                        cubemap.faces[3].pixels.as_slice(),
+                        cubemap.faces[4].pixels.as_slice(),
+                        cubemap.faces[5].pixels.as_slice(),
+                ];
+
+                let vk_cubemap_cinfo = VkImageCubemapCreateInfo {
+                        faces_data,
+                        width,
+                        height,
+                        format: vk::Format::R8G8B8A8_SRGB,
+                        mip_levels: MipLevels::Log2,
+                        samples: vk::SampleCountFlags::TYPE_1,
+                        setup_cmd_buffer: &self.cmd_buffer,
+                        transfer_queue: self.transfer_queue,
                 };
 
-                assert!(buffer.bytes.len() >= (buffer_view.byte_offset + buffer_view.byte_length));
+                let vk_image = unsafe {
+                        VkImage::new_cubemap(
+                                &self.instance,
+                                &self.pdevice,
+                                &self.device,
+                                Rc::clone(&self.allocator),
+                                &vk_cubemap_cinfo,
+                        )?
+                };
 
-                let buffer_usage = Self::discover_buffer_view_usage_flags(buffer_view_id, asset_manager.meshes());
+                let vk_image_view_cinfo = vk::ImageViewCreateInfo {
+                        image: *vk_image,
+                        view_type: vk::ImageViewType::CUBE,
+                        format: vk::Format::R8G8B8A8_SRGB, // vk_image_cinfo.format,
+                        components: Default::default(),
+                        subresource_range: vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: vk_image.mip_levels,
+                                base_array_layer: 0,
+                                layer_count: 6,
+                        },
+                        ..Default::default()
+                };
 
+                let vk_image_view = unsafe { VkImageView::new(Rc::clone(&self.device), &vk_image_view_cinfo)? };
+
+                let vk_sampler_cinfo = vk::SamplerCreateInfo {
+                        mag_filter: vk::Filter::LINEAR,
+                        min_filter: vk::Filter::LINEAR,
+                        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                        address_mode_u: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        address_mode_v: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        address_mode_w: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        mip_lod_bias: 0.0,
+                        anisotropy_enable: ENABLE_ANISOTROPY as u32,
+                        max_anisotropy: 1.0,
+                        compare_enable: vk::FALSE,
+                        compare_op: vk::CompareOp::NEVER,
+                        min_lod: 0.0,
+                        max_lod: LOD_CLAMP_NONE,
+                        border_color: vk::BorderColor::INT_OPAQUE_WHITE,
+                        unnormalized_coordinates: vk::FALSE,
+                        ..Default::default()
+                };
+
+                let vk_sampler = unsafe { VkSampler::new(Rc::clone(&self.device), &vk_sampler_cinfo)? };
+
+                let vk_cubemap = VkCubemap {
+                        image: vk_image,
+                        image_view: vk_image_view,
+                        sampler: vk_sampler,
+                };
+
+                self.cubemaps.insert(cubemap_id, vk_cubemap);
+
+                Ok(())
+        }
+
+        fn create_vk_mesh(&mut self, asset_manager: &AssetManager, mesh_id: MeshId) -> AnyResult<()> {
+                let mesh = match asset_manager.meshes().get(mesh_id) {
+                        Some(mesh) => mesh,
+                        None => return Ok(()),
+                };
+
+                let positions = self.create_vk_vertex_buffer(&mesh.positions)?;
+                let tex_coords = self.create_vk_vertex_buffer(&mesh.tex_coords)?;
+                let normals = self.create_vk_vertex_buffer(&mesh.normals)?;
+                let tangents = self.create_vk_vertex_buffer(&mesh.tangents)?;
+                let indices = match &mesh.indices {
+                        IndicesVec::U16(indices) => self.create_vk_index_buffer(indices)?,
+                        IndicesVec::U32(indices) => self.create_vk_index_buffer(indices)?,
+                };
+
+                self.meshes.insert(
+                        mesh_id,
+                        VkMesh {
+                                positions,
+                                tex_coords,
+                                normals,
+                                tangents,
+                                indices,
+                        },
+                );
+
+                Ok(())
+        }
+
+        fn create_vk_vertex_buffer<T>(&mut self, data: &[T]) -> AnyResult<VkBuffer> {
+                self.create_vk_buffer(data, BufferUsageFlags::VERTEX_BUFFER)
+        }
+
+        fn create_vk_index_buffer<T: VkIndex>(&mut self, data: &[T]) -> AnyResult<VkIndexBuffer> {
+                let buffer = self.create_vk_buffer(data, BufferUsageFlags::INDEX_BUFFER)?;
+
+                Ok(VkIndexBuffer {
+                        buffer,
+                        index_type: T::index_type(),
+                        index_count: data.len() as u32,
+                })
+        }
+
+        fn create_vk_buffer<T>(&mut self, data: &[T], buffer_usage: BufferUsageFlags) -> AnyResult<VkBuffer> {
                 let vk_buffer_cinfo = VkImmutableBufferCreateInfo {
                         device: &self.device,
                         allocator: Rc::clone(&self.allocator),
                         cmd_buffer: &self.cmd_buffer,
                         transfer_queue: self.transfer_queue,
                         buffer_usage,
-                        data: BufferData::OffsetLength {
-                                data: buffer.bytes.as_slice(),
-                                offset: buffer_view.byte_offset,
-                                length: buffer_view.byte_length,
-                        },
+                        data: BufferData::FullSlice(data),
                 };
 
-                let vk_buffer = VkBuffer::new_immutable(vk_buffer_cinfo)?;
-
-                let format =
-                        Self::vk_format_from_component_and_data_type(buffer_view.component_type, buffer_view.data_type);
-
-                let index_type = match buffer_view.component_type {
-                        ComponentType::U16 => vk::IndexType::UINT16,
-                        ComponentType::U32 => vk::IndexType::UINT32,
-                        _ => vk::IndexType::from_raw(i32::MAX),
-                };
-
-                Ok(Some(VkModelBufferView {
-                        buffer: vk_buffer,
-                        format,
-                        index_type,
-                        element_count: buffer_view.element_count,
-                }))
-        }
-
-        fn discover_buffer_view_usage_flags(
-                buffer_view_id: BufferViewId,
-                meshes: &SlotMap<MeshId, Mesh>,
-        ) -> vk::BufferUsageFlags {
-                let mut usage_flags = vk::BufferUsageFlags::empty();
-
-                for (_, mesh) in meshes {
-                        if mesh.positions == buffer_view_id
-                                || mesh.tex_coords == buffer_view_id
-                                || mesh.normals == buffer_view_id
-                                || mesh.tangents == buffer_view_id
-                                || mesh.tex_coords == buffer_view_id
-                        {
-                                usage_flags |= vk::BufferUsageFlags::VERTEX_BUFFER
-                        }
-
-                        if mesh.indices == buffer_view_id {
-                                usage_flags |= vk::BufferUsageFlags::INDEX_BUFFER
-                        }
-                }
-
-                usage_flags
+                VkBuffer::new_immutable(vk_buffer_cinfo)
         }
 
         fn create_vk_image_from_image(
@@ -505,7 +606,7 @@ impl VkAssetManager {
                 };
 
                 let vk_image_cinfo = VkImageCreateFromDataInfo {
-                        data: &asset_manager.buffers()[image.pixels].bytes,
+                        data: &image.pixels,
                         width: image.width,
                         height: image.height,
                         format: Self::vk_format_from_image_format(image.format),
@@ -693,6 +794,8 @@ impl VkAssetManager {
                 swapchain_samples: vk::SampleCountFlags,
                 render_pass: vk::RenderPass,
                 pipeline_layout: vk::PipelineLayout,
+                enable_depth_test: bool,
+                cull_mode: vk::CullModeFlags,
                 shader: &VkShader,
         ) -> VkResult<VkPipeline> {
                 let entry_point = CString::new("main").unwrap();
@@ -741,7 +844,7 @@ impl VkAssetManager {
                         .rasterizer_discard_enable(false)
                         .polygon_mode(vk::PolygonMode::FILL)
                         .line_width(1.0)
-                        .cull_mode(vk::CullModeFlags::BACK)
+                        .cull_mode(cull_mode)
                         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
                         .depth_bias_enable(false)
                         .depth_bias_constant_factor(0.0)
@@ -753,7 +856,7 @@ impl VkAssetManager {
                         .sample_shading_enable(false);
 
                 let depth_stencil_state_cinfo = vk::PipelineDepthStencilStateCreateInfo::builder()
-                        .depth_test_enable(true)
+                        .depth_test_enable(enable_depth_test)
                         .depth_write_enable(true)
                         .depth_compare_op(vk::CompareOp::LESS)
                         .depth_bounds_test_enable(false)
@@ -791,39 +894,39 @@ impl VkAssetManager {
                 unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
         }
 
-        fn vk_format_from_component_and_data_type(comp_type: ComponentType, data_type: DataType) -> vk::Format {
-                match (comp_type, data_type) {
-                        (ComponentType::I8, DataType::Scalar) => vk::Format::R8_SINT,
-                        (ComponentType::I16, DataType::Scalar) => vk::Format::R16_SINT,
-                        (ComponentType::U8, DataType::Scalar) => vk::Format::R8_UINT,
-                        (ComponentType::U16, DataType::Scalar) => vk::Format::R16_UINT,
-                        (ComponentType::U32, DataType::Scalar) => vk::Format::R32_UINT,
-                        (ComponentType::F32, DataType::Scalar) => vk::Format::R32_SFLOAT,
+        // fn vk_format_from_component_and_data_type(comp_type: ComponentType, data_type: DataType) -> vk::Format {
+        //         match (comp_type, data_type) {
+        //                 (ComponentType::I8, DataType::Scalar) => vk::Format::R8_SINT,
+        //                 (ComponentType::I16, DataType::Scalar) => vk::Format::R16_SINT,
+        //                 (ComponentType::U8, DataType::Scalar) => vk::Format::R8_UINT,
+        //                 (ComponentType::U16, DataType::Scalar) => vk::Format::R16_UINT,
+        //                 (ComponentType::U32, DataType::Scalar) => vk::Format::R32_UINT,
+        //                 (ComponentType::F32, DataType::Scalar) => vk::Format::R32_SFLOAT,
 
-                        (ComponentType::I8, DataType::Vec2) => vk::Format::R8G8_SINT,
-                        (ComponentType::I16, DataType::Vec2) => vk::Format::R16G16_SINT,
-                        (ComponentType::U8, DataType::Vec2) => vk::Format::R8G8_UINT,
-                        (ComponentType::U16, DataType::Vec2) => vk::Format::R16G16_UINT,
-                        (ComponentType::U32, DataType::Vec2) => vk::Format::R32G32_UINT,
-                        (ComponentType::F32, DataType::Vec2) => vk::Format::R32G32_SFLOAT,
+        //                 (ComponentType::I8, DataType::Vec2) => vk::Format::R8G8_SINT,
+        //                 (ComponentType::I16, DataType::Vec2) => vk::Format::R16G16_SINT,
+        //                 (ComponentType::U8, DataType::Vec2) => vk::Format::R8G8_UINT,
+        //                 (ComponentType::U16, DataType::Vec2) => vk::Format::R16G16_UINT,
+        //                 (ComponentType::U32, DataType::Vec2) => vk::Format::R32G32_UINT,
+        //                 (ComponentType::F32, DataType::Vec2) => vk::Format::R32G32_SFLOAT,
 
-                        (ComponentType::I8, DataType::Vec3) => vk::Format::R8G8B8_SINT,
-                        (ComponentType::I16, DataType::Vec3) => vk::Format::R16G16B16_SINT,
-                        (ComponentType::U8, DataType::Vec3) => vk::Format::R8G8B8_UINT,
-                        (ComponentType::U16, DataType::Vec3) => vk::Format::R16G16B16_UINT,
-                        (ComponentType::U32, DataType::Vec3) => vk::Format::R32G32B32_UINT,
-                        (ComponentType::F32, DataType::Vec3) => vk::Format::R32G32B32_SFLOAT,
+        //                 (ComponentType::I8, DataType::Vec3) => vk::Format::R8G8B8_SINT,
+        //                 (ComponentType::I16, DataType::Vec3) => vk::Format::R16G16B16_SINT,
+        //                 (ComponentType::U8, DataType::Vec3) => vk::Format::R8G8B8_UINT,
+        //                 (ComponentType::U16, DataType::Vec3) => vk::Format::R16G16B16_UINT,
+        //                 (ComponentType::U32, DataType::Vec3) => vk::Format::R32G32B32_UINT,
+        //                 (ComponentType::F32, DataType::Vec3) => vk::Format::R32G32B32_SFLOAT,
 
-                        (ComponentType::I8, DataType::Vec4) => vk::Format::R8G8B8A8_SINT,
-                        (ComponentType::I16, DataType::Vec4) => vk::Format::R16G16B16A16_SINT,
-                        (ComponentType::U8, DataType::Vec4) => vk::Format::R8G8B8A8_UINT,
-                        (ComponentType::U16, DataType::Vec4) => vk::Format::R16G16B16A16_UINT,
-                        (ComponentType::U32, DataType::Vec4) => vk::Format::R32G32B32A32_UINT,
-                        (ComponentType::F32, DataType::Vec4) => vk::Format::R32G32B32A32_SFLOAT,
+        //                 (ComponentType::I8, DataType::Vec4) => vk::Format::R8G8B8A8_SINT,
+        //                 (ComponentType::I16, DataType::Vec4) => vk::Format::R16G16B16A16_SINT,
+        //                 (ComponentType::U8, DataType::Vec4) => vk::Format::R8G8B8A8_UINT,
+        //                 (ComponentType::U16, DataType::Vec4) => vk::Format::R16G16B16A16_UINT,
+        //                 (ComponentType::U32, DataType::Vec4) => vk::Format::R32G32B32A32_UINT,
+        //                 (ComponentType::F32, DataType::Vec4) => vk::Format::R32G32B32A32_SFLOAT,
 
-                        _ => panic!("vk::Format from ({:?}, {:?}) not supported!", comp_type, data_type),
-                }
-        }
+        //                 _ => panic!("vk::Format from ({:?}, {:?}) not supported!", comp_type, data_type),
+        //         }
+        // }
 
         fn vk_format_from_image_format(img_format: ImageFormat) -> vk::Format {
                 match img_format {
@@ -922,4 +1025,30 @@ impl VkAssetManager {
 
         //         Ok(vk_shader_resources)
         // }
+}
+
+trait VkIndex {
+        fn index_type() -> vk::IndexType;
+}
+
+impl VkIndex for u16 {
+        fn index_type() -> vk::IndexType {
+                vk::IndexType::UINT16
+        }
+}
+
+impl VkIndex for u32 {
+        fn index_type() -> vk::IndexType {
+                vk::IndexType::UINT32
+        }
+}
+
+impl From<CullMode> for vk::CullModeFlags {
+        fn from(mode: CullMode) -> Self {
+                match mode {
+                        CullMode::None => vk::CullModeFlags::NONE,
+                        CullMode::Front => vk::CullModeFlags::FRONT,
+                        CullMode::Back => vk::CullModeFlags::BACK,
+                }
+        }
 }

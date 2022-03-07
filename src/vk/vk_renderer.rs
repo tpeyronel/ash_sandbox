@@ -8,7 +8,7 @@ use log::{debug, error, info, trace, warn};
 use winit::{dpi::PhysicalSize, window::Window};
 
 use super::{
-        vk_asset_manager::VkAssetManager,
+        vk_asset_manager::{VkAssetManager, VkCubemap},
         vk_buffer::{VkBuffer, VkDynamicUniformBuffer},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
@@ -23,6 +23,7 @@ use crate::{
         model_instance_manager::ModelInstance,
         my_glm::*,
         renderer::Renderer,
+        util::RefIntoSlice,
 };
 use crate::{
         constants::{DESIRED_SWAPCHAIN_IMG_COUNT, MAX_CONCURRENT_FRAMES},
@@ -249,6 +250,12 @@ impl Renderer for VkRenderer {
                                 slice::from_ref(&self.swapchain.scissor),
                         );
 
+                        let asset_manager = world.remove_resource::<AssetManager>().unwrap();
+
+                        let skybox = &self.vk_asset_manager.cubemaps[asset_manager.default_cubemap];
+
+                        frame_data.update_skybox(&self.vk_context.device, skybox);
+
                         let graphics_pipeline_layout = *self.vk_asset_manager.graphics_pipeline_layout;
                         self.vk_context.device.cmd_bind_descriptor_sets(
                                 *frame_data.draw_cmd_buffer,
@@ -259,12 +266,35 @@ impl Renderer for VkRenderer {
                                 &[],
                         );
 
-                        let asset_manager = world.remove_resource::<AssetManager>().unwrap();
+                        let mut buffer_transform_idx = 0;
 
-                        for (buffer_transform_idx, (minstance, transform)) in world
-                                .query::<(&ModelInstance, &InterpGlobalTransform)>()
-                                .iter(world)
-                                .enumerate()
+                        let cube_root_model = &asset_manager.models()[asset_manager.get_model_by_name("cube")];
+                        let cube_model = cube_root_model.children[0];
+
+                        Self::draw_model_instance(
+                                &self.vk_context.device,
+                                *frame_data.draw_cmd_buffer,
+                                &frame_data.object_matrices_buffer,
+                                frame_data.object_dst_set,
+                                graphics_pipeline_layout,
+                                &asset_manager,
+                                &self.vk_asset_manager,
+                                self.framei,
+                                &WorldMatrices {
+                                        view_pos: Vec4::from((camera_pos, 1.0)),
+                                        view: Mat4::from_mat3(Mat3::from_mat4(view_mat)),
+                                        proj: proj_mat,
+                                        vp: proj_mat * Mat4::from_mat3(Mat3::from_mat4(view_mat)),
+                                },
+                                &ModelInstance { model: cube_model },
+                                Mat4::IDENTITY,
+                                buffer_transform_idx,
+                        )?;
+
+                        buffer_transform_idx += 1;
+
+                        for (minstance, transform) in
+                                world.query::<(&ModelInstance, &InterpGlobalTransform)>().iter(world)
                         {
                                 Self::draw_model_instance(
                                         &self.vk_context.device,
@@ -280,6 +310,8 @@ impl Renderer for VkRenderer {
                                         transform.0.to_matrix(),
                                         buffer_transform_idx,
                                 )?;
+
+                                buffer_transform_idx += 1;
                         }
 
                         world.insert_resource(asset_manager);
@@ -499,6 +531,14 @@ impl VkRenderer {
                         vk::DescriptorSetLayoutBinding {
                                 binding: 2,
                                 descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                                descriptor_count: 1,
+                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                                p_immutable_samplers: std::ptr::null(),
+                        },
+                        // Skybox
+                        vk::DescriptorSetLayoutBinding {
+                                binding: 3,
+                                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                                 descriptor_count: 1,
                                 stage_flags: vk::ShaderStageFlags::FRAGMENT,
                                 p_immutable_samplers: std::ptr::null(),
@@ -727,19 +767,15 @@ impl VkRenderer {
                 mesh_id: MeshId,
         ) -> VkResult<()> {
                 let mesh = &asset_manager.meshes()[mesh_id];
+                let material = &asset_manager.materials()[mesh.material];
+                let pipeline = *vk_asset_manager.pipelines[material.shader];
+
+                let vk_mesh = &vk_asset_manager.meshes[mesh_id];
+                let vk_material = &vk_asset_manager.materials[mesh.material];
 
                 /* if mesh.material != last_material {
                         last_material = mesh.material;
                 } */
-
-                let material = &asset_manager.materials()[mesh.material];
-                let pipeline = *vk_asset_manager.pipelines[material.shader];
-
-                let vk_material = &vk_asset_manager.materials[mesh.material];
-                let positions = &vk_asset_manager.buffer_views[mesh.positions];
-                let normals = &vk_asset_manager.buffer_views[mesh.normals];
-                let tex_coords = &vk_asset_manager.buffer_views[mesh.tex_coords];
-                let indices = &vk_asset_manager.buffer_views[mesh.indices];
 
                 unsafe {
                         device.cmd_bind_pipeline(draw_cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
@@ -773,12 +809,17 @@ impl VkRenderer {
                         device.cmd_bind_vertex_buffers(
                                 draw_cmd_buffer,
                                 0,
-                                &[*positions.buffer, *normals.buffer, *tex_coords.buffer],
+                                &[*vk_mesh.positions, *vk_mesh.normals, *vk_mesh.tex_coords],
                                 &[0, 0, 0],
                         );
-                        device.cmd_bind_index_buffer(draw_cmd_buffer, *indices.buffer, 0, indices.index_type);
+                        device.cmd_bind_index_buffer(
+                                draw_cmd_buffer,
+                                *vk_mesh.indices.buffer,
+                                0,
+                                vk_mesh.indices.index_type,
+                        );
 
-                        device.cmd_draw_indexed(draw_cmd_buffer, indices.element_count as u32, 1, 0, 0, 0);
+                        device.cmd_draw_indexed(draw_cmd_buffer, vk_mesh.indices.index_count, 1, 0, 0, 0);
                 }
 
                 Ok(())
@@ -910,6 +951,24 @@ impl VkFrameData {
                         material_data_buffer,
                         object_matrices_buffer,
                 })
+        }
+
+        fn update_skybox(&self, device: &VkDevice, skybox: &VkCubemap) {
+                let world_skybox_image_info = vk::DescriptorImageInfo {
+                        sampler: *skybox.sampler,
+                        image_view: *skybox.image_view,
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                };
+
+                let world_skybox_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .dst_set(self.world_dst_set)
+                        .dst_binding(3)
+                        .dst_array_element(0)
+                        .image_info(world_skybox_image_info.ref_into_slice())
+                        .build();
+
+                unsafe { device.update_descriptor_sets(&[world_skybox_write], &[]) };
         }
 }
 
