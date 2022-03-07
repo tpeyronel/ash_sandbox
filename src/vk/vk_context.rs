@@ -16,6 +16,7 @@ use winit::window::Window;
 
 use super::{
         vk_descriptor_set_allocator::VkDescriptorSetAllocator,
+        vk_descriptor_set_layout_cache::VkDescriptorSetLayoutCache,
         vk_wrapper::{
                 impl_destroyable_drop, VkCommandPool, VkDebugUtilsMessenger, VkDevice, VkInstance, VkSurface,
                 VmaAllocator,
@@ -48,6 +49,7 @@ pub struct VkContext {
 
         pub allocator: Rc<VmaAllocator>,
         pub cmd_pool: Rc<VkCommandPool>,
+        pub dst_set_layout_cache: VkDescriptorSetLayoutCache,
         pub dst_set_allocator: VkDescriptorSetAllocator,
 
         destroyed: Cell<bool>,
@@ -104,6 +106,8 @@ impl VkContext {
                 let cmd_pool = Self::create_command_pool(&device, &qfamilyi)?;
                 trace!("Created VkCommandPool");
 
+                let dst_set_layout_cache = VkDescriptorSetLayoutCache::new(Rc::clone(&device));
+
                 let dst_set_allocator = VkDescriptorSetAllocator::new(Rc::clone(&device))?;
                 trace!("Created VkDescriptorPool");
 
@@ -125,6 +129,7 @@ impl VkContext {
 
                         cmd_pool,
 
+                        dst_set_layout_cache,
                         dst_set_allocator,
 
                         destroyed: Cell::new(false),
@@ -136,6 +141,7 @@ impl VkContext {
 
                 let _ = self.device.device_wait_idle();
                 self.dst_set_allocator.destroy();
+                self.dst_set_layout_cache.destroy();
                 self.cmd_pool.destroy();
                 self.allocator.destroy();
                 self.device.destroy();

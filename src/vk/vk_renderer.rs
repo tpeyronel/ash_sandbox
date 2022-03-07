@@ -12,8 +12,9 @@ use super::{
         vk_buffer::{VkBuffer, VkDynamicUniformBuffer},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
+        vk_descriptor_set_layout_cache::VkDescriptorSetLayoutCache,
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
-        vk_wrapper::{VkDescriptorSetLayout, VkDevice, VkRenderPass, VkSemaphore},
+        vk_wrapper::{VkDevice, VkRenderPass, VkSemaphore},
 };
 use crate::{
         application::InterpGlobalTransform,
@@ -46,9 +47,6 @@ pub struct VkRenderer {
 
         max_concurrent_frames: usize,
         frames_data: Vec<VkFrameData>,
-
-        world_dst_set_layout: VkDescriptorSetLayout,
-        object_dst_set_layout: VkDescriptorSetLayout,
 
         imgui_renderer: Option<imgui_rs_vulkan_renderer::Renderer>,
 
@@ -86,26 +84,20 @@ impl VkRenderer {
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
                 trace!("Allocated VkCommandBuffers");
 
-                let world_dst_set_layout = Self::create_world_dst_set_layout(&vk_context.device)?;
-                // let material_dst_set_layout = Self::create_material_dst_set_layout(&vk_context.device)?;
-                let object_dst_set_layout = Self::create_object_dst_set_layout(&vk_context.device)?;
+                let world_dst_set_layout = Self::create_world_dst_set_layout(&mut vk_context.dst_set_layout_cache)?;
+                let object_dst_set_layout = Self::create_object_dst_set_layout(&mut vk_context.dst_set_layout_cache)?;
 
                 let max_concurrent_frames = MAX_CONCURRENT_FRAMES;
                 let frames_data = (0..max_concurrent_frames)
-                        .map(|_| VkFrameData::new(&mut vk_context, *world_dst_set_layout, *object_dst_set_layout))
+                        .map(|_| VkFrameData::new(&mut vk_context, world_dst_set_layout, object_dst_set_layout))
                         .collect::<AnyResult<Vec<VkFrameData>>>()?;
 
                 let vk_asset_manager = VkAssetManager::new(
-                        Rc::clone(&vk_context.instance),
-                        Rc::clone(&vk_context.pdevice),
-                        Rc::clone(&vk_context.device),
-                        Rc::clone(&vk_context.allocator),
-                        vk_context.queues.graphics,
-                        Rc::clone(&vk_context.cmd_pool),
+                        &mut vk_context,
                         swapchain.samples,
                         *render_pass,
-                        *world_dst_set_layout,
-                        *object_dst_set_layout,
+                        world_dst_set_layout,
+                        object_dst_set_layout,
                         swapchain.img_count as usize,
                 )?;
                 trace!("Created VkAssetManager");
@@ -142,9 +134,6 @@ impl VkRenderer {
                         setup_cmd_buffer,
                         max_concurrent_frames,
                         frames_data,
-
-                        world_dst_set_layout,
-                        object_dst_set_layout,
 
                         imgui_renderer,
 
@@ -337,8 +326,6 @@ impl Renderer for VkRenderer {
                         let _ = self.vk_context.device.device_wait_idle();
                         drop(self.imgui_renderer.take().unwrap());
                         self.frames_data.clear();
-                        self.object_dst_set_layout.destroy();
-                        self.world_dst_set_layout.destroy();
                         self.setup_cmd_buffer.destroy();
                         self.render_pass.destroy();
                         self.swapchain.destroy();
@@ -509,8 +496,10 @@ impl VkRenderer {
                 unsafe { VkRenderPass::new(device, &render_pass_cinfo) }
         }
 
-        fn create_world_dst_set_layout(device: &Rc<VkDevice>) -> VkResult<VkDescriptorSetLayout> {
-                let bindings = [
+        fn create_world_dst_set_layout(
+                dst_set_layout_cache: &mut VkDescriptorSetLayoutCache,
+        ) -> VkResult<vk::DescriptorSetLayout> {
+                let bindings = vec![
                         // WorldMatrices
                         vk::DescriptorSetLayoutBinding {
                                 binding: 0,
@@ -545,13 +534,13 @@ impl VkRenderer {
                         },
                 ];
 
-                let create_info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings);
-
-                unsafe { VkDescriptorSetLayout::new(device, &create_info) }
+                unsafe { dst_set_layout_cache.create_layout(bindings) }
         }
 
-        fn create_object_dst_set_layout(device: &Rc<VkDevice>) -> VkResult<VkDescriptorSetLayout> {
-                let bindings = [
+        fn create_object_dst_set_layout(
+                dst_set_layout_cache: &mut VkDescriptorSetLayoutCache,
+        ) -> VkResult<vk::DescriptorSetLayout> {
+                let bindings = vec![
                         // ObjectMatrices
                         vk::DescriptorSetLayoutBinding {
                                 binding: 0,
@@ -562,9 +551,7 @@ impl VkRenderer {
                         },
                 ];
 
-                let create_info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings);
-
-                unsafe { VkDescriptorSetLayout::new(device, &create_info) }
+                unsafe { dst_set_layout_cache.create_layout(bindings) }
         }
 
         fn should_render(&self) -> bool {

@@ -1,4 +1,4 @@
-use std::{cell::Cell, convert::TryInto, ffi::CStr, ops::Deref, rc::Rc};
+use std::{cell::Cell, ffi::CStr, ops::Deref, rc::Rc};
 
 use ash::{extensions::ext::DebugUtils, prelude::VkResult, vk};
 #[allow(unused_imports)]
@@ -466,28 +466,6 @@ impl VkCommandPool {
 impl_destroyable_expr!(VkCommandPool, vk::CommandPool, |s: &VkCommandPool| s
         .device
         .destroy_command_pool(s.handle, None));
-
-pub struct VkDescriptorSetLayout {
-        device: Rc<VkDevice>,
-        handle: vk::DescriptorSetLayout,
-        destroyed: Cell<bool>,
-}
-
-impl VkDescriptorSetLayout {
-        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::DescriptorSetLayoutCreateInfo) -> VkResult<Self> {
-                Ok(Self {
-                        device: Rc::clone(device),
-                        handle: device.create_descriptor_set_layout(create_info, None)?,
-                        destroyed: Cell::new(false),
-                })
-        }
-}
-
-impl_destroyable_expr!(
-        VkDescriptorSetLayout,
-        vk::DescriptorSetLayout,
-        |s: &VkDescriptorSetLayout| s.device.destroy_descriptor_set_layout(s.handle, None)
-);
 
 pub struct VkPipelineLayout {
         device: Rc<VkDevice>,

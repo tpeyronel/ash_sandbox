@@ -20,17 +20,19 @@ use crate::{
                 vk_buffer::{BufferData, VkBuffer, VkImmutableBufferCreateInfo},
                 vk_command_buffer::VkReusableCommandBuffer,
                 vk_image::{MipLevels, VkImage, VkImageCreateFromDataInfo},
-                vk_wrapper::{VkCommandPool, VkDevice, VkImageView, VkPhysicalDevice, VkSampler},
+                vk_wrapper::{VkDevice, VkImageView, VkPhysicalDevice, VkSampler},
         },
         AnyResult,
 };
 
 use super::{
         vk_buffer::VkDynamicUniformBuffer,
+        vk_context::VkContext,
         vk_descriptor_set_allocator::VkDescriptorSetAllocator,
+        vk_descriptor_set_layout_cache::VkDescriptorSetLayoutCache,
         vk_image::VkImageCubemapCreateInfo,
         vk_renderer::MaterialData,
-        vk_wrapper::{VkDescriptorSetLayout, VkInstance, VkPipeline, VkPipelineLayout, VkShaderModule, VmaAllocator},
+        vk_wrapper::{VkInstance, VkPipeline, VkPipelineLayout, VkShaderModule, VmaAllocator},
 };
 
 pub struct VkMesh {
@@ -85,7 +87,7 @@ pub struct VkAssetManager {
         cmd_buffer: VkReusableCommandBuffer,
         concurrent_frames: usize,
 
-        material_dst_set_layout: VkDescriptorSetLayout,
+        material_dst_set_layout: vk::DescriptorSetLayout,
         pub graphics_pipeline_layout: VkPipelineLayout,
 
         swapchain_samples: vk::SampleCountFlags,
@@ -103,12 +105,7 @@ pub struct VkAssetManager {
 
 impl VkAssetManager {
         pub fn new(
-                instance: Rc<VkInstance>,
-                pdevice: Rc<VkPhysicalDevice>,
-                device: Rc<VkDevice>,
-                allocator: Rc<VmaAllocator>,
-                transfer_queue: vk::Queue,
-                cmd_pool: Rc<VkCommandPool>,
+                vk_context: &mut VkContext,
                 swapchain_samples: vk::SampleCountFlags,
                 render_pass: vk::RenderPass,
                 world_dst_set_layout: vk::DescriptorSetLayout,
@@ -117,12 +114,14 @@ impl VkAssetManager {
         ) -> AnyResult<Self> {
                 assert!(concurrent_frames > 0, "Frames in flight must be greater to zero");
 
-                let dst_set_allocator = VkDescriptorSetAllocator::new(Rc::clone(&device))?;
-                let cmd_buffer = VkReusableCommandBuffer::new(Rc::clone(&device), cmd_pool)?;
-                let material_dst_set_layout = Self::create_material_dst_set_layout(&device)?;
+                let dst_set_allocator = VkDescriptorSetAllocator::new(Rc::clone(&vk_context.device))?;
+                let cmd_buffer =
+                        VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
+                let material_dst_set_layout =
+                        Self::create_material_dst_set_layout(&mut vk_context.dst_set_layout_cache)?;
                 let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
-                        &device,
-                        &[world_dst_set_layout, *material_dst_set_layout, object_dst_set_layout],
+                        &vk_context.device,
+                        &[world_dst_set_layout, material_dst_set_layout, object_dst_set_layout],
                 )?;
 
                 // trace!("Creating VkShaderResources...");
@@ -134,11 +133,11 @@ impl VkAssetManager {
                 // )?;
 
                 Ok(Self {
-                        instance,
-                        pdevice,
-                        device,
-                        allocator,
-                        transfer_queue,
+                        instance: Rc::clone(&vk_context.instance),
+                        pdevice: Rc::clone(&vk_context.pdevice),
+                        device: Rc::clone(&vk_context.device),
+                        allocator: Rc::clone(&vk_context.allocator),
+                        transfer_queue: vk_context.queues.graphics,
                         dst_set_allocator,
                         cmd_buffer,
                         concurrent_frames,
@@ -241,12 +240,13 @@ impl VkAssetManager {
                 });
 
                 unsafe { self.graphics_pipeline_layout.destroy() };
-                unsafe { self.material_dst_set_layout.destroy() };
                 unsafe { self.cmd_buffer.destroy() };
                 unsafe { self.dst_set_allocator.destroy() };
         }
 
-        fn create_material_dst_set_layout(device: &Rc<VkDevice>) -> VkResult<VkDescriptorSetLayout> {
+        fn create_material_dst_set_layout(
+                dst_set_layout_cache: &mut VkDescriptorSetLayoutCache,
+        ) -> VkResult<vk::DescriptorSetLayout> {
                 let mat_data_binding = vk::DescriptorSetLayoutBinding {
                         binding: 0,
                         descriptor_type: vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
@@ -279,10 +279,14 @@ impl VkAssetManager {
                         p_immutable_samplers: std::ptr::null(),
                 };
 
-                let mat_bindings = [mat_data_binding, diffuse_binding, specular_binding, sampler_binding];
-                let mat_set_layout_cinfo = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&mat_bindings);
-
-                Ok(unsafe { VkDescriptorSetLayout::new(device, &mat_set_layout_cinfo)? })
+                unsafe {
+                        dst_set_layout_cache.create_layout(vec![
+                                mat_data_binding,
+                                diffuse_binding,
+                                specular_binding,
+                                sampler_binding,
+                        ])
+                }
         }
 
         fn create_graphics_pipeline_layout(
@@ -673,7 +677,7 @@ impl VkAssetManager {
 
                 let [material_dst_set] = unsafe {
                         self.dst_set_allocator
-                                .allocate_descriptor_sets(&[*self.material_dst_set_layout])?
+                                .allocate_descriptor_sets(&[self.material_dst_set_layout])?
                 };
 
                 let material_data_buffer = VkDynamicUniformBuffer::new(
