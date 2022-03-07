@@ -58,7 +58,7 @@ pub struct VkRenderer {
 
 impl VkRenderer {
         pub fn new(window: Rc<Window>, imguic: &mut imgui::Context) -> AnyResult<Self> {
-                let vk_context = VkContext::new(Rc::clone(&window))?;
+                let mut vk_context = VkContext::new(Rc::clone(&window))?;
 
                 let mut swapchain = VkSwapchain::new(
                         Rc::clone(&window),
@@ -92,7 +92,7 @@ impl VkRenderer {
 
                 let max_concurrent_frames = MAX_CONCURRENT_FRAMES;
                 let frames_data = (0..max_concurrent_frames)
-                        .map(|_| VkFrameData::new(&vk_context, *world_dst_set_layout, *object_dst_set_layout))
+                        .map(|_| VkFrameData::new(&mut vk_context, *world_dst_set_layout, *object_dst_set_layout))
                         .collect::<AnyResult<Vec<VkFrameData>>>()?;
 
                 let vk_asset_manager = VkAssetManager::new(
@@ -845,7 +845,7 @@ struct VkFrameData {
 
 impl VkFrameData {
         fn new(
-                vk_context: &VkContext,
+                vk_context: &mut VkContext,
                 world_dst_set_layout: vk::DescriptorSetLayout,
                 object_dst_set_layout: vk::DescriptorSetLayout,
         ) -> AnyResult<Self> {
@@ -857,10 +857,9 @@ impl VkFrameData {
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
 
                 let [world_dst_set, object_dst_set] = unsafe {
-                        vk_context.device.allocate_descriptor_sets_array(
-                                *vk_context.dst_pool,
-                                &[world_dst_set_layout, object_dst_set_layout],
-                        )?
+                        vk_context
+                                .dst_set_allocator
+                                .allocate_descriptor_sets(&[world_dst_set_layout, object_dst_set_layout])?
                 };
 
                 let world_matrices_buffer_size = std::mem::size_of::<WorldMatrices>() as vk::DeviceSize;

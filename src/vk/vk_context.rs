@@ -14,9 +14,12 @@ use ash::{extensions::khr::Swapchain, prelude::VkResult, vk};
 use log::{debug, error, info, trace, warn};
 use winit::window::Window;
 
-use super::vk_wrapper::{
-        impl_destroyable_drop, VkCommandPool, VkDebugUtilsMessenger, VkDescriptorPool, VkDevice, VkInstance, VkSurface,
-        VmaAllocator,
+use super::{
+        vk_descriptor_set_allocator::VkDescriptorSetAllocator,
+        vk_wrapper::{
+                impl_destroyable_drop, VkCommandPool, VkDebugUtilsMessenger, VkDevice, VkInstance, VkSurface,
+                VmaAllocator,
+        },
 };
 use crate::{
         vk::vk_wrapper::{VkPhysicalDevice, VkQueueFamilyIndices, VkQueues},
@@ -45,7 +48,7 @@ pub struct VkContext {
 
         pub allocator: Rc<VmaAllocator>,
         pub cmd_pool: Rc<VkCommandPool>,
-        pub dst_pool: VkDescriptorPool,
+        pub dst_set_allocator: VkDescriptorSetAllocator,
 
         destroyed: Cell<bool>,
 }
@@ -101,7 +104,7 @@ impl VkContext {
                 let cmd_pool = Self::create_command_pool(&device, &qfamilyi)?;
                 trace!("Created VkCommandPool");
 
-                let dst_pool = Self::create_descriptor_pool(&device)?;
+                let dst_set_allocator = VkDescriptorSetAllocator::new(Rc::clone(&device))?;
                 trace!("Created VkDescriptorPool");
 
                 Ok(Self {
@@ -122,7 +125,7 @@ impl VkContext {
 
                         cmd_pool,
 
-                        dst_pool,
+                        dst_set_allocator,
 
                         destroyed: Cell::new(false),
                 })
@@ -132,7 +135,7 @@ impl VkContext {
                 self.destroyed.set(true);
 
                 let _ = self.device.device_wait_idle();
-                self.dst_pool.destroy();
+                self.dst_set_allocator.destroy();
                 self.cmd_pool.destroy();
                 self.allocator.destroy();
                 self.device.destroy();
@@ -287,26 +290,6 @@ impl VkContext {
                 };
 
                 Ok(Rc::new(unsafe { VmaAllocator::new(&allocator_cinfo)? }))
-        }
-
-        fn create_descriptor_pool(device: &Rc<VkDevice>) -> VkResult<VkDescriptorPool> {
-                let pool_sizes = [
-                        vk::DescriptorPoolSize {
-                                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                                descriptor_count: 100,
-                        },
-                        vk::DescriptorPoolSize {
-                                ty: vk::DescriptorType::SAMPLED_IMAGE,
-                                descriptor_count: 100,
-                        },
-                ];
-
-                let dst_pool_cinfo = vk::DescriptorPoolCreateInfo::builder()
-                        .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-                        .pool_sizes(&pool_sizes)
-                        .max_sets(1000);
-
-                unsafe { VkDescriptorPool::new(device, &dst_pool_cinfo) }
         }
 
         fn create_command_pool(

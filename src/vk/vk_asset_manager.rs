@@ -27,12 +27,10 @@ use crate::{
 
 use super::{
         vk_buffer::VkDynamicUniformBuffer,
+        vk_descriptor_set_allocator::VkDescriptorSetAllocator,
         vk_image::VkImageCubemapCreateInfo,
         vk_renderer::MaterialData,
-        vk_wrapper::{
-                VkDescriptorPool, VkDescriptorSetLayout, VkInstance, VkPipeline, VkPipelineLayout, VkShaderModule,
-                VmaAllocator,
-        },
+        vk_wrapper::{VkDescriptorSetLayout, VkInstance, VkPipeline, VkPipelineLayout, VkShaderModule, VmaAllocator},
 };
 
 pub struct VkMesh {
@@ -83,7 +81,7 @@ pub struct VkAssetManager {
         device: Rc<VkDevice>,
         allocator: Rc<VmaAllocator>,
         transfer_queue: vk::Queue,
-        dst_pool: VkDescriptorPool,
+        dst_set_allocator: VkDescriptorSetAllocator,
         cmd_buffer: VkReusableCommandBuffer,
         concurrent_frames: usize,
 
@@ -119,7 +117,7 @@ impl VkAssetManager {
         ) -> AnyResult<Self> {
                 assert!(concurrent_frames > 0, "Frames in flight must be greater to zero");
 
-                let dst_pool = Self::create_dst_pool(&device)?;
+                let dst_set_allocator = VkDescriptorSetAllocator::new(Rc::clone(&device))?;
                 let cmd_buffer = VkReusableCommandBuffer::new(Rc::clone(&device), cmd_pool)?;
                 let material_dst_set_layout = Self::create_material_dst_set_layout(&device)?;
                 let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
@@ -141,7 +139,7 @@ impl VkAssetManager {
                         device,
                         allocator,
                         transfer_queue,
-                        dst_pool,
+                        dst_set_allocator,
                         cmd_buffer,
                         concurrent_frames,
 
@@ -245,27 +243,7 @@ impl VkAssetManager {
                 unsafe { self.graphics_pipeline_layout.destroy() };
                 unsafe { self.material_dst_set_layout.destroy() };
                 unsafe { self.cmd_buffer.destroy() };
-                unsafe { self.dst_pool.destroy() };
-        }
-
-        fn create_dst_pool(device: &Rc<VkDevice>) -> VkResult<VkDescriptorPool> {
-                let pool_sizes = [
-                        vk::DescriptorPoolSize {
-                                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                                descriptor_count: 100,
-                        },
-                        vk::DescriptorPoolSize {
-                                ty: vk::DescriptorType::SAMPLED_IMAGE,
-                                descriptor_count: 100,
-                        },
-                ];
-
-                let dst_pool_cinfo = vk::DescriptorPoolCreateInfo::builder()
-                        .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-                        .pool_sizes(&pool_sizes)
-                        .max_sets(1000);
-
-                unsafe { VkDescriptorPool::new(device, &dst_pool_cinfo) }
+                unsafe { self.dst_set_allocator.destroy() };
         }
 
         fn create_material_dst_set_layout(device: &Rc<VkDevice>) -> VkResult<VkDescriptorSetLayout> {
@@ -684,7 +662,7 @@ impl VkAssetManager {
         }
 
         fn create_vk_material_from_material(
-                &self,
+                &mut self,
                 asset_manager: &AssetManager,
                 material_id: MaterialId,
         ) -> AnyResult<Option<VkMaterial>> {
@@ -694,8 +672,8 @@ impl VkAssetManager {
                 };
 
                 let [material_dst_set] = unsafe {
-                        self.device
-                                .allocate_descriptor_sets_array(*self.dst_pool, &[*self.material_dst_set_layout])?
+                        self.dst_set_allocator
+                                .allocate_descriptor_sets(&[*self.material_dst_set_layout])?
                 };
 
                 let material_data_buffer = VkDynamicUniformBuffer::new(

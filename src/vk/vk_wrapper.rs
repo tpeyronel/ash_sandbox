@@ -285,18 +285,6 @@ impl VkDevice {
                         destroyed: Cell::new(false),
                 })
         }
-
-        pub unsafe fn allocate_descriptor_sets_array<const N: usize>(
-                &self,
-                dst_pool: vk::DescriptorPool,
-                dst_set_layouts: &[vk::DescriptorSetLayout; N],
-        ) -> VkResult<[vk::DescriptorSet; N]> {
-                let create_info = vk::DescriptorSetAllocateInfo::builder()
-                        .descriptor_pool(dst_pool)
-                        .set_layouts(dst_set_layouts);
-
-                Ok(self.allocate_descriptor_sets(&create_info)?.try_into().unwrap())
-        }
 }
 
 impl_destroyable!(VkDevice, ash::Device, destroy_device, None);
@@ -478,28 +466,6 @@ impl VkCommandPool {
 impl_destroyable_expr!(VkCommandPool, vk::CommandPool, |s: &VkCommandPool| s
         .device
         .destroy_command_pool(s.handle, None));
-
-pub struct VkDescriptorPool {
-        device: Rc<VkDevice>,
-
-        handle: vk::DescriptorPool,
-        destroyed: Cell<bool>,
-}
-
-impl VkDescriptorPool {
-        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::DescriptorPoolCreateInfo) -> VkResult<Self> {
-                Ok(Self {
-                        device: Rc::clone(device),
-
-                        handle: device.create_descriptor_pool(create_info, None)?,
-                        destroyed: Cell::new(false),
-                })
-        }
-}
-
-impl_destroyable_expr!(VkDescriptorPool, vk::DescriptorPool, |s: &VkDescriptorPool| s
-        .device
-        .destroy_descriptor_pool(s.handle, None));
 
 pub struct VkDescriptorSetLayout {
         device: Rc<VkDevice>,

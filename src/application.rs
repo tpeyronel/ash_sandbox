@@ -653,7 +653,7 @@ fn spawn_entities(mut commands: Commands) {
                 .spawn()
                 .insert(Transform {
                         translation: Vec3::new(2.0, 0.0, 0.0),
-                        scale: Vec3::new(5.0, 2.5, 5.0),
+                        scale: Vec3::new(5.0, 5.0, 5.0),
                         ..Transform::identity()
                 })
                 .insert(AngularVelocity(Vec3::Y * 22.5f32.to_radians()))
@@ -672,7 +672,7 @@ fn spawn_entities(mut commands: Commands) {
                 .spawn()
                 .insert(Transform {
                         translation: Vec3::new(0.0, 0.5, 0.0),
-                        scale: Vec3::new(1.0, 1.0, 1.0),
+                        scale: Vec3::new(1.0, 0.5, 1.0),
                         ..Transform::identity()
                 })
                 .insert(Billboard)
