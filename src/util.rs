@@ -35,3 +35,7 @@ impl<T: Deref<Target = D>, D: 'static> DerefIntoSlice<D> for T {
                 std::slice::from_ref(&**self)
         }
 }
+
+pub fn default<T: Default>() -> T {
+        Default::default()
+}

@@ -4,6 +4,7 @@ use ash::{
         prelude::VkResult,
         vk::{self, BufferUsageFlags},
 };
+use crossbeam_channel::Receiver;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 use slotmap::SecondaryMap;
@@ -159,39 +160,49 @@ impl VkAssetManager {
                 })
         }
 
-        pub fn process_asset_manager_events(&mut self, asset_manager: &AssetManager) -> AnyResult<()> {
-                for e in asset_manager.events() {
-                        match *e {
-                                AssetManagerEvent::MeshUpdated(mesh_id) => {
+        pub fn process_asset_manager_events(
+                &mut self,
+                asset_manager: &AssetManager,
+                asset_manager_event_rx: &Receiver<AssetManagerEvent>,
+        ) -> AnyResult<()> {
+                for e in asset_manager_event_rx.try_iter() {
+                        match e {
+                                AssetManagerEvent::MeshChanged(_) => (),
+                                AssetManagerEvent::MeshInserted(mesh_id) => {
                                         self.on_mesh_updated(asset_manager, mesh_id)?;
                                 },
-                                AssetManagerEvent::MeshDeleted(_) => todo!(),
-                                AssetManagerEvent::ImageUpdated(image_id) => {
+                                AssetManagerEvent::MeshRemoved(_) => todo!(),
+                                AssetManagerEvent::ModelInserted(_) => (),
+                                AssetManagerEvent::ModelChanged(_) => (),
+                                AssetManagerEvent::ModelRemoved(_) => todo!(),
+                                AssetManagerEvent::ImageChanged(_) => (),
+                                AssetManagerEvent::ImageInserted(image_id) => {
                                         self.on_image_updated(asset_manager, image_id)?;
                                 },
-                                AssetManagerEvent::ImageDeleted(_) => todo!(),
-                                AssetManagerEvent::SamplerUpdated(sampler_id) => {
+                                AssetManagerEvent::ImageRemoved(_) => todo!(),
+                                AssetManagerEvent::SamplerChanged(_) => (),
+                                AssetManagerEvent::SamplerInserted(sampler_id) => {
                                         self.on_sampler_updated(asset_manager, sampler_id)?;
                                 },
-                                AssetManagerEvent::SamplerDeleted(_) => todo!(),
-                                AssetManagerEvent::MaterialUpdated(material_id) => {
+                                AssetManagerEvent::SamplerRemoved(_) => todo!(),
+                                AssetManagerEvent::TextureInserted(_) => (),
+                                AssetManagerEvent::TextureChanged(_) => (),
+                                AssetManagerEvent::TextureRemoved(_) => todo!(),
+                                AssetManagerEvent::MaterialChanged(_) => (),
+                                AssetManagerEvent::MaterialInserted(material_id) => {
                                         self.on_material_updated(asset_manager, material_id)?;
                                 },
-                                AssetManagerEvent::MaterialDeleted(_) => todo!(),
-                                AssetManagerEvent::ShaderUpdated(shader_id) => {
+                                AssetManagerEvent::MaterialRemoved(_) => todo!(),
+                                AssetManagerEvent::ShaderChanged(_) => (),
+                                AssetManagerEvent::ShaderInserted(shader_id) => {
                                         self.on_shader_updated(asset_manager, shader_id)?;
                                 },
-                                AssetManagerEvent::ShaderDeleted(_) => todo!(),
-                                AssetManagerEvent::CubemapUpdated(cubemap_id) => {
+                                AssetManagerEvent::ShaderRemoved(_) => todo!(),
+                                AssetManagerEvent::CubemapChanged(_) => (),
+                                AssetManagerEvent::CubemapInserted(cubemap_id) => {
                                         self.on_cubemap_updated(asset_manager, cubemap_id)?;
                                 },
-                                AssetManagerEvent::CubemapDeleted(_) => todo!(),
-                                // AssetManagerEvent::TextureUpdated(texture_id) => todo!(),
-                                // AssetManagerEvent::TextureDeleted(_) => todo!(),
-                                // AssetManagerEvent::MeshUpdated(mid) => todo!(),
-                                // AssetManagerEvent::MeshDeleted(_) => todo!(),
-                                // AssetManagerEvent::ModelUpdated(mid) => todo!(),
-                                // AssetManagerEvent::ModelDeleted(_) => todo!(),
+                                AssetManagerEvent::CubemapRemoved(_) => todo!(),
                         }
                 }
 
@@ -364,7 +375,7 @@ impl VkAssetManager {
         }
 
         fn on_shader_updated(&mut self, asset_manager: &AssetManager, shader_id: ShaderId) -> AnyResult<()> {
-                let shader = match asset_manager.shaders().get(shader_id) {
+                let shader = match asset_manager.get_shader(shader_id) {
                         Some(shader) => shader,
                         None => return Ok(()),
                 };
@@ -429,7 +440,7 @@ impl VkAssetManager {
         }
 
         fn on_cubemap_updated(&mut self, asset_manager: &AssetManager, cubemap_id: CubemapId) -> AnyResult<()> {
-                let cubemap = match asset_manager.cubemaps().get(cubemap_id) {
+                let cubemap = match asset_manager.get_cubemap(cubemap_id) {
                         Some(cubemap) => cubemap,
                         None => return Ok(()),
                 };
@@ -522,7 +533,7 @@ impl VkAssetManager {
         }
 
         fn create_vk_mesh(&mut self, asset_manager: &AssetManager, mesh_id: MeshId) -> AnyResult<()> {
-                let mesh = match asset_manager.meshes().get(mesh_id) {
+                let mesh = match asset_manager.get_mesh(mesh_id) {
                         Some(mesh) => mesh,
                         None => return Ok(()),
                 };
@@ -582,7 +593,7 @@ impl VkAssetManager {
                 asset_manager: &AssetManager,
                 image_id: ImageId,
         ) -> AnyResult<Option<VkModelImage>> {
-                let image = match asset_manager.images().get(image_id) {
+                let image = match asset_manager.get_image(image_id) {
                         Some(image) => image,
                         None => return Ok(None),
                 };
@@ -636,7 +647,7 @@ impl VkAssetManager {
                 asset_manager: &AssetManager,
                 sampler_id: SamplerId,
         ) -> AnyResult<Option<VkSampler>> {
-                let sampler = match asset_manager.samplers().get(sampler_id) {
+                let sampler = match asset_manager.get_sampler(sampler_id) {
                         Some(sampler) => sampler,
                         None => return Ok(None),
                 };
@@ -719,8 +730,8 @@ impl VkAssetManager {
                 material: &Material,
                 material_dst_set: vk::DescriptorSet,
         ) {
-                let base_color_texture = &asset_manager.textures()[material.base_color_texture];
-                let metallic_roughness_texture = &asset_manager.textures()[material.metallic_roughness_texture];
+                let base_color_texture = &asset_manager.texture(material.base_color_texture);
+                let metallic_roughness_texture = &asset_manager.texture(material.metallic_roughness_texture);
                 let diffuse_vk_image_view = &self.images[base_color_texture.image].image_view;
                 let specular_vk_image_view = &self.images[metallic_roughness_texture.image].image_view;
                 let color_vk_sampler = &self.samplers[base_color_texture.sampler];

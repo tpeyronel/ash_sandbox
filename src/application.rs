@@ -4,6 +4,7 @@ use std::{
         time::{Duration, Instant},
 };
 
+use crossbeam_channel::Receiver;
 use tps_counter::TPSCounter;
 
 use crate::{
@@ -25,6 +26,7 @@ use crate::{
         model_instance_manager::CreateModelInstanceFromName,
         my_glm::*,
         renderer::Renderer,
+        skybox::Skybox,
         vk::vk_renderer::VkRenderer,
         AnyResult,
 };
@@ -146,7 +148,9 @@ impl Application {
                                         let mut asset_manager = world.get_resource_mut::<AssetManager>().unwrap();
 
                                         imgui::TreeNode::new("materials").build(ui, || {
-                                                for (material_id, material) in asset_manager.iter_materials_mut() {
+                                                let mut changed_materials = Vec::new();
+
+                                                for (material_id, material) in &asset_manager.assets.materials {
                                                         let material_name = format!(
                                                                 "{:?} - {}",
                                                                 material_id,
@@ -154,8 +158,14 @@ impl Application {
                                                         );
 
                                                         imgui::TreeNode::new(material_name).build(ui, || {
-                                                                imgui_util::material_mut(ui, material);
+                                                                let mut material = material.clone();
+                                                                imgui_util::material_mut(ui, &mut material);
+                                                                changed_materials.push((material_id, material));
                                                         });
+                                                }
+
+                                                for (material_id, material) in changed_materials {
+                                                        asset_manager.assets.materials[material_id] = material;
                                                 }
                                         });
                                 });
@@ -181,7 +191,19 @@ impl Application {
                 world.insert_resource(ImguiWantCaptureKeyboard(false));
                 world.insert_resource(TPSCounter::new(20));
 
-                let asset_manager = Self::init_asset_manager()?;
+                let (mut asset_manager, asset_manager_event_rx) = Self::init_asset_manager()?;
+
+                let skybox = asset_manager.insert_cubemap(Cubemap {
+                        faces: [
+                                Image::from_file(Path::new("res/image/skybox/right.png"))?,
+                                Image::from_file(Path::new("res/image/skybox/left.png"))?,
+                                Image::from_file(Path::new("res/image/skybox/up.png"))?,
+                                Image::from_file(Path::new("res/image/skybox/down.png"))?,
+                                Image::from_file(Path::new("res/image/skybox/front.png"))?,
+                                Image::from_file(Path::new("res/image/skybox/back.png"))?,
+                        ],
+                });
+                world.insert_resource(Skybox(skybox));
 
                 world.insert_resource(asset_manager);
                 world.insert_resource(ControlFlow::Poll);
@@ -240,7 +262,11 @@ impl Application {
                                 ),
                 );
 
-                let renderer = Box::new(VkRenderer::new(Rc::clone(&window), &mut imgui_manager.imgui_context)?);
+                let renderer = Box::new(VkRenderer::new(
+                        Rc::clone(&window),
+                        &mut imgui_manager.imgui_context,
+                        asset_manager_event_rx,
+                )?);
 
                 let dispatch_actions = true;
                 let mut input_manager = InputManager::new(dispatch_actions);
@@ -317,8 +343,8 @@ impl Application {
                 });
         }
 
-        fn init_asset_manager() -> AnyResult<AssetManager> {
-                let mut asset_manager = AssetManager::new()?;
+        fn init_asset_manager() -> AnyResult<(AssetManager, Receiver<AssetManagerEvent>)> {
+                let (mut asset_manager, event_rx) = AssetManager::new()?;
 
                 // asset_manager.register_shader_resource(
                 //         "matrices".to_string(),
@@ -354,7 +380,7 @@ impl Application {
 
                 let _basic_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/basic_shader/basic_shader.yaml"))?;
-                let _color_shader =
+                let color_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/color_shader/color_shader.yaml"))?;
 
                 let _model_colt = asset_manager.import_gltf_file(Path::new("res/model/new-colt/colt.gltf"))?;
@@ -363,15 +389,17 @@ impl Application {
                 let _model_sphere = asset_manager.import_gltf_file(Path::new("res/model/sphere/sphere.gltf"))?;
                 let _model_icosphere =
                         asset_manager.import_gltf_file(Path::new("res/model/icosphere/icosphere.gltf"))?;
-                let _model_lit_icosphere = asset_manager
-                        .import_gltf_file(std::path::Path::new("res/model/lit-icosphere/lit-icosphere.gltf"))?;
+                let _model_lit_icosphere = asset_manager.import_gltf_file_with_shader(
+                        std::path::Path::new("res/model/lit-icosphere/lit-icosphere.gltf"),
+                        color_shader,
+                )?;
                 let _model_backpack =
                         asset_manager.import_gltf_file(std::path::Path::new("res/model/backpack/backpack.gltf"))?;
                 let _model_landscape =
                         asset_manager.import_gltf_file(std::path::Path::new("res/model/landscape/landscape.gltf"))?;
 
                 trace!("Initialized AssetManager");
-                Ok(asset_manager)
+                Ok((asset_manager, event_rx))
         }
 
         fn on_winit_event(

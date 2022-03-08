@@ -53,7 +53,7 @@ impl CreateModelInstance {
         fn create_model_instance_recursive(world: &mut World, parent: Entity, model_id: ModelId) -> Entity {
                 let entity_id = world.spawn().id();
 
-                let model = &world.get_resource::<AssetManager>().unwrap().models()[model_id];
+                let model = world.get_resource::<AssetManager>().unwrap().model(model_id);
                 let model_transform = model.base_transform;
                 let model_children = model.children.clone();
 

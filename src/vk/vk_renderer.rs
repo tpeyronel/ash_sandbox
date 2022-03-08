@@ -3,6 +3,7 @@ use std::{rc::Rc, slice, time::Instant};
 use ash::{prelude::VkResult, vk};
 
 use bevy_ecs::prelude::World;
+use crossbeam_channel::Receiver;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use winit::{dpi::PhysicalSize, window::Window};
@@ -18,12 +19,13 @@ use super::{
 };
 use crate::{
         application::InterpGlobalTransform,
-        asset_manager::{AssetManager, MeshId},
+        asset_manager::{AssetManager, AssetManagerEvent, MeshId},
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
         constants::MAX_OBJECT_MATRICES,
         model_instance_manager::ModelInstance,
         my_glm::*,
         renderer::Renderer,
+        skybox::Skybox,
         util::RefIntoSlice,
 };
 use crate::{
@@ -34,6 +36,7 @@ use crate::{
 
 pub struct VkRenderer {
         window: Rc<Window>,
+        asset_manager_event_rx: Receiver<AssetManagerEvent>,
 
         vk_context: VkContext,
         vk_asset_manager: VkAssetManager,
@@ -55,7 +58,11 @@ pub struct VkRenderer {
 }
 
 impl VkRenderer {
-        pub fn new(window: Rc<Window>, imguic: &mut imgui::Context) -> AnyResult<Self> {
+        pub fn new(
+                window: Rc<Window>,
+                imguic: &mut imgui::Context,
+                asset_manager_event_rx: Receiver<AssetManagerEvent>,
+        ) -> AnyResult<Self> {
                 let mut vk_context = VkContext::new(Rc::clone(&window))?;
 
                 let mut swapchain = VkSwapchain::new(
@@ -122,6 +129,7 @@ impl VkRenderer {
 
                 Ok(Self {
                         window,
+                        asset_manager_event_rx,
 
                         vk_context,
                         vk_asset_manager,
@@ -146,9 +154,10 @@ impl VkRenderer {
 
 impl Renderer for VkRenderer {
         fn draw_world(&mut self, world: &mut World, imgui_draw_data: &imgui::DrawData) -> AnyResult<()> {
-                self.vk_asset_manager
-                        .process_asset_manager_events(world.get_resource::<AssetManager>().unwrap())?;
-                world.get_resource_mut::<AssetManager>().unwrap().clear_events();
+                self.vk_asset_manager.process_asset_manager_events(
+                        world.get_resource::<AssetManager>().unwrap(),
+                        &self.asset_manager_event_rx,
+                )?;
 
                 if !self.should_render() {
                         return Ok(());
@@ -227,6 +236,8 @@ impl Renderer for VkRenderer {
                         spotlight,
                 })?;
 
+                let mut buffer_transform_idx = 0;
+
                 unsafe {
                         self.vk_context.device.cmd_set_viewport(
                                 *frame_data.draw_cmd_buffer,
@@ -239,12 +250,6 @@ impl Renderer for VkRenderer {
                                 slice::from_ref(&self.swapchain.scissor),
                         );
 
-                        let asset_manager = world.remove_resource::<AssetManager>().unwrap();
-
-                        let skybox = &self.vk_asset_manager.cubemaps[asset_manager.default_cubemap];
-
-                        frame_data.update_skybox(&self.vk_context.device, skybox);
-
                         let graphics_pipeline_layout = *self.vk_asset_manager.graphics_pipeline_layout;
                         self.vk_context.device.cmd_bind_descriptor_sets(
                                 *frame_data.draw_cmd_buffer,
@@ -255,32 +260,36 @@ impl Renderer for VkRenderer {
                                 &[],
                         );
 
-                        let mut buffer_transform_idx = 0;
+                        let asset_manager = world.remove_resource::<AssetManager>().unwrap();
 
-                        let cube_root_model = &asset_manager.models()[asset_manager.get_model_by_name("cube")];
-                        let cube_model = cube_root_model.children[0];
+                        if let Some(skybox) = world.get_resource::<Skybox>() {
+                                let vk_skybox = &self.vk_asset_manager.cubemaps[skybox.0];
+                                frame_data.update_skybox(&self.vk_context.device, vk_skybox);
 
-                        Self::draw_model_instance(
-                                &self.vk_context.device,
-                                *frame_data.draw_cmd_buffer,
-                                &frame_data.object_matrices_buffer,
-                                frame_data.object_dst_set,
-                                graphics_pipeline_layout,
-                                &asset_manager,
-                                &self.vk_asset_manager,
-                                self.framei,
-                                &WorldMatrices {
-                                        view_pos: Vec4::from((camera_pos, 1.0)),
-                                        view: Mat4::from_mat3(Mat3::from_mat4(view_mat)),
-                                        proj: proj_mat,
-                                        vp: proj_mat * Mat4::from_mat3(Mat3::from_mat4(view_mat)),
-                                },
-                                &ModelInstance { model: cube_model },
-                                Mat4::IDENTITY,
-                                buffer_transform_idx,
-                        )?;
+                                Self::draw_model_instance(
+                                        &self.vk_context.device,
+                                        *frame_data.draw_cmd_buffer,
+                                        &frame_data.object_matrices_buffer,
+                                        frame_data.object_dst_set,
+                                        graphics_pipeline_layout,
+                                        &asset_manager,
+                                        &self.vk_asset_manager,
+                                        self.framei,
+                                        &WorldMatrices {
+                                                view_pos: Vec4::from((camera_pos, 1.0)),
+                                                view: Mat4::from_mat3(Mat3::from_mat4(view_mat)),
+                                                proj: proj_mat,
+                                                vp: proj_mat * Mat4::from_mat3(Mat3::from_mat4(view_mat)),
+                                        },
+                                        &ModelInstance {
+                                                model: asset_manager.skybox_model,
+                                        },
+                                        Mat4::IDENTITY,
+                                        buffer_transform_idx,
+                                )?;
 
-                        buffer_transform_idx += 1;
+                                buffer_transform_idx += 1;
+                        }
 
                         for (minstance, transform) in
                                 world.query::<(&ModelInstance, &InterpGlobalTransform)>().iter(world)
@@ -727,7 +736,7 @@ impl VkRenderer {
                         )
                 };
 
-                let model = &asset_manager.models()[minstance.model];
+                let model = asset_manager.model(minstance.model);
 
                 for &mesh_id in &model.meshes {
                         Self::draw_mesh_instance(
@@ -753,8 +762,8 @@ impl VkRenderer {
                 framei: usize,
                 mesh_id: MeshId,
         ) -> VkResult<()> {
-                let mesh = &asset_manager.meshes()[mesh_id];
-                let material = &asset_manager.materials()[mesh.material];
+                let mesh = &asset_manager.mesh(mesh_id);
+                let material = &asset_manager.material(mesh.material);
                 let pipeline = *vk_asset_manager.pipelines[material.shader];
 
                 let vk_mesh = &vk_asset_manager.meshes[mesh_id];

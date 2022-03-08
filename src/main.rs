@@ -15,6 +15,7 @@ mod input_manager;
 mod model_instance_manager;
 mod my_glm;
 mod renderer;
+mod skybox;
 mod util;
 mod vertex;
 mod vk;

@@ -1,10 +1,12 @@
 use std::{
         ffi::OsString,
+        ops::{Index, IndexMut},
         path::{Path, PathBuf},
         process::Command,
         sync::Arc,
 };
 
+use crossbeam_channel::Receiver;
 use gltf::{
         accessor::{DataType, Dimensions},
         image::Format,
@@ -12,14 +14,18 @@ use gltf::{
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use serde::Deserialize;
-use slotmap::SlotMap;
+use slotmap::{Key, SecondaryMap, SlotMap};
 use thiserror::Error;
 
 use crate::{
         components::Transform,
-        constants::{DEFAULT_AMBIENT_STRENGTH, DEFAULT_DIFFUSE_STRENGTH, DEFAULT_SHININESS, DEFAULT_SPECULAR_STRENGTH},
+        constants::{
+                DEFAULT_AMBIENT_STRENGTH, DEFAULT_DIFFUSE_STRENGTH, DEFAULT_MAG_FILTER, DEFAULT_MIN_FILTER,
+                DEFAULT_SHININESS, DEFAULT_SPECULAR_STRENGTH,
+        },
         hashmap::HashMap,
         my_glm::*,
+        util::{default, log_if_error},
         AnyResult,
 };
 
@@ -382,297 +388,40 @@ impl AssetManagerBuilder {
         }
 } */
 
-#[derive(Debug, Clone)]
-pub struct AssetManager {
-        events: Vec<AssetManagerEvent>,
-        images: SlotMap<ImageId, Image>,
-        samplers: SlotMap<SamplerId, Sampler>,
-        textures: SlotMap<TextureId, Texture>,
-        materials: SlotMap<MaterialId, Material>,
-        meshes: SlotMap<MeshId, Mesh>,
-        models: SlotMap<ModelId, Model>,
-        root_models: HashMap<String, ModelId>,
-
-        cubemaps: SlotMap<CubemapId, Cubemap>,
-
-        shader_resources: HashMap<ShaderResourceId, ShaderResource>,
-        shaders: SlotMap<ShaderId, Shader>,
-        shader_names: HashMap<String, ShaderId>,
-
-        default_sampler: SamplerId,
-        default_material: MaterialId,
-        pub default_cubemap: CubemapId,
+pub struct AssetBundle {
+        pub assets: AssetStorage,
 }
 
-impl AssetManager {
-        pub fn new() -> AnyResult<Self> {
-                let mut events = Vec::new();
-                let mut images = SlotMap::with_key();
-                let mut samplers = SlotMap::with_key();
-                let mut textures = SlotMap::with_key();
-                let mut materials = SlotMap::with_key();
-                let meshes = SlotMap::with_key();
-                let models = SlotMap::with_key();
-                let mut cubemaps = SlotMap::with_key();
-                let mut shaders = SlotMap::with_key();
+impl AssetBundle {
+        pub fn from_gltf(gltf: &Path) -> Result<(Self, String), GLTFImportError> {
+                scoped_timer!("Loaded gltf in: ", Millis);
 
-                let default_sampler = samplers.insert(Sampler {
-                        name: Some("default-sampler".into()),
-                        mag_filter: MagFilter::Linear,
-                        min_filter: MinFilter::LinearMipmapLinear,
-                        wrap_s: WrappingMode::Repeat,
-                        wrap_t: WrappingMode::Repeat,
-                });
-                events.push(AssetManagerEvent::SamplerUpdated(default_sampler));
+                let (mut assets, _event_rx) = AssetStorage::new();
 
-                let default_diffuse_image = images.insert(Image {
-                        pixels: vec![u8::MAX; 4],
-                        width: 1,
-                        height: 1,
-                        format: Format::R8G8B8A8,
-                });
-                events.push(AssetManagerEvent::ImageUpdated(default_diffuse_image));
+                let (doc, buffer_data, image_data) = gltf::import(gltf)?;
 
-                let default_diffuse_texture = textures.insert(Texture {
-                        name: Some("default-diffuse-texture".into()),
-                        image: default_diffuse_image,
-                        sampler: default_sampler,
-                });
+                let images_by_index = Self::load_images(gltf, &doc, image_data, &mut assets.images)?;
+                let samplers_by_index = Self::load_samplers(&doc, &mut assets.samplers);
+                let textures_by_index =
+                        Self::load_textures(&doc, &images_by_index, &samplers_by_index, &mut assets.textures);
+                let materials_by_index = Self::load_materials(&doc, &textures_by_index, &mut assets.materials);
+                let mesh_groups_by_index =
+                        Self::load_meshes(&doc, buffer_data, &materials_by_index, &mut assets.meshes)?;
+                let models_by_index = Self::load_models(&doc, &mesh_groups_by_index, &mut assets.models)?;
+                let root_model = Self::load_root_model(&doc, &models_by_index, &mut assets.models)?;
+                assets.named_models.insert(root_model.0.clone(), root_model.1);
 
-                let default_specular_image = images.insert(Image {
-                        pixels: vec![u8::MAX; 4],
-                        width: 1,
-                        height: 1,
-                        format: Format::R8G8B8A8,
-                });
-                events.push(AssetManagerEvent::ImageUpdated(default_specular_image));
-
-                let default_specular_texture = textures.insert(Texture {
-                        name: Some("default-specular-texture".into()),
-                        image: default_specular_image,
-                        sampler: default_sampler,
-                });
-
-                let default_shader = shaders.insert(Shader::from_yaml(Path::new(
-                        "res/shader/basic_shader/basic_shader.yaml",
-                ))?);
-                events.push(AssetManagerEvent::ShaderUpdated(default_shader));
-
-                let default_material = materials.insert(Material {
-                        name: Some("default-material".into()),
-                        shader: default_shader,
-                        base_color_factor: Vec4::splat(1.0),
-                        metallic_factor: 1.0,
-                        roughness_factor: 1.0,
-                        shininess: DEFAULT_SHININESS,
-                        ambient_strength: DEFAULT_AMBIENT_STRENGTH,
-                        specular_strength: DEFAULT_SPECULAR_STRENGTH,
-                        diffuse_strength: DEFAULT_DIFFUSE_STRENGTH,
-                        base_color_texture: default_diffuse_texture,
-                        metallic_roughness_texture: default_specular_texture,
-                        normal_texture: None,
-                        occlusion_texture: None,
-                        emissive_texture: None,
-                        emissive_factor: Vec3::splat(0.0),
-                });
-                events.push(AssetManagerEvent::MaterialUpdated(default_material));
-
-                let default_cubemap = cubemaps.insert(Cubemap {
-                        faces: [
-                                Image::from_file(Path::new("res/image/skybox/right.png"))?,
-                                Image::from_file(Path::new("res/image/skybox/left.png"))?,
-                                Image::from_file(Path::new("res/image/skybox/up.png"))?,
-                                Image::from_file(Path::new("res/image/skybox/down.png"))?,
-                                Image::from_file(Path::new("res/image/skybox/front.png"))?,
-                                Image::from_file(Path::new("res/image/skybox/back.png"))?,
-                        ],
-                });
-                events.push(AssetManagerEvent::CubemapUpdated(default_cubemap));
-
-                let mut s = Self {
-                        events,
-                        images,
-                        samplers,
-                        textures,
-                        materials,
-                        meshes,
-                        models,
-                        cubemaps,
-                        root_models: HashMap::new(),
-
-                        shader_resources: HashMap::new(),
-                        shaders,
-                        shader_names: HashMap::new(),
-
-                        default_sampler,
-                        default_material,
-                        default_cubemap,
-                };
-
-                let skybox_shader =
-                        s.load_shader_from_yaml(Path::new("res/shader/skybox_shader/skybox_shader.yaml"))?;
-
-                let cube_model_id = s.import_gltf_file(Path::new("res/model/cube/cube.gltf"))?;
-                let cube_model = &s.models[cube_model_id];
-                let cube_material = &mut s.materials[s.meshes[s.models[cube_model.children[0]].meshes[0]].material];
-
-                cube_material.shader = skybox_shader;
-
-                Ok(s)
-        }
-
-        pub fn events(&self) -> &Vec<AssetManagerEvent> {
-                &self.events
-        }
-
-        pub fn clear_events(&mut self) {
-                self.events.clear();
-        }
-
-        pub fn register_shader_resource(
-                &mut self,
-                shader_resource_id: ShaderResourceId,
-                shader_resource: ShaderResource,
-        ) {
-                self.shader_resources.insert(shader_resource_id, shader_resource);
-        }
-
-        pub fn load_shader_from_yaml(&mut self, path: &Path) -> Result<ShaderId, ShaderLoadError> {
-                let shader = Shader::from_yaml(path)?;
-                if self.shader_names.contains_key(&shader.name) {
-                        return Err(ShaderLoadError::ShaderNameAlreadyRegistered(shader.name));
-                }
-
-                let shader_name = shader.name.clone();
-                let shader_id = self.shaders.insert(shader);
-
-                debug!("Loaded shader with name: {}", shader_name);
-
-                self.shader_names.insert(shader_name, shader_id);
-
-                self.events.push(AssetManagerEvent::ShaderUpdated(shader_id));
-
-                Ok(shader_id)
-        }
-
-        pub fn import_gltf_file(&mut self, gltf_path: &Path) -> Result<ModelId, GLTFImportError> {
-                scoped_timer!("Loaded model in ", Millis);
-
-                let (doc, buffers, images) = gltf::import(gltf_path)?;
-
-                let image_ids = Self::load_images(gltf_path, &doc, images, &mut self.events, &mut self.images)?;
-                let sampler_ids = Self::load_samplers(&doc, self.default_sampler, &mut self.events, &mut self.samplers);
-                let texture_ids =
-                        Self::load_textures(&doc, &image_ids, &sampler_ids, self.default_sampler, &mut self.textures);
-                let material_ids = Self::load_materials(
-                        &doc,
-                        &self.shader_names,
-                        &texture_ids,
-                        &mut self.events,
-                        &mut self.materials,
-                        self.default_material,
-                );
-                let mesh_groups = Self::load_meshes(
-                        &doc,
-                        buffers,
-                        &material_ids,
-                        self.default_material,
-                        &mut self.events,
-                        &mut self.meshes,
-                )?;
-                let model_ids = Self::load_models(&doc, &mesh_groups, &mut self.models)?;
-                let root_model_id = Self::load_root_model(&doc, &model_ids, &mut self.models, &mut self.root_models)?;
-
-                Ok(root_model_id)
-        }
-
-        pub fn get_model_by_name(&self, name: &str) -> ModelId {
-                *self.root_models.get(name).unwrap()
-        }
-
-        #[allow(dead_code)]
-        pub fn images(&self) -> &SlotMap<ImageId, Image> {
-                &self.images
-        }
-
-        #[allow(dead_code)]
-        pub fn samplers(&self) -> &SlotMap<SamplerId, Sampler> {
-                &self.samplers
-        }
-
-        #[allow(dead_code)]
-        pub fn textures(&self) -> &SlotMap<TextureId, Texture> {
-                &self.textures
-        }
-
-        #[allow(dead_code)]
-        pub fn materials(&self) -> &SlotMap<MaterialId, Material> {
-                &self.materials
-        }
-
-        #[allow(dead_code)]
-        pub fn iter_materials_mut(&mut self) -> impl Iterator<Item = (MaterialId, &mut Material)> {
-                // let events = &mut self.events;
-                self.materials.iter_mut().map(move |(mid, m)| {
-                        // events.push(AssetManagerEvent::MaterialUpdated(mid));
-                        (mid, m)
-                })
-        }
-
-        #[allow(dead_code)]
-        pub fn get_material(&self, material_id: MaterialId) -> Option<&Material> {
-                self.materials.get(material_id)
-        }
-
-        #[allow(dead_code)]
-        pub fn get_material_mut(&mut self, material_id: MaterialId) -> Option<&mut Material> {
-                // self.events.push(AssetManagerEvent::MaterialUpdated(material_id));
-                self.materials.get_mut(material_id)
-        }
-
-        #[allow(dead_code)]
-        pub fn meshes(&self) -> &SlotMap<MeshId, Mesh> {
-                &self.meshes
-        }
-
-        #[allow(dead_code)]
-        pub fn models(&self) -> &SlotMap<ModelId, Model> {
-                &self.models
-        }
-
-        #[allow(dead_code)]
-        pub fn root_models(&self) -> &HashMap<String, ModelId> {
-                &self.root_models
-        }
-
-        #[allow(dead_code)]
-        pub fn shaders(&self) -> &SlotMap<ShaderId, Shader> {
-                &self.shaders
-        }
-
-        #[allow(dead_code)]
-        pub fn shader_names(&self) -> &HashMap<String, ShaderId> {
-                &self.shader_names
-        }
-
-        #[allow(dead_code)]
-        pub fn shader_resources(&self) -> &HashMap<ShaderResourceId, ShaderResource> {
-                &self.shader_resources
-        }
-
-        #[allow(dead_code)]
-        pub fn cubemaps(&self) -> &SlotMap<CubemapId, Cubemap> {
-                &self.cubemaps
+                Ok((Self { assets }, root_model.0))
         }
 
         fn load_images(
                 gltf_path: &Path,
                 doc: &gltf::Document,
-                images: Vec<gltf::image::Data>,
-                out_events: &mut Vec<AssetManagerEvent>,
-                out_images: &mut SlotMap<ImageId, Image>,
+                image_data: Vec<gltf::image::Data>,
+                out_images: &mut ObservableSlotMap<ImageId, Image, AssetManagerEvent>,
         ) -> Result<Vec<ImageId>, GLTFImportError> {
-                images.into_iter()
+                image_data
+                        .into_iter()
                         .zip(doc.images())
                         .filter_map(|(image, json_image)| {
                                 if !Self::is_image_format_supported(image.format) {
@@ -701,7 +450,6 @@ impl AssetManager {
                                         height: image.height,
                                         format: image.format,
                                 });
-                                out_events.push(AssetManagerEvent::ImageUpdated(image_id));
 
                                 Some(Ok(image_id))
                         })
@@ -721,21 +469,17 @@ impl AssetManager {
 
         fn load_samplers(
                 doc: &gltf::Document,
-                default_sampler: SamplerId,
-                out_events: &mut Vec<AssetManagerEvent>,
-                out_samplers: &mut SlotMap<SamplerId, Sampler>,
+                out_samplers: &mut ObservableSlotMap<SamplerId, Sampler, AssetManagerEvent>,
         ) -> Vec<SamplerId> {
                 doc.samplers()
                         .map(|s| {
                                 let sampler_id = out_samplers.insert(Sampler {
                                         name: s.name().map(String::from),
-                                        mag_filter: s.mag_filter().unwrap_or(out_samplers[default_sampler].mag_filter),
-                                        min_filter: s.min_filter().unwrap_or(out_samplers[default_sampler].min_filter),
+                                        mag_filter: s.mag_filter().unwrap_or(DEFAULT_MAG_FILTER),
+                                        min_filter: s.min_filter().unwrap_or(DEFAULT_MIN_FILTER),
                                         wrap_s: s.wrap_s(),
                                         wrap_t: s.wrap_t(),
                                 });
-
-                                out_events.push(AssetManagerEvent::SamplerUpdated(sampler_id));
 
                                 sampler_id
                         })
@@ -744,17 +488,19 @@ impl AssetManager {
 
         fn load_textures(
                 doc: &gltf::Document,
-                image_ids: &Vec<ImageId>,
-                sampler_ids: &Vec<SamplerId>,
-                default_sampler: SamplerId,
-                out_textures: &mut SlotMap<TextureId, Texture>,
+                images_by_index: &Vec<ImageId>,
+                samplers_by_index: &Vec<SamplerId>,
+                out_textures: &mut ObservableSlotMap<TextureId, Texture, AssetManagerEvent>,
         ) -> Vec<TextureId> {
                 doc.textures()
                         .map(|t| {
                                 let tex_id = out_textures.insert(Texture {
                                         name: t.name().map(String::from),
-                                        image: image_ids[t.source().index()],
-                                        sampler: t.sampler().index().map_or(default_sampler, |i| sampler_ids[i]),
+                                        image: images_by_index[t.source().index()],
+                                        sampler: t
+                                                .sampler()
+                                                .index()
+                                                .map_or(SamplerId::default(), |i| samplers_by_index[i]),
                                 });
 
                                 tex_id
@@ -764,16 +510,11 @@ impl AssetManager {
 
         fn load_materials(
                 doc: &gltf::Document,
-                shader_names: &HashMap<String, ShaderId>,
-                texture_ids: &Vec<TextureId>,
-                out_events: &mut Vec<AssetManagerEvent>,
-                out_materials: &mut SlotMap<MaterialId, Material>,
-                default_material: MaterialId,
+                textures_by_index: &Vec<TextureId>,
+                out_materials: &mut ObservableSlotMap<MaterialId, Material, AssetManagerEvent>,
         ) -> Vec<MaterialId> {
                 doc.materials()
                         .map(|m| {
-                                let default_material = &out_materials[default_material];
-
                                 // TODO: handle textures better
                                 let pbr_mr = m.pbr_metallic_roughness();
 
@@ -782,26 +523,20 @@ impl AssetManager {
                                 let roughness_factor = pbr_mr.roughness_factor();
                                 let base_color_texture = pbr_mr
                                         .base_color_texture()
-                                        .map(|t| texture_ids[t.texture().index()])
-                                        .unwrap_or(default_material.base_color_texture);
+                                        .map_or(TextureId::default(), |t| textures_by_index[t.texture().index()]);
                                 let metallic_roughness_texture = pbr_mr
                                         .metallic_roughness_texture()
-                                        .map(|t| texture_ids[t.texture().index()])
-                                        .unwrap_or(base_color_texture);
-                                let normal_texture = m.normal_texture().map(|t| texture_ids[t.texture().index()]);
-                                let occlusion_texture = m.occlusion_texture().map(|t| texture_ids[t.texture().index()]);
-                                let emissive_texture = m.emissive_texture().map(|t| texture_ids[t.texture().index()]);
+                                        .map_or(TextureId::default(), |t| textures_by_index[t.texture().index()]);
+                                let normal_texture = m.normal_texture().map(|t| textures_by_index[t.texture().index()]);
+                                let occlusion_texture =
+                                        m.occlusion_texture().map(|t| textures_by_index[t.texture().index()]);
+                                let emissive_texture =
+                                        m.emissive_texture().map(|t| textures_by_index[t.texture().index()]);
                                 let emissive_factor = Vec3::from_slice(&m.emissive_factor());
-
-                                let shader = if emissive_factor.length_squared() == 0.0 {
-                                        shader_names["basic-shader"]
-                                } else {
-                                        shader_names["color-shader"]
-                                };
 
                                 let mat_id = out_materials.insert(Material {
                                         name: m.name().map(String::from),
-                                        shader,
+                                        shader: ShaderId::default(),
                                         base_color_factor,
                                         metallic_factor,
                                         shininess: DEFAULT_SHININESS,
@@ -817,8 +552,6 @@ impl AssetManager {
                                         emissive_factor,
                                 });
 
-                                out_events.push(AssetManagerEvent::MaterialUpdated(mat_id));
-
                                 mat_id
                         })
                         .collect()
@@ -826,39 +559,41 @@ impl AssetManager {
 
         fn load_meshes(
                 doc: &gltf::Document,
-                buffers: Vec<gltf::buffer::Data>,
-                material_ids: &Vec<MaterialId>,
-                default_material: MaterialId,
-                out_events: &mut Vec<AssetManagerEvent>,
-                out_meshes: &mut SlotMap<MeshId, Mesh>,
+                buffer_data: Vec<gltf::buffer::Data>,
+                materials_by_index: &Vec<MaterialId>,
+                out_meshes: &mut ObservableSlotMap<MeshId, Mesh, AssetManagerEvent>,
         ) -> Result<Vec<MeshGroup>, GLTFImportError> {
-                let mut mesh_groups = Vec::new();
-
                 let accessors: Vec<gltf::Accessor> = doc.accessors().collect();
+
+                let mut mesh_groups = Vec::new();
 
                 for m in doc.meshes() {
                         let mut mesh_group = MeshGroup(Vec::new());
 
                         for p in m.primitives() {
                                 let positions = match p.get(&gltf::Semantic::Positions) {
-                                        Some(positions) => read_gltf_accessor(&buffers, &accessors[positions.index()]),
+                                        Some(positions) => {
+                                                read_gltf_accessor(&buffer_data, &accessors[positions.index()])
+                                        },
                                         None => return Err(GLTFImportError::MeshMissingPositions),
                                 };
 
                                 let tex_coords = match p.get(&gltf::Semantic::TexCoords(0)) {
                                         Some(tex_coords) => {
-                                                read_gltf_accessor(&buffers, &accessors[tex_coords.index()])
+                                                read_gltf_accessor(&buffer_data, &accessors[tex_coords.index()])
                                         },
                                         None => return Err(GLTFImportError::MeshMissingTexCoords),
                                 };
 
                                 let normals = match p.get(&gltf::Semantic::Normals) {
-                                        Some(normals) => read_gltf_accessor(&buffers, &accessors[normals.index()]),
+                                        Some(normals) => read_gltf_accessor(&buffer_data, &accessors[normals.index()]),
                                         None => return Err(GLTFImportError::MeshMissingNormals),
                                 };
 
                                 let tangents = match p.get(&gltf::Semantic::Tangents) {
-                                        Some(tangents) => read_gltf_accessor(&buffers, &accessors[tangents.index()]),
+                                        Some(tangents) => {
+                                                read_gltf_accessor(&buffer_data, &accessors[tangents.index()])
+                                        },
                                         None => return Err(GLTFImportError::MeshMissingTangents),
                                 };
 
@@ -867,19 +602,24 @@ impl AssetManager {
                                                 let accessor = &accessors[indices.index()];
 
                                                 match accessor.data_type() {
-                                                        DataType::U16 => {
-                                                                IndicesVec::U16(read_gltf_accessor(&buffers, accessor))
-                                                        },
-                                                        DataType::U32 => {
-                                                                IndicesVec::U32(read_gltf_accessor(&buffers, accessor))
-                                                        },
+                                                        DataType::U16 => IndicesVec::U16(read_gltf_accessor(
+                                                                &buffer_data,
+                                                                accessor,
+                                                        )),
+                                                        DataType::U32 => IndicesVec::U32(read_gltf_accessor(
+                                                                &buffer_data,
+                                                                accessor,
+                                                        )),
                                                         _ => panic!("Invalid indices data type"),
                                                 }
                                         },
                                         None => return Err(GLTFImportError::MeshMissingIndices),
                                 };
 
-                                let material = p.material().index().map_or(default_material, |i| material_ids[i]);
+                                let material = p
+                                        .material()
+                                        .index()
+                                        .map_or(MaterialId::default(), |i| materials_by_index[i]);
 
                                 let mesh = Mesh {
                                         positions,
@@ -892,7 +632,7 @@ impl AssetManager {
                                 };
 
                                 let mesh_id = out_meshes.insert(mesh);
-                                out_events.push(AssetManagerEvent::MeshUpdated(mesh_id));
+
                                 mesh_group.0.push(mesh_id);
                         }
 
@@ -905,7 +645,7 @@ impl AssetManager {
         fn load_models(
                 doc: &gltf::Document,
                 mesh_groups: &Vec<MeshGroup>,
-                out_models: &mut SlotMap<ModelId, Model>,
+                out_models: &mut ObservableSlotMap<ModelId, Model, AssetManagerEvent>,
         ) -> Result<Vec<ModelId>, GLTFImportError> {
                 let mut model_ids = Vec::new();
 
@@ -959,10 +699,9 @@ impl AssetManager {
 
         fn load_root_model(
                 doc: &gltf::Document,
-                model_ids: &Vec<ModelId>,
-                out_models: &mut SlotMap<ModelId, Model>,
-                out_root_models: &mut HashMap<String, ModelId>,
-        ) -> Result<ModelId, GLTFImportError> {
+                models_by_index: &Vec<ModelId>,
+                out_models: &mut ObservableSlotMap<ModelId, Model, AssetManagerEvent>,
+        ) -> Result<(String, ModelId), GLTFImportError> {
                 if doc.scenes().len() > 1 {
                         warn!("More than 1 root model in GLTF document");
                 }
@@ -977,13 +716,9 @@ impl AssetManager {
                         None => return Err(GLTFImportError::SceneNameMissing),
                 };
 
-                if out_root_models.contains_key(&name) {
-                        return Err(GLTFImportError::SceneNameAlreadyRegistered);
-                }
+                let children = scene.nodes().map(|n| models_by_index[n.index()]).collect();
 
-                let children = scene.nodes().map(|n| model_ids[n.index()]).collect();
-
-                let model = Model {
+                let model_id = out_models.insert(Model {
                         name: Some(name.clone()),
                         base_transform: Transform::from_rotation(Quat::from_axis_angle(
                                 Vec3::UP,
@@ -991,87 +726,396 @@ impl AssetManager {
                         )),
                         meshes: Vec::new(),
                         children,
-                };
-                let model_id = out_models.insert(model);
-
-                out_root_models.insert(name, model_id);
-
-                Ok(model_id)
-        }
-
-        /* fn create_model_from_node_recursively(
-                n: &gltf::Node,
-                buffer_view_ids: &Vec<BufferViewID>,
-                material_ids: &Vec<MaterialID>,
-                default_material: MaterialID,
-                out_models: &mut SlotMap<ModelID, Model>,
-        ) -> Option<Result<ModelID, GLTFImportError>> {
-                let m = match n.mesh() {
-                        Some(m) => m,
-                        None => return None,
-                };
-
-
-
-                let meshes = match meshes {
-                        Ok(meshes) => meshes,
-                        Err(e) => return Some(Err(e)),
-                };
-
-                let children = n
-                        .children()
-                        .filter_map(|n| {
-                                Self::create_model_from_node_recursively(
-                                        &n,
-                                        buffer_view_ids,
-                                        material_ids,
-                                        default_material,
-                                        out_models,
-                                )
-                        })
-                        .collect::<Result<Vec<ModelID>, GLTFImportError>>();
-
-                let children = match children {
-                        Ok(children) => children,
-                        Err(e) => return Some(Err(e)),
-                };
-
-                let transform = match n.transform() {
-                        gltf::scene::Transform::Matrix { matrix } => unsafe {
-                                na::Matrix4::from_column_slice(std::slice::from_raw_parts(
-                                        &matrix as *const _ as *const f32,
-                                        16,
-                                ))
-                        },
-                        gltf::scene::Transform::Decomposed {
-                                ref translation,
-                                ref rotation,
-                                ref scale,
-                        } => {
-                                let t = Mat4::from_translation(&Vec3::from_slice(translation));
-
-                                let r = Quat::new_unchecked(Quat::new(
-                                        rotation[3],
-                                        rotation[0],
-                                        rotation[1],
-                                        rotation[2],
-                                ));
-
-                                let s = Mat4::new_nonuniform_scaling(&Vec3::from_slice(scale));
-
-                                t * r.to_homogeneous() * s
-                        }
-                };
-
-                let model_id = out_models.insert(Model {
-                        name: n.name().map(String::from),
-                        transform,
-                        meshes,
-                        children,
                 });
 
-                Some(Ok(model_id))
-        } */
+                Ok((name, model_id))
+        }
+}
+
+#[derive(Debug)]
+pub struct AssetStorage {
+        images: ObservableSlotMap<ImageId, Image, AssetManagerEvent>,
+        samplers: ObservableSlotMap<SamplerId, Sampler, AssetManagerEvent>,
+        textures: ObservableSlotMap<TextureId, Texture, AssetManagerEvent>,
+        pub materials: ObservableSlotMap<MaterialId, Material, AssetManagerEvent>,
+        meshes: ObservableSlotMap<MeshId, Mesh, AssetManagerEvent>,
+        models: ObservableSlotMap<ModelId, Model, AssetManagerEvent>,
+        shaders: ObservableSlotMap<ShaderId, Shader, AssetManagerEvent>,
+        cubemaps: ObservableSlotMap<CubemapId, Cubemap, AssetManagerEvent>,
+
+        named_models: HashMap<String, ModelId>,
+}
+
+impl AssetStorage {
+        pub fn new() -> (Self, Receiver<AssetManagerEvent>) {
+                let (event_tx, event_rx) = crossbeam_channel::unbounded();
+
+                (
+                        Self {
+                                images: ObservableSlotMap::new(event_tx.clone()),
+                                samplers: ObservableSlotMap::new(event_tx.clone()),
+                                textures: ObservableSlotMap::new(event_tx.clone()),
+                                materials: ObservableSlotMap::new(event_tx.clone()),
+                                meshes: ObservableSlotMap::new(event_tx.clone()),
+                                models: ObservableSlotMap::new(event_tx.clone()),
+                                shaders: ObservableSlotMap::new(event_tx.clone()),
+                                cubemaps: ObservableSlotMap::new(event_tx.clone()),
+
+                                named_models: HashMap::new(),
+                        },
+                        event_rx,
+                )
+        }
+
+        pub fn extend(
+                &mut self,
+                other: AssetStorage,
+                default_sampler: SamplerId,
+                default_material: MaterialId,
+                default_shader: ShaderId,
+        ) {
+                let new_image_ids = merge_slotmaps(other.images, &mut self.images);
+                let new_sampler_ids = merge_slotmaps(other.samplers, &mut self.samplers);
+                let new_texture_ids = merge_slotmaps(other.textures, &mut self.textures);
+                let new_material_ids = merge_slotmaps(other.materials, &mut self.materials);
+                let new_mesh_ids = merge_slotmaps(other.meshes, &mut self.meshes);
+                let new_model_ids = merge_slotmaps(other.models, &mut self.models);
+                let new_shader_ids = merge_slotmaps(other.shaders, &mut self.shaders);
+                let _new_cubemap_ids = merge_slotmaps(other.cubemaps, &mut self.cubemaps);
+
+                for (name, &model_id) in &other.named_models {
+                        match self.named_models.get(name) {
+                                Some(_) => panic!("Model with name '{}' already registered!", name),
+                                None => {
+                                        self.named_models.insert(name.clone(), new_model_ids[model_id]);
+                                },
+                        }
+                }
+
+                for (_, &new_key) in &new_model_ids {
+                        let model = &mut self.models[new_key];
+
+                        model.meshes.iter_mut().for_each(|mid| *mid = new_mesh_ids[*mid]);
+                        model.children.iter_mut().for_each(|mid| *mid = new_model_ids[*mid]);
+                }
+
+                for (_, &new_key) in &new_mesh_ids {
+                        let mesh = &mut self.meshes[new_key];
+
+                        mesh.material = if mesh.material != default() {
+                                new_material_ids[mesh.material]
+                        } else {
+                                default_material
+                        }
+                }
+
+                for (_, &new_key) in &new_material_ids {
+                        let default_base_color_texture = self.materials[default_material].base_color_texture;
+                        let material = &mut self.materials[new_key];
+
+                        material.shader = if material.shader != default() {
+                                new_shader_ids[material.shader]
+                        } else {
+                                default_shader
+                        };
+
+                        material.base_color_texture = if material.base_color_texture != default() {
+                                new_texture_ids[material.base_color_texture]
+                        } else {
+                                default_base_color_texture
+                        };
+
+                        material.metallic_roughness_texture = if material.metallic_roughness_texture != default() {
+                                new_texture_ids[material.metallic_roughness_texture]
+                        } else {
+                                material.base_color_texture
+                        };
+                }
+
+                for (_, &new_key) in &new_texture_ids {
+                        let texture = &mut self.textures[new_key];
+
+                        texture.image = new_image_ids[texture.image];
+                        texture.sampler = if texture.sampler != default() {
+                                new_sampler_ids[texture.sampler]
+                        } else {
+                                default_sampler
+                        }
+                }
+        }
+}
+
+#[derive(Debug)]
+pub struct AssetManager {
+        pub assets: AssetStorage,
+
+        shader_resources: HashMap<ShaderResourceId, ShaderResource>,
+        shader_names: HashMap<String, ShaderId>,
+
+        pub skybox_model: ModelId,
+
+        default_sampler: SamplerId,
+        default_material: MaterialId,
+        default_shader: ShaderId,
+}
+
+impl AssetManager {
+        pub fn new() -> AnyResult<(Self, Receiver<AssetManagerEvent>)> {
+                let (mut assets, event_rx) = AssetStorage::new();
+
+                let default_sampler = assets.samplers.insert(Sampler {
+                        name: Some("default-sampler".into()),
+                        mag_filter: MagFilter::Linear,
+                        min_filter: MinFilter::LinearMipmapLinear,
+                        wrap_s: WrappingMode::Repeat,
+                        wrap_t: WrappingMode::Repeat,
+                });
+
+                let default_diffuse_image = assets.images.insert(Image {
+                        pixels: vec![u8::MAX; 4],
+                        width: 1,
+                        height: 1,
+                        format: Format::R8G8B8A8,
+                });
+
+                let default_diffuse_texture = assets.textures.insert(Texture {
+                        name: Some("default-diffuse-texture".into()),
+                        image: default_diffuse_image,
+                        sampler: default_sampler,
+                });
+
+                let default_specular_image = assets.images.insert(Image {
+                        pixels: vec![u8::MAX; 4],
+                        width: 1,
+                        height: 1,
+                        format: Format::R8G8B8A8,
+                });
+
+                let default_specular_texture = assets.textures.insert(Texture {
+                        name: Some("default-specular-texture".into()),
+                        image: default_specular_image,
+                        sampler: default_sampler,
+                });
+
+                let default_shader = assets.shaders.insert(Shader::from_yaml(Path::new(
+                        "res/shader/basic_shader/basic_shader.yaml",
+                ))?);
+
+                let default_material = assets.materials.insert(Material {
+                        name: Some("default-material".into()),
+                        shader: default_shader,
+                        base_color_factor: Vec4::splat(1.0),
+                        metallic_factor: 1.0,
+                        roughness_factor: 1.0,
+                        shininess: DEFAULT_SHININESS,
+                        ambient_strength: DEFAULT_AMBIENT_STRENGTH,
+                        specular_strength: DEFAULT_SPECULAR_STRENGTH,
+                        diffuse_strength: DEFAULT_DIFFUSE_STRENGTH,
+                        base_color_texture: default_diffuse_texture,
+                        metallic_roughness_texture: default_specular_texture,
+                        normal_texture: None,
+                        occlusion_texture: None,
+                        emissive_texture: None,
+                        emissive_factor: Vec3::splat(0.0),
+                });
+
+                let skybox_shader = Shader::from_yaml(Path::new("res/shader/skybox_shader/skybox_shader.yaml"))?;
+                let skybox_shader = assets.shaders.insert(skybox_shader);
+
+                let (cube_bundle, cube_model_name) = AssetBundle::from_gltf(Path::new("res/model/cube/cube.gltf"))?;
+                assets.extend(cube_bundle.assets, default_sampler, default_material, default_shader);
+
+                let cube_model = &assets.models[assets.models[assets.named_models[&cube_model_name]].children[0]];
+                let cube_mesh = &assets.meshes[cube_model.meshes[0]];
+                let cube_material = &assets.materials[cube_mesh.material];
+
+                let mut skybox_material = cube_material.clone();
+                skybox_material.shader = skybox_shader;
+                let skybox_material = assets.materials.insert(skybox_material);
+
+                let mut skybox_mesh = cube_mesh.clone();
+                skybox_mesh.material = skybox_material;
+                let skybox_mesh = assets.meshes.insert(skybox_mesh);
+
+                let mut skybox_model = cube_model.clone();
+                skybox_model.meshes[0] = skybox_mesh;
+                let skybox_model = assets.models.insert(skybox_model);
+
+                Ok((
+                        Self {
+                                assets,
+
+                                shader_resources: HashMap::new(),
+                                shader_names: HashMap::new(),
+
+                                skybox_model,
+
+                                default_sampler,
+                                default_material,
+                                default_shader,
+                        },
+                        event_rx,
+                ))
+        }
+
+        pub fn register_shader_resource(
+                &mut self,
+                shader_resource_id: ShaderResourceId,
+                shader_resource: ShaderResource,
+        ) {
+                self.shader_resources.insert(shader_resource_id, shader_resource);
+        }
+
+        pub fn load_shader_from_yaml(&mut self, path: &Path) -> Result<ShaderId, ShaderLoadError> {
+                let shader = Shader::from_yaml(path)?;
+                if self.shader_names.contains_key(&shader.name) {
+                        return Err(ShaderLoadError::ShaderNameAlreadyRegistered(shader.name));
+                }
+
+                let shader_name = shader.name.clone();
+                let shader_id = self.assets.shaders.insert(shader);
+
+                debug!("Loaded shader with name: {}", shader_name);
+
+                self.shader_names.insert(shader_name, shader_id);
+
+                Ok(shader_id)
+        }
+
+        pub fn insert_cubemap(&mut self, cubemap: Cubemap) -> CubemapId {
+                self.assets.cubemaps.insert(cubemap)
+        }
+
+        pub fn import_gltf_file(&mut self, gltf_path: &Path) -> Result<ModelId, GLTFImportError> {
+                self.import_gltf_file_with_shader(gltf_path, self.default_shader)
+        }
+
+        pub fn import_gltf_file_with_shader(
+                &mut self,
+                gltf_path: &Path,
+                shader: ShaderId,
+        ) -> Result<ModelId, GLTFImportError> {
+                let (bundle, root_model) = AssetBundle::from_gltf(gltf_path)?;
+                self.assets
+                        .extend(bundle.assets, self.default_sampler, self.default_material, shader);
+
+                Ok(self.assets.named_models[&root_model])
+        }
+
+        pub fn get_model_by_name(&self, name: &str) -> ModelId {
+                self.assets.named_models[name]
+        }
+
+        pub fn texture(&self, texture_id: TextureId) -> &Texture {
+                &self.assets.textures[texture_id]
+        }
+
+        pub fn mesh(&self, mesh_id: MeshId) -> &Mesh {
+                &self.assets.meshes[mesh_id]
+        }
+
+        pub fn model(&self, model_id: ModelId) -> &Model {
+                &self.assets.models[model_id]
+        }
+
+        pub fn material(&self, material_id: MaterialId) -> &Material {
+                &self.assets.materials[material_id]
+        }
+
+        pub fn shader(&self, shader_id: ShaderId) -> &Shader {
+                &self.assets.shaders[shader_id]
+        }
+
+        pub fn get_mesh(&self, mesh_id: MeshId) -> Option<&Mesh> {
+                self.assets.meshes.get(mesh_id)
+        }
+
+        pub fn get_image(&self, image_id: ImageId) -> Option<&Image> {
+                self.assets.images.get(image_id)
+        }
+
+        pub fn get_sampler(&self, sampler_id: SamplerId) -> Option<&Sampler> {
+                self.assets.samplers.get(sampler_id)
+        }
+
+        pub fn get_shader(&self, shader_id: ShaderId) -> Option<&Shader> {
+                self.assets.shaders.get(shader_id)
+        }
+
+        // #[allow(dead_code)]
+        // pub fn images(&self) -> &SlotMap<ImageId, Image> {
+        //         &self.images
+        // }
+
+        // #[allow(dead_code)]
+        // pub fn samplers(&self) -> &SlotMap<SamplerId, Sampler> {
+        //         &self.samplers
+        // }
+
+        // #[allow(dead_code)]
+        // pub fn textures(&self) -> &SlotMap<TextureId, Texture> {
+        //         &self.textures
+        // }
+
+        // #[allow(dead_code)]
+        // pub fn materials(&self) -> &SlotMap<MaterialId, Material> {
+        //         &self.materials
+        // }
+
+        // #[allow(dead_code)]
+        // pub fn iter_materials_mut(&mut self) -> impl Iterator<Item = (MaterialId, &mut Material)> {
+        //         // let events = &mut self.events;
+        //         self.materials.iter_mut().map(move |(mid, m)| {
+        //                 // events.push(AssetManagerEvent::MaterialUpdated(mid));
+        //                 (mid, m)
+        //         })
+        // }
+
+        #[allow(dead_code)]
+        pub fn get_material(&self, material_id: MaterialId) -> Option<&Material> {
+                self.assets.materials.get(material_id)
+        }
+
+        // #[allow(dead_code)]
+        // pub fn get_material_mut(&mut self, material_id: MaterialId) -> Option<&mut Material> {
+        //         // self.events.push(AssetManagerEvent::MaterialUpdated(material_id));
+        //         self.materials.get_mut(material_id)
+        // }
+
+        // #[allow(dead_code)]
+        // pub fn meshes(&self) -> &SlotMap<MeshId, Mesh> {
+        //         &self.meshes
+        // }
+
+        // #[allow(dead_code)]
+        // pub fn models(&self) -> &SlotMap<ModelId, Model> {
+        //         &self.models
+        // }
+
+        // #[allow(dead_code)]
+        // pub fn root_models(&self) -> &HashMap<String, ModelId> {
+        //         &self.root_models
+        // }
+
+        // #[allow(dead_code)]
+        // pub fn shaders(&self) -> &SlotMap<ShaderId, Shader> {
+        //         &self.shaders
+        // }
+
+        #[allow(dead_code)]
+        pub fn shader_names(&self) -> &HashMap<String, ShaderId> {
+                &self.shader_names
+        }
+
+        #[allow(dead_code)]
+        pub fn shader_resources(&self) -> &HashMap<ShaderResourceId, ShaderResource> {
+                &self.shader_resources
+        }
+
+        #[allow(dead_code)]
+        pub fn get_cubemap(&self, cubemap_id: CubemapId) -> Option<&Cubemap> {
+                self.assets.cubemaps.get(cubemap_id)
+        }
 }
 
 trait GltfElement {
@@ -1152,20 +1196,206 @@ fn read_gltf_accessor<T: GltfElement + Clone>(buffers: &[gltf::buffer::Data], ac
 
 #[derive(Debug, Clone)]
 pub enum AssetManagerEvent {
-        ImageUpdated(ImageId),
-        ImageDeleted(ImageId),
-        SamplerUpdated(SamplerId),
-        SamplerDeleted(SamplerId),
-        // TextureUpdated(TextureId),
-        // TextureDeleted(TextureId),
-        MaterialUpdated(MaterialId),
-        MaterialDeleted(MaterialId),
-        MeshUpdated(MeshId),
-        MeshDeleted(MeshId),
-        // ModelUpdated(ModelId),
-        // ModelDeleted(ModelId),
-        ShaderUpdated(ShaderId),
-        ShaderDeleted(ShaderId),
-        CubemapUpdated(CubemapId),
-        CubemapDeleted(CubemapId),
+        ImageInserted(ImageId),
+        ImageChanged(ImageId),
+        ImageRemoved(ImageId),
+        SamplerInserted(SamplerId),
+        SamplerChanged(SamplerId),
+        SamplerRemoved(SamplerId),
+        TextureInserted(TextureId),
+        TextureChanged(TextureId),
+        TextureRemoved(TextureId),
+        MaterialInserted(MaterialId),
+        MaterialChanged(MaterialId),
+        MaterialRemoved(MaterialId),
+        MeshInserted(MeshId),
+        MeshChanged(MeshId),
+        MeshRemoved(MeshId),
+        ModelInserted(ModelId),
+        ModelChanged(ModelId),
+        ModelRemoved(ModelId),
+        ShaderInserted(ShaderId),
+        ShaderChanged(ShaderId),
+        ShaderRemoved(ShaderId),
+        CubemapInserted(CubemapId),
+        CubemapChanged(CubemapId),
+        CubemapRemoved(CubemapId),
+}
+
+fn merge_slotmaps<K: slotmap::Key, V, E: From<SlotMapEvent<K>>>(
+        mut src: ObservableSlotMap<K, V, E>,
+        dst: &mut ObservableSlotMap<K, V, E>,
+) -> SecondaryMap<K, K> {
+        let mut new_keys = SecondaryMap::new();
+
+        for (k, v) in src.inner.drain() {
+                let new_key = dst.insert(v);
+
+                new_keys.insert(k, new_key);
+        }
+
+        new_keys
+}
+
+#[derive(Debug, Clone)]
+pub struct ObservableSlotMap<K: Key, V, E: From<SlotMapEvent<K>>> {
+        inner: SlotMap<K, V>,
+        event_tx: crossbeam_channel::Sender<E>,
+}
+
+impl<K: Key, V, E: From<SlotMapEvent<K>>> ObservableSlotMap<K, V, E> {
+        pub fn new(event_tx: crossbeam_channel::Sender<E>) -> Self {
+                Self {
+                        inner: SlotMap::with_key(),
+                        event_tx,
+                }
+        }
+
+        #[allow(dead_code)]
+        pub fn insert(&mut self, v: V) -> K {
+                let k = self.inner.insert(v);
+                self.event_tx.send(SlotMapEvent::Inserted(k).into());
+                self.event_tx.send(SlotMapEvent::Changed(k).into());
+                k
+        }
+
+        #[allow(dead_code)]
+        pub fn remove(&mut self, k: K) -> Option<V> {
+                let v = self.inner.remove(k);
+                self.event_tx.send(SlotMapEvent::Removed(k).into());
+                v
+        }
+
+        #[allow(dead_code)]
+        pub fn get(&self, k: K) -> Option<&V> {
+                self.inner.get(k)
+        }
+
+        #[allow(dead_code)]
+        pub fn get_mut(&mut self, k: K) -> Option<&mut V> {
+                self.event_tx.send(SlotMapEvent::Changed(k).into());
+                self.inner.get_mut(k)
+        }
+}
+
+impl<K: Key, V, E: From<SlotMapEvent<K>>> Index<K> for ObservableSlotMap<K, V, E> {
+        type Output = V;
+
+        fn index(&self, index: K) -> &Self::Output {
+                &self.inner[index]
+        }
+}
+
+impl<K: Key, V, E: From<SlotMapEvent<K>>> IndexMut<K> for ObservableSlotMap<K, V, E> {
+        fn index_mut(&mut self, index: K) -> &mut Self::Output {
+                self.event_tx.send(SlotMapEvent::Changed(index).into());
+                &mut self.inner[index]
+        }
+}
+
+impl<'a, K: Key, V, E: From<SlotMapEvent<K>>> IntoIterator for &'a ObservableSlotMap<K, V, E> {
+        type Item = (K, &'a V);
+        type IntoIter = slotmap::basic::Iter<'a, K, V>;
+
+        fn into_iter(self) -> Self::IntoIter {
+                self.inner.iter()
+        }
+}
+
+// impl<'a, K: Key, V, E: From<SlotMapEvent<K>>> IntoIterator for &'a mut ObservableSlotMap<K, V, E> {
+//         type Item = (K, &'a mut V);
+//         type IntoIter = impl Iterator<Item = (K, &'a mut V)> + '_;
+
+//         fn into_iter(self) -> Self::IntoIter {
+//                 self.inner.iter_mut().map(|(k, v)| {
+//                         self.event_tx.send(SlotMapEvent::Changed(k).into());
+//                         (k, v)
+//                 })
+//         }
+// }
+
+pub enum SlotMapEvent<K: Key> {
+        Inserted(K),
+        Changed(K),
+        Removed(K),
+}
+
+impl From<SlotMapEvent<ImageId>> for AssetManagerEvent {
+        fn from(e: SlotMapEvent<ImageId>) -> Self {
+                match e {
+                        SlotMapEvent::Inserted(id) => AssetManagerEvent::ImageInserted(id),
+                        SlotMapEvent::Changed(id) => AssetManagerEvent::ImageChanged(id),
+                        SlotMapEvent::Removed(id) => AssetManagerEvent::ImageRemoved(id),
+                }
+        }
+}
+
+impl From<SlotMapEvent<SamplerId>> for AssetManagerEvent {
+        fn from(e: SlotMapEvent<SamplerId>) -> Self {
+                match e {
+                        SlotMapEvent::Inserted(id) => AssetManagerEvent::SamplerInserted(id),
+                        SlotMapEvent::Changed(id) => AssetManagerEvent::SamplerChanged(id),
+                        SlotMapEvent::Removed(id) => AssetManagerEvent::SamplerRemoved(id),
+                }
+        }
+}
+
+impl From<SlotMapEvent<TextureId>> for AssetManagerEvent {
+        fn from(e: SlotMapEvent<TextureId>) -> Self {
+                match e {
+                        SlotMapEvent::Inserted(id) => AssetManagerEvent::TextureInserted(id),
+                        SlotMapEvent::Changed(id) => AssetManagerEvent::TextureChanged(id),
+                        SlotMapEvent::Removed(id) => AssetManagerEvent::TextureRemoved(id),
+                }
+        }
+}
+
+impl From<SlotMapEvent<MaterialId>> for AssetManagerEvent {
+        fn from(e: SlotMapEvent<MaterialId>) -> Self {
+                match e {
+                        SlotMapEvent::Inserted(id) => AssetManagerEvent::MaterialInserted(id),
+                        SlotMapEvent::Changed(id) => AssetManagerEvent::MaterialChanged(id),
+                        SlotMapEvent::Removed(id) => AssetManagerEvent::MaterialRemoved(id),
+                }
+        }
+}
+
+impl From<SlotMapEvent<MeshId>> for AssetManagerEvent {
+        fn from(e: SlotMapEvent<MeshId>) -> Self {
+                match e {
+                        SlotMapEvent::Inserted(id) => AssetManagerEvent::MeshInserted(id),
+                        SlotMapEvent::Changed(id) => AssetManagerEvent::MeshChanged(id),
+                        SlotMapEvent::Removed(id) => AssetManagerEvent::MeshRemoved(id),
+                }
+        }
+}
+
+impl From<SlotMapEvent<ModelId>> for AssetManagerEvent {
+        fn from(e: SlotMapEvent<ModelId>) -> Self {
+                match e {
+                        SlotMapEvent::Inserted(id) => AssetManagerEvent::ModelInserted(id),
+                        SlotMapEvent::Changed(id) => AssetManagerEvent::ModelChanged(id),
+                        SlotMapEvent::Removed(id) => AssetManagerEvent::ModelRemoved(id),
+                }
+        }
+}
+
+impl From<SlotMapEvent<ShaderId>> for AssetManagerEvent {
+        fn from(e: SlotMapEvent<ShaderId>) -> Self {
+                match e {
+                        SlotMapEvent::Inserted(id) => AssetManagerEvent::ShaderInserted(id),
+                        SlotMapEvent::Changed(id) => AssetManagerEvent::ShaderChanged(id),
+                        SlotMapEvent::Removed(id) => AssetManagerEvent::ShaderRemoved(id),
+                }
+        }
+}
+
+impl From<SlotMapEvent<CubemapId>> for AssetManagerEvent {
+        fn from(e: SlotMapEvent<CubemapId>) -> Self {
+                match e {
+                        SlotMapEvent::Inserted(id) => AssetManagerEvent::CubemapInserted(id),
+                        SlotMapEvent::Changed(id) => AssetManagerEvent::CubemapChanged(id),
+                        SlotMapEvent::Removed(id) => AssetManagerEvent::CubemapRemoved(id),
+                }
+        }
 }
