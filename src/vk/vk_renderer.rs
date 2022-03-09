@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
         application::InterpGlobalTransform,
-        asset_manager::{AssetManager, AssetManagerEvent, MeshId},
+        asset_manager::{AssetManager, AssetManagerEvent, MaterialMesh},
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
         constants::MAX_OBJECT_MATRICES,
         model_instance_manager::ModelInstance,
@@ -738,7 +738,7 @@ impl VkRenderer {
 
                 let model = asset_manager.model(minstance.model);
 
-                for &mesh_id in &model.meshes {
+                for material_mesh in &model.meshes {
                         Self::draw_mesh_instance(
                                 device,
                                 draw_cmd_buffer,
@@ -746,7 +746,7 @@ impl VkRenderer {
                                 asset_manager,
                                 vk_asset_manager,
                                 framei,
-                                mesh_id,
+                                material_mesh,
                         )?;
                 }
 
@@ -760,14 +760,13 @@ impl VkRenderer {
                 asset_manager: &AssetManager,
                 vk_asset_manager: &VkAssetManager,
                 framei: usize,
-                mesh_id: MeshId,
+                material_mesh: &MaterialMesh,
         ) -> VkResult<()> {
-                let mesh = &asset_manager.mesh(mesh_id);
-                let material = &asset_manager.material(mesh.material);
+                let material = asset_manager.material(material_mesh.material);
                 let pipeline = *vk_asset_manager.pipelines[material.shader];
 
-                let vk_mesh = &vk_asset_manager.meshes[mesh_id];
-                let vk_material = &vk_asset_manager.materials[mesh.material];
+                let vk_mesh = &vk_asset_manager.meshes[material_mesh.mesh];
+                let vk_material = &vk_asset_manager.materials[material_mesh.material];
 
                 /* if mesh.material != last_material {
                         last_material = mesh.material;
@@ -777,7 +776,7 @@ impl VkRenderer {
                         device.cmd_bind_pipeline(draw_cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
                         // TODO: update all materials beforehand, to avoid updating the same material if its shared by multiple meshes.
-                        let offset = vk_material.material_data_buffer.write(
+                        let material_data_offset = vk_material.material_data_buffer.write(
                                 &MaterialData {
                                         ambient_color: material.base_color_factor,
                                         diffuse_color: material.base_color_factor,
@@ -800,7 +799,7 @@ impl VkRenderer {
                                 pipeline_layout,
                                 1,
                                 &[vk_material.dst_set],
-                                &[offset as u32],
+                                &[material_data_offset as u32],
                         );
                         device.cmd_bind_vertex_buffers(
                                 draw_cmd_buffer,

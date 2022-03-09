@@ -54,22 +54,21 @@ slotmap::new_key_type! { pub struct ModelId; }
 pub struct Model {
         pub name: Option<String>,
         pub base_transform: Transform,
-        pub meshes: Vec<MeshId>,
+        pub meshes: Vec<MaterialMesh>,
         pub children: Vec<ModelId>,
 }
 
-pub struct MeshGroup(Vec<MeshId>);
+pub struct MeshGroup(Vec<MaterialMesh>);
 
 slotmap::new_key_type! { pub struct MeshId; }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Mesh {
         pub positions: Vec<Vec3>,
         pub tex_coords: Vec<Vec2>,
         pub normals: Vec<Vec3>,
         pub tangents: Vec<Vec4>,
         pub indices: IndicesVec,
-        pub material: MaterialId,
         pub bounding_box: BoundingBox,
 }
 
@@ -101,6 +100,12 @@ pub struct Material {
         pub occlusion_texture: Option<TextureId>,
         pub emissive_texture: Option<TextureId>,
         pub emissive_factor: Vec3,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MaterialMesh {
+        pub material: MaterialId,
+        pub mesh: MeshId,
 }
 
 slotmap::new_key_type! { pub struct TextureId; }
@@ -627,13 +632,15 @@ impl AssetBundle {
                                         normals,
                                         tangents,
                                         indices,
-                                        material,
                                         bounding_box: BoundingBox::from(&p.bounding_box()),
                                 };
 
                                 let mesh_id = out_meshes.insert(mesh);
 
-                                mesh_group.0.push(mesh_id);
+                                mesh_group.0.push(MaterialMesh {
+                                        material,
+                                        mesh: mesh_id,
+                                });
                         }
 
                         mesh_groups.push(mesh_group);
@@ -795,18 +802,15 @@ impl AssetStorage {
                 for (_, &new_key) in &new_model_ids {
                         let model = &mut self.models[new_key];
 
-                        model.meshes.iter_mut().for_each(|mid| *mid = new_mesh_ids[*mid]);
+                        model.meshes.iter_mut().for_each(|mm| {
+                                mm.mesh = new_mesh_ids[mm.mesh];
+                                mm.material = if mm.material != default() {
+                                        new_material_ids[mm.material]
+                                } else {
+                                        default_material
+                                }
+                        });
                         model.children.iter_mut().for_each(|mid| *mid = new_model_ids[*mid]);
-                }
-
-                for (_, &new_key) in &new_mesh_ids {
-                        let mesh = &mut self.meshes[new_key];
-
-                        mesh.material = if mesh.material != default() {
-                                new_material_ids[mesh.material]
-                        } else {
-                                default_material
-                        }
                 }
 
                 for (_, &new_key) in &new_material_ids {
@@ -926,19 +930,21 @@ impl AssetManager {
                 assets.extend(cube_bundle.assets, default_sampler, default_material, default_shader);
 
                 let cube_model = &assets.models[assets.models[assets.named_models[&cube_model_name]].children[0]];
-                let cube_mesh = &assets.meshes[cube_model.meshes[0]];
-                let cube_material = &assets.materials[cube_mesh.material];
+                let cube_material_mesh = cube_model.meshes[0];
+                let cube_material = &assets.materials[cube_material_mesh.material];
 
-                let mut skybox_material = cube_material.clone();
-                skybox_material.shader = skybox_shader;
+                let skybox_material = {
+                        let mut m = cube_material.clone();
+                        m.shader = skybox_shader;
+                        m
+                };
                 let skybox_material = assets.materials.insert(skybox_material);
 
-                let mut skybox_mesh = cube_mesh.clone();
-                skybox_mesh.material = skybox_material;
-                let skybox_mesh = assets.meshes.insert(skybox_mesh);
-
-                let mut skybox_model = cube_model.clone();
-                skybox_model.meshes[0] = skybox_mesh;
+                let skybox_model = {
+                        let mut model = cube_model.clone();
+                        model.meshes[0].material = skybox_material;
+                        model
+                };
                 let skybox_model = assets.models.insert(skybox_model);
 
                 Ok((

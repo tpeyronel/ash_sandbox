@@ -1,6 +1,6 @@
 [package]
 authors = ["'TorvalHG' <'tpeyronel@gmail.com'>"]
-edition = "2018"
+edition = "2021"
 name = "ash_sandbox"
 version = "0.1.0"
 
