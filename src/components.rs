@@ -1,4 +1,4 @@
-use std::ops::Mul;
+use std::{ops::Mul, time::Instant};
 
 use bevy_ecs::prelude::*;
 
@@ -9,6 +9,10 @@ pub struct Player(pub Entity);
 pub struct ActiveCamera(pub Entity);
 
 pub struct Ticktime(pub f32);
+
+pub struct UnfixedDeltaTimeAccumulator(pub f32);
+
+pub struct UpdateBegin(pub Instant);
 
 pub struct InterpScalar(pub f32);
 

@@ -14,7 +14,8 @@ use crate::{
         components::{
                 ActiveCamera, AngularVelocity, Billboard, Children, DirectionalLight, Force, GlobalTransform,
                 ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, Mass, OrbitalVelocity, Parent, Player,
-                PointLight, PreviousGlobalTransform, ProjectionCamera, Spotlight, Ticktime, Transform, Velocity,
+                PointLight, PreviousGlobalTransform, ProjectionCamera, Spotlight, Ticktime, Transform,
+                UnfixedDeltaTimeAccumulator, UpdateBegin, Velocity,
         },
         constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
@@ -30,7 +31,7 @@ use crate::{
         vk::vk_renderer::VkRenderer,
         AnyResult,
 };
-use bevy_ecs::prelude::*;
+use bevy_ecs::{prelude::*, schedule::ShouldRun};
 #[allow(unused_imports)]
 use log::{error, info, trace};
 use serde::{Deserialize, Serialize};
@@ -48,8 +49,6 @@ pub struct Application {
         target_ticktime: f32,
         world: World,
         schedule: Schedule,
-        render_schedule: Schedule,
-        accumulator: f32,
         window: Rc<Window>,
         window_state: WindowState,
         imgui_manager: ImguiManager,
@@ -216,44 +215,60 @@ impl Application {
                 startup_schedule.add_stage("startup", startup);
                 startup_schedule.run(&mut world);
 
-                let mut schedule = Schedule::default();
+                world.insert_resource(UnfixedDeltaTimeAccumulator(world.get_resource::<Ticktime>().unwrap().0));
 
-                let first_stage = SystemStage::single_threaded()
-                        .with_system(update_tps_counter)
-                        .with_system(hierarchy_maintenance_system.label("hierarchy-maintenance"))
-                        .with_system(renormalize_quaternions.after("hierarchy-maintenance"))
-                        .with_system(init_new_transforms.label("init-new-transforms"));
-                schedule.add_stage("first", first_stage);
-
-                let update = SystemStage::single_threaded()
-                        .with_system(persist_transforms.label("persist-transforms"))
-                        .with_system(process_actions.label("process-actions").after("persist-transforms"))
-                        .with_system(apply_euler_angles.label("apply-euler-angles").after("process-actions"))
-                        .with_system(integrate_force.label("linear-force").after("apply-euler-angles"))
-                        .with_system(integrate_linear_velocity.label("linear-velocity").after("linear-force"))
-                        .with_system(
-                                integrate_angular_velocities
-                                        .label("angular-velocity")
-                                        .after("linear-velocity"),
+                let update_schedule = Schedule::default()
+                        .with_run_criteria(should_update.system())
+                        .with_stage(
+                                UpdateStage::PreUpdate,
+                                SystemStage::parallel()
+                                        .with_system(update_tps_counter)
+                                        .with_system(hierarchy_maintenance_system.label("hierarchy-maintenance"))
+                                        .with_system(renormalize_quaternions.after("hierarchy-maintenance"))
+                                        .with_system(init_new_transforms.label("init-new-transforms")),
                         )
-                        .with_system(
-                                integrate_orbital_velocities
-                                        .label("orbital-velocity")
-                                        .after("angular-velocity"),
+                        .with_stage_after(
+                                UpdateStage::PreUpdate,
+                                UpdateStage::Update,
+                                SystemStage::parallel()
+                                        // .with_run_criteria(ShouldUpdateCriteria::ShouldUpdate)
+                                        .with_system(persist_transforms.label("persist-transforms"))
+                                        .with_system(
+                                                process_actions.label("process-actions").after("persist-transforms"),
+                                        )
+                                        .with_system(
+                                                apply_euler_angles.label("apply-euler-angles").after("process-actions"),
+                                        )
+                                        .with_system(integrate_force.label("linear-force").after("apply-euler-angles"))
+                                        .with_system(
+                                                integrate_linear_velocity
+                                                        .label("linear-velocity")
+                                                        .after("linear-force"),
+                                        )
+                                        .with_system(
+                                                integrate_angular_velocities
+                                                        .label("angular-velocity")
+                                                        .after("linear-velocity"),
+                                        )
+                                        .with_system(
+                                                integrate_orbital_velocities
+                                                        .label("orbital-velocity")
+                                                        .after("angular-velocity"),
+                                        )
+                                        .with_system(
+                                                billboard_system.label("billboard-sytem").after("orbital-velocity"),
+                                        )
+                                        .with_system(
+                                                global_transform_system
+                                                        .label("global-transform-system")
+                                                        .after("billboard-sytem"),
+                                        ),
                         )
-                        .with_system(billboard_system.label("billboard-sytem").after("orbital-velocity"))
-                        .with_system(
-                                global_transform_system
-                                        .label("global-transform-system")
-                                        .after("billboard-sytem"),
-                        );
+                        .with_stage_after(UpdateStage::Update, UpdateStage::PostUpdate, SystemStage::parallel());
 
-                schedule.add_stage("update", update);
-
-                let mut render_schedule = Schedule::default();
-                render_schedule.add_stage(
-                        "render",
-                        SystemStage::single_threaded()
+                let render_schedule = Schedule::default().with_stage(
+                        RenderStage::Render,
+                        SystemStage::parallel()
                                 .with_system(apply_euler_angles.label("apply-euler-angles"))
                                 .with_system(
                                         interpolate_transforms
@@ -261,6 +276,10 @@ impl Application {
                                                 .after("apply-euler-angles"),
                                 ),
                 );
+
+                let mut schedule = Schedule::default()
+                        .with_stage(CoreStage::Update, update_schedule)
+                        .with_stage_after(CoreStage::Update, CoreStage::Render, render_schedule);
 
                 let renderer = Box::new(VkRenderer::new(
                         Rc::clone(&window),
@@ -306,6 +325,7 @@ impl Application {
                 world.insert_non_send(input_manager.create_action_receiver());
                 let action_receiver = input_manager.create_action_receiver();
 
+                world.insert_resource(UpdateBegin(Instant::now()));
                 schedule.run(&mut world);
 
                 Ok(Self {
@@ -313,8 +333,6 @@ impl Application {
                         target_ticktime: 1.0 / config.tps as f32,
                         world,
                         schedule,
-                        render_schedule,
-                        accumulator: 0.0,
                         window,
                         window_state,
                         imgui_manager,
@@ -478,60 +496,28 @@ impl Application {
                         }
                 }
 
-                self.accumulator += self.delta_time;
-                if self.accumulator >= self.target_ticktime {
-                        self.schedule.run(&mut self.world);
-                        self.accumulator -= self.target_ticktime;
-                        *control_flow = *self.world.get_resource::<ControlFlow>().unwrap();
+                // self.tps_counter.tick_and_map(|t| info!("TPS: {}", t));
+                self.schedule.run(&mut self.world);
 
-                        for window_command in self.world.get_resource_mut::<Vec<WindowCommand>>().unwrap().drain(..) {
-                                match window_command {
-                                        WindowCommand::SetCursorState(cursor_state) => {
-                                                self.window_state.set_cursor_state(
-                                                        &self.window,
-                                                        self.imgui_manager.imgui_context.io_mut(),
-                                                        cursor_state,
-                                                );
-                                                // input_manager.set_dispatch_actions(new_cursor_state == CursorState::Hidden);
-                                        },
-                                        WindowCommand::SetWindowMode(window_mode) => {
-                                                self.window_state.set_window_mode(&self.window, window_mode);
-                                        },
-                                }
+                *control_flow = *self.world.get_resource::<ControlFlow>().unwrap();
+
+                for window_command in self.world.get_resource_mut::<Vec<WindowCommand>>().unwrap().drain(..) {
+                        match window_command {
+                                WindowCommand::SetCursorState(cursor_state) => {
+                                        self.window_state.set_cursor_state(
+                                                &self.window,
+                                                self.imgui_manager.imgui_context.io_mut(),
+                                                cursor_state,
+                                        );
+                                },
+                                WindowCommand::SetWindowMode(window_mode) => {
+                                        self.window_state.set_window_mode(&self.window, window_mode);
+                                },
                         }
-
-                        // self.tps_counter.tick_and_map(|t| info!("TPS: {}", t));
                 }
 
-                // self.tps_counter.tick_and_map(|t| info!("TPS: {}", t));
-                self.world
-                        .insert_resource(InterpScalar(self.accumulator / self.target_ticktime));
-                self.render_schedule.run(&mut self.world);
                 let ui = self.imgui_manager.build_imgui_ui(&self.window, &mut self.world)?;
                 self.renderer.draw_world(&mut self.world, ui.render())?;
-
-                // if let Some(render_state) = self.render_state_manager.get_render_state(self.target_ticktime) {
-                //         self.transform_manager.on_update();
-                //         self.update_instance_transforms(&render_state);
-
-                //         let imgui_ui = Self::build_imgui_ui(
-                //                 &mut self.imgui_context,
-                //                 &self.window,
-                //                 &mut self.dispatch_actions,
-                //                 &mut self.player_orien,
-                //                 &mut self.player_transform,
-                //         )?;
-
-                //         // self.renderer.draw(
-                //         //         &self.mesh_instances,
-                //         //         &self.model_instances,
-                //         //         &self.model_instances_index,
-                //         //         &self.transform_manager,
-                //         //         &render_state,
-                //         //         &self.player_orien.to_quat(),
-                //         //         imgui_ui.render(),
-                //         // )?;
-                // }
 
                 Ok(())
         }
@@ -755,6 +741,24 @@ fn spawn_entities(mut commands: Commands) {
                 .id();
 }
 
+fn should_update(
+        mut update_begin: ResMut<UpdateBegin>,
+        mut accumulator: ResMut<UnfixedDeltaTimeAccumulator>,
+        tick_time: Res<Ticktime>,
+) -> ShouldRun {
+        let prev_update_begin = std::mem::replace(&mut update_begin.0, Instant::now());
+        let unfixed_delta_time = (update_begin.0 - prev_update_begin).as_secs_f32();
+
+        accumulator.0 += unfixed_delta_time;
+
+        if accumulator.0 >= tick_time.0 {
+                accumulator.0 -= tick_time.0;
+                ShouldRun::Yes
+        } else {
+                ShouldRun::No
+        }
+}
+
 fn process_actions(
         mut commands: Commands,
         ticktime: Res<Ticktime>,
@@ -962,11 +966,14 @@ fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transfo
 
 fn interpolate_transforms(
         mut query: Query<(&PreviousGlobalTransform, &GlobalTransform, &mut InterpGlobalTransform)>,
-        t: Res<InterpScalar>,
+        accumulator: Res<UnfixedDeltaTimeAccumulator>,
+        ticktime: Res<Ticktime>,
         euler_angles_query: Query<&EulerAngles>,
         parent_query: Query<&Parent>,
         camera: Res<ActiveCamera>,
 ) {
+        let t = InterpScalar(accumulator.0 / ticktime.0);
+
         for (prev_transform, curr_transform, mut interp_transform) in query.iter_mut() {
                 interp_transform.0 = Transform::interp(&prev_transform.0, &curr_transform.0, t.0);
         }
@@ -1082,3 +1089,23 @@ enum WindowCommand {
         SetCursorState(CursorState),
         SetWindowMode(WindowMode),
 }
+
+#[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
+enum CoreStage {
+        Update,
+        Render,
+}
+
+#[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
+enum UpdateStage {
+        PreUpdate,
+        Update,
+        PostUpdate,
+}
+
+#[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
+enum RenderStage {
+        Render,
+}
+
+enum UpdateRunCriteria {}
