@@ -51,7 +51,7 @@ impl VkDescriptorSetAllocator {
                                         }
                                         self.pool_index += 1;
 
-                                        self.allocate_descriptor_sets_inner(&dst_set_layouts, false)?
+                                        self.allocate_descriptor_sets_inner(dst_set_layouts, false)?
                                 },
                                 _ => return Err(vk_result),
                         },

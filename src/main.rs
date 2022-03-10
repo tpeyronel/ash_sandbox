@@ -17,7 +17,6 @@ mod my_glm;
 mod renderer;
 mod skybox;
 mod util;
-mod vertex;
 mod vk;
 
 #[allow(unused_imports)]

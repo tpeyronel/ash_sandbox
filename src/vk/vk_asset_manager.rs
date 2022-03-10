@@ -331,10 +331,8 @@ impl VkAssetManager {
         fn on_image_updated(&mut self, asset_manager: &AssetManager, image_id: ImageId) -> AnyResult<()> {
                 if self.images.contains_key(image_id) {
                         todo!();
-                } else {
-                        if let Some(vk_image) = self.create_vk_image_from_image(asset_manager, image_id)? {
-                                self.images.insert(image_id, vk_image);
-                        }
+                } else if let Some(vk_image) = self.create_vk_image_from_image(asset_manager, image_id)? {
+                        self.images.insert(image_id, vk_image);
                 }
 
                 Ok(())
@@ -343,10 +341,8 @@ impl VkAssetManager {
         fn on_sampler_updated(&mut self, asset_manager: &AssetManager, sampler_id: SamplerId) -> AnyResult<()> {
                 if self.samplers.contains_key(sampler_id) {
                         todo!();
-                } else {
-                        if let Some(vk_sampler) = self.create_vk_sampler_from_sampler(asset_manager, sampler_id)? {
-                                self.samplers.insert(sampler_id, vk_sampler);
-                        }
+                } else if let Some(vk_sampler) = self.create_vk_sampler_from_sampler(asset_manager, sampler_id)? {
+                        self.samplers.insert(sampler_id, vk_sampler);
                 }
 
                 Ok(())

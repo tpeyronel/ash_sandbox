@@ -24,7 +24,7 @@ impl Image2D {
                         )
                 };
 
-                if data == std::ptr::null_mut() {
+                if data.is_null() {
                         return Err(std::io::Error::new(
                                 std::io::ErrorKind::Other,
                                 format!("Error occurred reading file {}", path.to_str().unwrap()),

@@ -106,7 +106,7 @@ impl VkBuffer {
                         BufferData::OffsetLength { data, offset, length } => unsafe {
                                 assert!((offset + length) <= (data.len() * std::mem::size_of::<T>()));
 
-                                std::slice::from_raw_parts((data.as_ptr() as *const u8).offset(offset as isize), length)
+                                std::slice::from_raw_parts((data.as_ptr() as *const u8).add(offset), length)
                         },
                 };
                 let buffer_size = buffer_data.len() as vk::DeviceSize;
@@ -262,8 +262,9 @@ impl VkBuffer {
 
                 let map = self.map_memory()?;
                 unsafe {
-                        let dst = map.offset(offset as isize);
-                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+                        let src = bytes.as_ptr();
+                        let dst = map.add(offset);
+                        std::ptr::copy_nonoverlapping(src, dst, bytes.len());
                 }
                 Ok(())
         }
@@ -315,7 +316,7 @@ impl<T: 'static> VkDynamicUniformBuffer<T> {
         ) -> AnyResult<Self> {
                 let element_padded_size = pdevice.padded_size_of::<T>();
                 let buffer_size = (element_padded_size * capacity) as vk::DeviceSize;
-                let buffer = VkBuffer::new_uniform_buffer(&device, allocator, buffer_size)?;
+                let buffer = VkBuffer::new_uniform_buffer(device, allocator, buffer_size)?;
 
                 Ok(Self {
                         buffer,

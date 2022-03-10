@@ -18,7 +18,7 @@ use winit::event::{DeviceEvent, KeyboardInput};
 pub type KeyCode = winit::event::VirtualKeyCode;
 pub type KeyState = winit::event::ElementState;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ActionEvent {
         pub action_id: ActionId,
         pub strength: ActionStrength,
@@ -89,7 +89,7 @@ impl InputManager {
                         }
 
                         for tx in action_events_senders {
-                                if let Err(err) = tx.send(action_event) {
+                                if let Err(err) = tx.send(action_event.clone()) {
                                         error!("Error occurred sending action event: {}", err);
                                 }
                         }
@@ -238,7 +238,7 @@ impl InputBindingMap {
                 if let Some(&prev_action_type) = self.action_types.get(&action_id) {
                         assert_eq!(action_type, prev_action_type);
                 } else {
-                        self.action_types.insert(action_id, action_type);
+                        self.action_types.insert(action_id.clone(), action_type);
                 }
 
                 self.key_bindings.bind(key_code, action_id, key_binding_type);

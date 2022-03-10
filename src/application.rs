@@ -137,7 +137,7 @@ impl Application {
                                                 imgui_util::point_light_mut(ui, &mut point_light);
                                         });
 
-                                        imgui::TreeNode::new("spotlight").build(&ui, || {
+                                        imgui::TreeNode::new("spotlight").build(ui, || {
                                                 let mut spotlight =
                                                         world.query::<&mut Spotlight>().iter_mut(world).next().unwrap();
 
@@ -568,7 +568,7 @@ impl WindowState {
                                 WindowMode::Windowed
                         };
 
-                        self.set_window_mode_silently(&window, window_mode);
+                        self.set_window_mode_silently(window, window_mode);
                 }
         }
 
@@ -1045,7 +1045,7 @@ impl ImguiManager {
                 ]);
                 imgui_context.io_mut().font_global_scale = 1.0 / hidpi_factor;
 
-                imgui_platform.attach_window(imgui_context.io_mut(), &window, imgui_winit_support::HiDpiMode::Rounded);
+                imgui_platform.attach_window(imgui_context.io_mut(), window, imgui_winit_support::HiDpiMode::Rounded);
 
                 Self {
                         imgui_context,
@@ -1107,5 +1107,3 @@ enum UpdateStage {
 enum RenderStage {
         Render,
 }
-
-enum UpdateRunCriteria {}

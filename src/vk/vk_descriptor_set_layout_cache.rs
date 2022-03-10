@@ -59,14 +59,14 @@ impl PartialEq for LayoutKey {
                                 || l.descriptor_count != r.descriptor_count
                                 || l.stage_flags != r.stage_flags
                                 || l.binding != r.binding
-                                || l.p_immutable_samplers != std::ptr::null()
-                                || r.p_immutable_samplers != std::ptr::null()
+                                || l.p_immutable_samplers.is_null()
+                                || r.p_immutable_samplers.is_null()
                         {
                                 return false;
                         }
                 }
 
-                return true;
+                true
         }
 }
 

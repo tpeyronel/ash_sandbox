@@ -9,7 +9,7 @@ use crate::{
 
 pub fn imgui_vec3<T: AsRef<str>>(ui: &imgui::Ui<'_>, label: T, min: f32, max: f32, vec: Vec3) -> Option<Vec3> {
         let mut v: [f32; 3] = vec.into();
-        if imgui::Slider::new(label, min, max).build_array(&ui, &mut v) {
+        if imgui::Slider::new(label, min, max).build_array(ui, &mut v) {
                 Some(Vec3::from_slice(&v))
         } else {
                 None
@@ -30,7 +30,7 @@ pub fn transform(ui: &imgui::Ui<'_>, mut transform: Transform) -> Option<Transfo
 
         let euler_angles = EulerAngles::from_quat(transform.rotation);
         if let Some(xyz) = imgui_vec3(
-                &ui,
+                ui,
                 "rotation",
                 -180.0,
                 180.0,
@@ -49,7 +49,7 @@ pub fn transform(ui: &imgui::Ui<'_>, mut transform: Transform) -> Option<Transfo
                 changed = true;
         }
 
-        if let Some(scale) = imgui_vec3(&ui, "scale", 0.0, 5.0, transform.scale) {
+        if let Some(scale) = imgui_vec3(ui, "scale", 0.0, 5.0, transform.scale) {
                 transform.scale = scale;
                 changed = true;
         }
@@ -65,7 +65,7 @@ pub fn transform_mut<T>(ui: &imgui::Ui<'_>, transform: &mut T)
 where
         T: Deref<Target = Transform> + DerefMut,
 {
-        if let Some(t) = self::transform(&ui, **transform) {
+        if let Some(t) = self::transform(ui, **transform) {
                 **transform = t;
         }
 }
@@ -77,7 +77,7 @@ where
         let mut pitch = euler_angles.pitch();
         if imgui::AngleSlider::new("pitch")
                 .range_degrees(-90.0, 90.0)
-                .build(&ui, &mut pitch)
+                .build(ui, &mut pitch)
         {
                 euler_angles.set_pitch(pitch);
         }
@@ -85,7 +85,7 @@ where
         let mut yaw = euler_angles.yaw();
         if imgui::AngleSlider::new("yaw")
                 .range_degrees(-180.0, 180.0)
-                .build(&ui, &mut yaw)
+                .build(ui, &mut yaw)
         {
                 euler_angles.set_yaw(yaw);
         }
@@ -93,7 +93,7 @@ where
         let mut roll = euler_angles.roll();
         if imgui::AngleSlider::new("roll")
                 .range_degrees(-180.0, 180.0)
-                .build(&ui, &mut roll)
+                .build(ui, &mut roll)
         {
                 euler_angles.set_roll(roll);
         }
@@ -108,12 +108,12 @@ where
         }
 
         let mut direction: [f32; 3] = dir_light.direction.into();
-        if imgui::Slider::new("direction", -1.0, 1.0f32).build_array(&ui, &mut direction) {
+        if imgui::Slider::new("direction", -1.0, 1.0f32).build_array(ui, &mut direction) {
                 dir_light.direction = Vec3::from_slice(&direction);
         }
 
         let mut color: [f32; 3] = dir_light.color.into();
-        if imgui::ColorEdit::new("color", &mut color).build(&ui) {
+        if imgui::ColorEdit::new("color", &mut color).build(ui) {
                 dir_light.color = Vec3::from_slice(&color);
         }
 }
@@ -127,24 +127,24 @@ where
         }
 
         let mut color: [f32; 3] = point_light.color.into();
-        if imgui::ColorEdit::new("color", &mut color).build(&ui) {
+        if imgui::ColorEdit::new("color", &mut color).build(ui) {
                 point_light.color = Vec3::from_slice(&color);
         }
 
         let mut kc = point_light.kc;
-        if imgui::Slider::new("constant", 0.0, 1.0).build(&ui, &mut kc) {
+        if imgui::Slider::new("constant", 0.0, 1.0).build(ui, &mut kc) {
                 point_light.kc = kc;
         }
 
         let mut kl = point_light.kl;
-        if imgui::Slider::new("linear", 0.0, 1.0).build(&ui, &mut kl) {
+        if imgui::Slider::new("linear", 0.0, 1.0).build(ui, &mut kl) {
                 point_light.kl = kl;
         }
 
         let mut kq = point_light.kq;
         if imgui::Slider::new("quadratic", 0.0, 1.0)
                 .flags(imgui::SliderFlags::LOGARITHMIC)
-                .build(&ui, &mut kq)
+                .build(ui, &mut kq)
         {
                 point_light.kq = kq;
         }
@@ -159,45 +159,45 @@ where
         }
 
         let mut color: [f32; 3] = spotlight.color.into();
-        if imgui::ColorEdit::new("color", &mut color).build(&ui) {
+        if imgui::ColorEdit::new("color", &mut color).build(ui) {
                 spotlight.color = Vec3::from_slice(&color);
         }
 
         let mut angle = spotlight.radius_angle;
         if imgui::AngleSlider::new("cutoff angle")
                 .range_degrees(0.0, 90.0)
-                .build(&ui, &mut angle)
+                .build(ui, &mut angle)
         {
                 spotlight.radius_angle = angle;
         }
 
         let mut inner_circle = spotlight.inner_radius_percentage;
-        if imgui::Slider::new("inner circle", 0.0, 1.0).build(&ui, &mut inner_circle) {
+        if imgui::Slider::new("inner circle", 0.0, 1.0).build(ui, &mut inner_circle) {
                 spotlight.inner_radius_percentage = inner_circle;
         }
 
         let mut kc = spotlight.kc;
-        if imgui::Slider::new("constant", 0.0, 1.0).build(&ui, &mut kc) {
+        if imgui::Slider::new("constant", 0.0, 1.0).build(ui, &mut kc) {
                 spotlight.kc = kc;
         }
 
         let mut kl = spotlight.kl;
-        if imgui::Slider::new("linear", 0.0, 1.0).build(&ui, &mut kl) {
+        if imgui::Slider::new("linear", 0.0, 1.0).build(ui, &mut kl) {
                 spotlight.kl = kl;
         }
 
         let mut kq = spotlight.kq;
         if imgui::Slider::new("quadratic", 0.0, 1.0)
                 .flags(imgui::SliderFlags::LOGARITHMIC)
-                .build(&ui, &mut kq)
+                .build(ui, &mut kq)
         {
                 spotlight.kq = kq;
         }
 }
 
 pub fn material_mut(ui: &imgui::Ui<'_>, material: &mut Material) {
-        imgui::Slider::new("shininess", 0.0f32, 256.0).build(&ui, &mut material.shininess);
-        imgui::Slider::new("ambient strength", 0.0f32, 1.0).build(&ui, &mut material.ambient_strength);
-        imgui::Slider::new("specular strength", 0.0f32, 1.0).build(&ui, &mut material.specular_strength);
-        imgui::Slider::new("diffuse strength", 0.0f32, 1.0).build(&ui, &mut material.diffuse_strength);
+        imgui::Slider::new("shininess", 0.0f32, 256.0).build(ui, &mut material.shininess);
+        imgui::Slider::new("ambient strength", 0.0f32, 1.0).build(ui, &mut material.ambient_strength);
+        imgui::Slider::new("specular strength", 0.0f32, 1.0).build(ui, &mut material.specular_strength);
+        imgui::Slider::new("diffuse strength", 0.0f32, 1.0).build(ui, &mut material.diffuse_strength);
 }

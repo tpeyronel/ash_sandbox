@@ -194,7 +194,7 @@ impl Renderer for VkRenderer {
 
                 let (light_transform, point_light) = world
                         .query::<(&InterpGlobalTransform, &PointLight)>()
-                        .iter(&world)
+                        .iter(world)
                         .next()
                         .unwrap();
 
@@ -204,7 +204,7 @@ impl Renderer for VkRenderer {
                         kc_kl_kq: Vec4::new(point_light.kc, point_light.kl, point_light.kq, 0.0),
                 };
 
-                let dir_light = world.query::<&DirectionalLight>().iter(&world).next().unwrap();
+                let dir_light = world.query::<&DirectionalLight>().iter(world).next().unwrap();
 
                 let dir_light = WorldDirectionalLight {
                         direction: Vec4::from((dir_light.direction, 0.0)),
@@ -213,7 +213,7 @@ impl Renderer for VkRenderer {
 
                 let (spotlight_transform, spotlight_component) = world
                         .query::<(&InterpGlobalTransform, &Spotlight)>()
-                        .iter(&world)
+                        .iter(world)
                         .next()
                         .unwrap();
 
@@ -305,7 +305,7 @@ impl Renderer for VkRenderer {
                                         self.framei,
                                         &world_matrices,
                                         minstance,
-                                        transform.0.to_matrix(),
+                                        transform.0.as_matrix(),
                                         buffer_transform_idx,
                                 )?;
 

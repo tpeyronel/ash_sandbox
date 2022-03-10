@@ -49,7 +49,7 @@ impl Transform {
                 }
         }
 
-        pub fn to_matrix(&self) -> Mat4 {
+        pub fn as_matrix(&self) -> Mat4 {
                 // Mat4::from_translation(self.translation) * Mat4::from_quat(self.rotation) * Mat4::from_scale(self.scale)
                 Mat4::from_scale_rotation_translation(self.scale, self.rotation, self.translation)
         }

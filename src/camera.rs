@@ -164,6 +164,7 @@ impl Camera {
         pub fn pitch_by(&mut self, angle: f32) {
                 self.pitch += angle / self.zoom;
 
+                #[allow(clippy::collapsible_else_if)]
                 if CLAMP_PITCH {
                         self.pitch = f32::clamp(self.pitch, PITCH_CLAMP_MIN, PITCH_CLAMP_MAX);
                 } else {

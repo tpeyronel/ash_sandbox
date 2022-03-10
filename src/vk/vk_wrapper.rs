@@ -106,7 +106,7 @@ pub struct VmaAllocator {
 impl VmaAllocator {
         pub unsafe fn new(create_info: &vma::AllocatorCreateInfo) -> VkResult<Self> {
                 Ok(Self {
-                        handle: vma::Allocator::new(&create_info)?,
+                        handle: vma::Allocator::new(create_info)?,
                         destroyed: Cell::new(false),
                 })
         }
@@ -576,7 +576,7 @@ impl VkShaderModule {
                 })
         }
 
-        pub fn from_code(device: &Rc<VkDevice>, code: &Vec<u8>) -> Result<Self, VkShaderModuleError> {
+        pub fn from_code(device: &Rc<VkDevice>, code: &[u8]) -> Result<Self, VkShaderModuleError> {
                 if code.len() % 4 != 0 {
                         return Err(VkShaderModuleError::CodeSizeNotMultipleOf4(code.len()));
                 }

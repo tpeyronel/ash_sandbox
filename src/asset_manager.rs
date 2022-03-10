@@ -428,24 +428,24 @@ impl AssetBundle {
                 image_data
                         .into_iter()
                         .zip(doc.images())
-                        .filter_map(|(image, json_image)| {
+                        .map(|(image, json_image)| {
                                 if !Self::is_image_format_supported(image.format) {
-                                        return Some(Err(GLTFImportError::ImageFormatNotSupported));
+                                        return Err(GLTFImportError::ImageFormatNotSupported);
                                 }
 
                                 // Image path relative to working directory
                                 let _image_relative_path = match json_image.source() {
                                         gltf::image::Source::Uri { uri, .. } => {
-                                                if uri.contains(":") {
+                                                if uri.contains(':') {
                                                         error!("Trying to import image with non relative uri!");
-                                                        return Some(Err(GLTFImportError::ImageSourceUriNotRelative));
+                                                        return Err(GLTFImportError::ImageSourceUriNotRelative);
                                                 }
 
                                                 gltf_path.join(uri)
                                         },
                                         _ => {
                                                 error!("Image source is not an uri!");
-                                                return Some(Err(GLTFImportError::ImageSourceNotUri));
+                                                return Err(GLTFImportError::ImageSourceNotUri);
                                         },
                                 };
 
@@ -456,7 +456,7 @@ impl AssetBundle {
                                         format: image.format,
                                 });
 
-                                Some(Ok(image_id))
+                                Ok(image_id)
                         })
                         .collect()
         }
@@ -464,12 +464,7 @@ impl AssetBundle {
         fn is_image_format_supported(format: gltf::image::Format) -> bool {
                 type Format = gltf::image::Format;
 
-                match format {
-                        Format::R8 => true,
-                        Format::R8G8B8 => true,
-                        Format::R8G8B8A8 => true,
-                        _ => false,
-                }
+                matches!(format, Format::R8 | Format::R8G8B8 | Format::R8G8B8A8)
         }
 
         fn load_samplers(
@@ -493,8 +488,8 @@ impl AssetBundle {
 
         fn load_textures(
                 doc: &gltf::Document,
-                images_by_index: &Vec<ImageId>,
-                samplers_by_index: &Vec<SamplerId>,
+                images_by_index: &[ImageId],
+                samplers_by_index: &[SamplerId],
                 out_textures: &mut ObservableSlotMap<TextureId, Texture, AssetManagerEvent>,
         ) -> Vec<TextureId> {
                 doc.textures()
@@ -515,7 +510,7 @@ impl AssetBundle {
 
         fn load_materials(
                 doc: &gltf::Document,
-                textures_by_index: &Vec<TextureId>,
+                textures_by_index: &[TextureId],
                 out_materials: &mut ObservableSlotMap<MaterialId, Material, AssetManagerEvent>,
         ) -> Vec<MaterialId> {
                 doc.materials()
@@ -565,7 +560,7 @@ impl AssetBundle {
         fn load_meshes(
                 doc: &gltf::Document,
                 buffer_data: Vec<gltf::buffer::Data>,
-                materials_by_index: &Vec<MaterialId>,
+                materials_by_index: &[MaterialId],
                 out_meshes: &mut ObservableSlotMap<MeshId, Mesh, AssetManagerEvent>,
         ) -> Result<Vec<MeshGroup>, GLTFImportError> {
                 let accessors: Vec<gltf::Accessor> = doc.accessors().collect();
@@ -651,7 +646,7 @@ impl AssetBundle {
 
         fn load_models(
                 doc: &gltf::Document,
-                mesh_groups: &Vec<MeshGroup>,
+                mesh_groups: &[MeshGroup],
                 out_models: &mut ObservableSlotMap<ModelId, Model, AssetManagerEvent>,
         ) -> Result<Vec<ModelId>, GLTFImportError> {
                 let mut model_ids = Vec::new();
@@ -659,7 +654,7 @@ impl AssetBundle {
                 for n in doc.nodes() {
                         let meshes =
                                 n.mesh().map(|mg| mesh_groups[mg.index()].0.clone())
-                                        .unwrap_or_else(|| Vec::new());
+                                        .unwrap_or_else(Vec::new);
 
                         let children = n.children().map(|n| model_ids[n.index()]).collect();
 
@@ -706,7 +701,7 @@ impl AssetBundle {
 
         fn load_root_model(
                 doc: &gltf::Document,
-                models_by_index: &Vec<ModelId>,
+                models_by_index: &[ModelId],
                 out_models: &mut ObservableSlotMap<ModelId, Model, AssetManagerEvent>,
         ) -> Result<(String, ModelId), GLTFImportError> {
                 if doc.scenes().len() > 1 {
@@ -766,7 +761,7 @@ impl AssetStorage {
                                 meshes: ObservableSlotMap::new(event_tx.clone()),
                                 models: ObservableSlotMap::new(event_tx.clone()),
                                 shaders: ObservableSlotMap::new(event_tx.clone()),
-                                cubemaps: ObservableSlotMap::new(event_tx.clone()),
+                                cubemaps: ObservableSlotMap::new(event_tx),
 
                                 named_models: HashMap::new(),
                         },
@@ -1192,7 +1187,7 @@ fn read_gltf_accessor<T: GltfElement + Clone>(buffers: &[gltf::buffer::Data], ac
         let element_count = accessor.count();
 
         assert!((byte_offset + byte_length) <= buffer_data.0.len());
-        let data = unsafe { buffer_data.0.as_ptr().offset(byte_offset as isize) };
+        let data = unsafe { buffer_data.0.as_ptr().add(byte_offset) };
 
         assert_eq!(byte_length, element_count * std::mem::size_of::<T>());
         let slice = unsafe { std::slice::from_raw_parts(data as *const T, element_count) };

@@ -539,7 +539,7 @@ impl VkSwapchain {
 
         fn create_resolve_img_views(
                 device: Rc<VkDevice>,
-                resolve_imgs: &Vec<vk::Image>,
+                resolve_imgs: &[vk::Image],
                 format: vk::Format,
         ) -> VkResult<Vec<VkImageView>> {
                 resolve_imgs

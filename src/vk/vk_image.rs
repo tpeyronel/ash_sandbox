@@ -199,7 +199,7 @@ impl VkImage {
 
                 let cmd_buffer = **cinfo.setup_cmd_buffer;
 
-                cinfo.setup_cmd_buffer.begin(&device)?;
+                cinfo.setup_cmd_buffer.begin(device)?;
 
                 Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
                         device,
@@ -248,7 +248,7 @@ impl VkImage {
                 });
 
                 cinfo.setup_cmd_buffer
-                        .end_and_submit(&device, cinfo.transfer_queue, &[], &[], &[])?;
+                        .end_and_submit(device, cinfo.transfer_queue, &[], &[], &[])?;
 
                 cinfo.setup_cmd_buffer.wait(u64::MAX)?;
                 staging_buffer.destroy();
@@ -309,7 +309,7 @@ impl VkImage {
 
                 let cmd_buffer = **cinfo.setup_cmd_buffer;
 
-                cinfo.setup_cmd_buffer.begin(&device)?;
+                cinfo.setup_cmd_buffer.begin(device)?;
 
                 Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
                         device,
@@ -358,7 +358,7 @@ impl VkImage {
                 });
 
                 cinfo.setup_cmd_buffer
-                        .end_and_submit(&device, cinfo.transfer_queue, &[], &[], &[])?;
+                        .end_and_submit(device, cinfo.transfer_queue, &[], &[], &[])?;
 
                 cinfo.setup_cmd_buffer.wait(u64::MAX)?;
                 staging_buffer.destroy();
