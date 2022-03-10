@@ -14,8 +14,8 @@ use crate::{
         components::{
                 ActiveCamera, AngularVelocity, Billboard, Children, DirectionalLight, Force, GlobalTransform,
                 ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, Mass, OrbitalVelocity, Parent, Player,
-                PointLight, PreviousGlobalTransform, ProjectionCamera, Spotlight, Ticktime, Transform,
-                UnfixedDeltaTimeAccumulator, UpdateBegin, Velocity,
+                PointLight, PreviousGlobalTransform, ProjectionCamera, Spotlight, TickTime, Transform,
+                DeltaTimeAccumulator, UpdateBegin, Velocity,
         },
         constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
@@ -46,7 +46,7 @@ use winit::{
 pub struct Application {
         event_loop: Option<EventLoop<()>>,
 
-        target_ticktime: f32,
+        target_tick_time: f32,
         world: World,
         schedule: Schedule,
         window: Rc<Window>,
@@ -104,7 +104,7 @@ impl Application {
                                         ui.text(format!(
                                                 "tps: {:7.2}   {:5.2}ms",
                                                 tps_counter.tps(),
-                                                tps_counter.ticktime().as_secs_f32() * 1000.0,
+                                                tps_counter.tick_time().as_secs_f32() * 1000.0,
                                         ));
                                         ui.text(format!("Mouse pos: ({:.1},{:.1})", mouse_pos[0], mouse_pos[1]));
                                         ui.separator();
@@ -185,7 +185,7 @@ impl Application {
                 trace!("Initialized ImGui");
 
                 let mut world = World::default();
-                world.insert_resource(Ticktime(1.0 / config.tps as f32));
+                world.insert_resource(TickTime(1.0 / config.tps as f32));
                 world.insert_resource(ImguiWantCaptureMouse(false));
                 world.insert_resource(ImguiWantCaptureKeyboard(false));
                 world.insert_resource(TPSCounter::new(20));
@@ -215,7 +215,7 @@ impl Application {
                 startup_schedule.add_stage("startup", startup);
                 startup_schedule.run(&mut world);
 
-                world.insert_resource(UnfixedDeltaTimeAccumulator(world.get_resource::<Ticktime>().unwrap().0));
+                world.insert_resource(DeltaTimeAccumulator(world.get_resource::<TickTime>().unwrap().0));
 
                 let update_schedule = Schedule::default()
                         .with_run_criteria(should_update.system())
@@ -330,7 +330,7 @@ impl Application {
 
                 Ok(Self {
                         event_loop: Some(event_loop),
-                        target_ticktime: 1.0 / config.tps as f32,
+                        target_tick_time: 1.0 / config.tps as f32,
                         world,
                         schedule,
                         window,
@@ -743,13 +743,13 @@ fn spawn_entities(mut commands: Commands) {
 
 fn should_update(
         mut update_begin: ResMut<UpdateBegin>,
-        mut accumulator: ResMut<UnfixedDeltaTimeAccumulator>,
-        tick_time: Res<Ticktime>,
+        mut accumulator: ResMut<DeltaTimeAccumulator>,
+        tick_time: Res<TickTime>,
 ) -> ShouldRun {
         let prev_update_begin = std::mem::replace(&mut update_begin.0, Instant::now());
-        let unfixed_delta_time = (update_begin.0 - prev_update_begin).as_secs_f32();
+        let time_since_last_update = (update_begin.0 - prev_update_begin).as_secs_f32();
 
-        accumulator.0 += unfixed_delta_time;
+        accumulator.0 += time_since_last_update;
 
         if accumulator.0 >= tick_time.0 {
                 accumulator.0 -= tick_time.0;
@@ -761,7 +761,7 @@ fn should_update(
 
 fn process_actions(
         mut commands: Commands,
-        ticktime: Res<Ticktime>,
+        tick_time: Res<TickTime>,
         player: Res<Player>,
         camera: Res<ActiveCamera>,
         action_receiver: NonSend<ActionReceiver>,
@@ -775,7 +775,7 @@ fn process_actions(
 ) {
         let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
 
-        for (action_id, strength) in action_receiver.receive(ticktime.0) {
+        for (action_id, strength) in action_receiver.receive(tick_time.0) {
                 match action_id {
                         MOVE_FORWARD => desired_dir.z -= strength.0,
                         MOVE_BACKWARD => desired_dir.z += strength.0,
@@ -929,34 +929,34 @@ fn apply_euler_angles(mut query: Query<(&EulerAngles, &mut Transform)>) {
         }
 }
 
-fn integrate_force(mut query: Query<(&Force, &Mass, &mut Velocity)>, ticktime: Res<Ticktime>) {
+fn integrate_force(mut query: Query<(&Force, &Mass, &mut Velocity)>, tick_time: Res<TickTime>) {
         for (force, mass, mut velocity) in query.iter_mut() {
-                let momentum = force.0 * ticktime.0;
+                let momentum = force.0 * tick_time.0;
                 let delta_velocity = momentum / mass.0;
                 velocity.0 += delta_velocity;
         }
         // for (force, mass, mut velocity) in query.iter_mut() {
         //         let acceleration = force.0 / mass.0;
-        //         velocity.0 += acceleration * ticktime.0;
+        //         velocity.0 += acceleration * tick_time.0;
         // }
 }
 
-fn integrate_linear_velocity(mut query: Query<(&Velocity, &mut Transform)>, ticktime: Res<Ticktime>) {
+fn integrate_linear_velocity(mut query: Query<(&Velocity, &mut Transform)>, tick_time: Res<TickTime>) {
         for (velocity, mut transform) in query.iter_mut() {
-                transform.translation += velocity.0 * ticktime.0;
+                transform.translation += velocity.0 * tick_time.0;
         }
 }
 
-fn integrate_angular_velocities(mut query: Query<(&AngularVelocity, &mut Transform)>, ticktime: Res<Ticktime>) {
+fn integrate_angular_velocities(mut query: Query<(&AngularVelocity, &mut Transform)>, tick_time: Res<TickTime>) {
         for (angular_velocity, mut transform) in query.iter_mut() {
-                transform.rotation *= Quat::from_scaled_axis(angular_velocity.0 * ticktime.0);
+                transform.rotation *= Quat::from_scaled_axis(angular_velocity.0 * tick_time.0);
         }
 }
 
-fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transform)>, ticktime: Res<Ticktime>) {
+fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transform)>, tick_time: Res<TickTime>) {
         for (orbital_velocity, mut transform) in query.iter_mut() {
                 let orbital_pos = transform.translation - orbital_velocity.origin;
-                let orbital_rot = Quat::from_scaled_axis(orbital_velocity.velocity * ticktime.0);
+                let orbital_rot = Quat::from_scaled_axis(orbital_velocity.velocity * tick_time.0);
                 let new_orbital_pos = orbital_rot * orbital_pos;
                 let delta_pos = new_orbital_pos - orbital_pos;
 
@@ -966,13 +966,13 @@ fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transfo
 
 fn interpolate_transforms(
         mut query: Query<(&PreviousGlobalTransform, &GlobalTransform, &mut InterpGlobalTransform)>,
-        accumulator: Res<UnfixedDeltaTimeAccumulator>,
-        ticktime: Res<Ticktime>,
+        accumulator: Res<DeltaTimeAccumulator>,
+        tick_time: Res<TickTime>,
         euler_angles_query: Query<&EulerAngles>,
         parent_query: Query<&Parent>,
         camera: Res<ActiveCamera>,
 ) {
-        let t = InterpScalar(accumulator.0 / ticktime.0);
+        let t = InterpScalar(accumulator.0 / tick_time.0);
 
         for (prev_transform, curr_transform, mut interp_transform) in query.iter_mut() {
                 interp_transform.0 = Transform::interp(&prev_transform.0, &curr_transform.0, t.0);

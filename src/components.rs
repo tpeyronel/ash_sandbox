@@ -8,9 +8,9 @@ pub struct Player(pub Entity);
 
 pub struct ActiveCamera(pub Entity);
 
-pub struct Ticktime(pub f32);
+pub struct TickTime(pub f32);
 
-pub struct UnfixedDeltaTimeAccumulator(pub f32);
+pub struct DeltaTimeAccumulator(pub f32);
 
 pub struct UpdateBegin(pub Instant);
 
