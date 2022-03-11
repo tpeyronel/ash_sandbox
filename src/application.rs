@@ -12,10 +12,10 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         components::{
-                ActiveCamera, AngularVelocity, Billboard, Children, DirectionalLight, Force, GlobalTransform,
-                ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, Mass, OrbitalVelocity, Parent, Player,
-                PointLight, PreviousGlobalTransform, ProjectionCamera, Spotlight, TickTime, Transform,
-                DeltaTimeAccumulator, UpdateBegin, Velocity,
+                ActiveCamera, AngularVelocity, Billboard, Children, DeltaTimeAccumulator, DirectionalLight, Force,
+                GlobalTransform, ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, Mass, OrbitalVelocity,
+                Parent, Player, PointLight, PreviousGlobalTransform, ProjectionCamera, Spotlight, TickTime, Transform,
+                UpdateBegin, Velocity,
         },
         constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
@@ -31,7 +31,10 @@ use crate::{
         vk::vk_renderer::VkRenderer,
         AnyResult,
 };
-use bevy_ecs::{prelude::*, schedule::ShouldRun};
+use bevy_ecs::{
+        prelude::*,
+        schedule::{RunOnce, ShouldRun},
+};
 #[allow(unused_imports)]
 use log::{error, info, trace};
 use serde::{Deserialize, Serialize};
@@ -210,12 +213,12 @@ impl Application {
                 world.insert_resource(window_state.cursor_state);
                 world.insert_resource(Vec::<WindowCommand>::new());
 
-                let mut startup_schedule = Schedule::default();
-                let startup = SystemStage::single_threaded().with_system(spawn_entities);
-                startup_schedule.add_stage("startup", startup);
-                startup_schedule.run(&mut world);
-
                 world.insert_resource(DeltaTimeAccumulator(world.get_resource::<TickTime>().unwrap().0));
+
+                let startup_schedule = Schedule::default().with_run_criteria(RunOnce::default()).with_stage(
+                        StartupStage::Startup,
+                        SystemStage::parallel().with_system(spawn_entities),
+                );
 
                 let update_schedule = Schedule::default()
                         .with_run_criteria(should_update.system())
@@ -231,7 +234,6 @@ impl Application {
                                 UpdateStage::PreUpdate,
                                 UpdateStage::Update,
                                 SystemStage::parallel()
-                                        // .with_run_criteria(ShouldUpdateCriteria::ShouldUpdate)
                                         .with_system(persist_transforms.label("persist-transforms"))
                                         .with_system(
                                                 process_actions.label("process-actions").after("persist-transforms"),
@@ -278,7 +280,8 @@ impl Application {
                 );
 
                 let mut schedule = Schedule::default()
-                        .with_stage(CoreStage::Update, update_schedule)
+                        .with_stage(CoreStage::Startup, startup_schedule)
+                        .with_stage_after(CoreStage::Startup, CoreStage::Update, update_schedule)
                         .with_stage_after(CoreStage::Update, CoreStage::Render, render_schedule);
 
                 let renderer = Box::new(VkRenderer::new(
@@ -1092,8 +1095,14 @@ enum WindowCommand {
 
 #[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
 enum CoreStage {
+        Startup,
         Update,
         Render,
+}
+
+#[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
+enum StartupStage {
+        Startup,
 }
 
 #[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
