@@ -18,6 +18,7 @@ mod renderer;
 mod skybox;
 mod util;
 mod vk;
+mod window_manager;
 
 #[allow(unused_imports)]
 #[macro_use]

@@ -12,28 +12,32 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         components::{
-                ActiveCamera, AngularVelocity, Billboard, Children, DeltaTimeAccumulator, DirectionalLight, Force,
-                GlobalTransform, ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, Mass, OrbitalVelocity,
-                Parent, Player, PointLight, PreviousGlobalTransform, ProjectionCamera, Spotlight, TickTime, Transform,
-                UpdateBegin, Velocity,
+                ActiveCamera, ActiveCameraControlEnabled, AngularVelocity, Billboard, Children, DeltaTimeAccumulator,
+                DirectionalLight, Force, GlobalTransform, ImguiWantCaptureKeyboard, ImguiWantCaptureMouse,
+                InterpScalar, Mass, OrbitalVelocity, Parent, Player, PointLight, PreviousGlobalTransform,
+                ProjectionCamera, Spotlight, TickTime, Transform, UpdateBegin, Velocity,
         },
         constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
         hashmap::{GetOrInsertDefault, HashMap},
         imgui_util::{self},
         input_manager::{
-                ActionReceiver, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState, MouseMotionType,
+                ActionEvent, ActionStrength, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState,
+                MouseMotionType,
         },
         model_instance_manager::CreateModelInstanceFromName,
         my_glm::*,
         renderer::Renderer,
         skybox::Skybox,
         vk::vk_renderer::VkRenderer,
+        window_manager::WindowManager,
         AnyResult,
 };
 use bevy_ecs::{
+        event::Events,
         prelude::*,
         schedule::{RunOnce, ShouldRun},
+        system::{Command, SystemParam},
 };
 #[allow(unused_imports)]
 use log::{error, info, trace};
@@ -41,7 +45,6 @@ use serde::{Deserialize, Serialize};
 use winit::{
         event::{Event, StartCause, WindowEvent},
         event_loop::{ControlFlow, EventLoop},
-        monitor::VideoMode,
         window::{Fullscreen, Window, WindowBuilder},
 };
 
@@ -53,11 +56,8 @@ pub struct Application {
         world: World,
         schedule: Schedule,
         window: Rc<Window>,
-        window_state: WindowState,
         imgui_manager: ImguiManager,
         input_manager: InputManager,
-        dispatch_actions: bool,
-        action_receiver: ActionReceiver,
 
         renderer: Box<dyn Renderer>,
 
@@ -177,14 +177,6 @@ impl Application {
                         world.get_resource_mut::<ImguiWantCaptureMouse>().unwrap().0 = ui.io().want_capture_mouse;
                         world.get_resource_mut::<ImguiWantCaptureKeyboard>().unwrap().0 = ui.io().want_capture_keyboard;
                 });
-
-                let window_state = WindowState::new(
-                        &window,
-                        imgui_manager.imgui_context.io_mut(),
-                        WindowMode::Windowed,
-                        fullscreen_video_mode,
-                        CursorState::Normal,
-                );
                 trace!("Initialized ImGui");
 
                 let mut world = World::default();
@@ -209,15 +201,23 @@ impl Application {
 
                 world.insert_resource(asset_manager);
                 world.insert_resource(ControlFlow::Poll);
-                world.insert_resource(window_state.window_mode);
-                world.insert_resource(window_state.cursor_state);
-                world.insert_resource(Vec::<WindowCommand>::new());
+                world.insert_non_send(WindowManager::new(
+                        Rc::clone(&window),
+                        WindowMode::Windowed,
+                        fullscreen_video_mode,
+                        CursorState::Normal,
+                ));
 
                 world.insert_resource(DeltaTimeAccumulator(world.get_resource::<TickTime>().unwrap().0));
 
                 let startup_schedule = Schedule::default().with_run_criteria(RunOnce::default()).with_stage(
                         StartupStage::Startup,
                         SystemStage::parallel().with_system(spawn_entities),
+                );
+
+                let first_schedule = Schedule::default().with_stage(
+                        FirstStage::First,
+                        SystemStage::parallel().with_system(unfixed_action_handling_system),
                 );
 
                 let update_schedule = Schedule::default()
@@ -279,8 +279,9 @@ impl Application {
                                 ),
                 );
 
-                let mut schedule = Schedule::default()
+                let schedule = Schedule::default()
                         .with_stage(CoreStage::Startup, startup_schedule)
+                        .with_stage_after(CoreStage::Startup, CoreStage::First, first_schedule)
                         .with_stage_after(CoreStage::Startup, CoreStage::Update, update_schedule)
                         .with_stage_after(CoreStage::Update, CoreStage::Render, render_schedule);
 
@@ -290,8 +291,8 @@ impl Application {
                         asset_manager_event_rx,
                 )?);
 
-                let dispatch_actions = true;
-                let mut input_manager = InputManager::new(dispatch_actions);
+                world.insert_resource(Events::<ActionEvent>::default());
+                let mut input_manager = InputManager::new();
 
                 let mut input_map = InputBindingMap::new();
 
@@ -325,23 +326,14 @@ impl Application {
                 input_manager.push_input_binding_map(input_map);
                 trace!("Initialized InputManager");
 
-                world.insert_non_send(input_manager.create_action_receiver());
-                let action_receiver = input_manager.create_action_receiver();
-
-                world.insert_resource(UpdateBegin(Instant::now()));
-                schedule.run(&mut world);
-
                 Ok(Self {
                         event_loop: Some(event_loop),
                         target_tick_time: 1.0 / config.tps as f32,
                         world,
                         schedule,
                         window,
-                        window_state,
                         imgui_manager,
                         input_manager,
-                        dispatch_actions,
-                        action_receiver,
 
                         renderer,
 
@@ -355,6 +347,7 @@ impl Application {
 
         pub fn run(mut self) -> ! {
                 self.window.set_visible(true);
+                self.world.insert_resource(UpdateBegin(Instant::now()));
 
                 self.event_loop.take().unwrap().run(move |event, _, control_flow| {
                         *control_flow = ControlFlow::Poll;
@@ -462,8 +455,10 @@ impl Application {
                                 self.input_manager.on_modifiers_changed(modifiers_state)
                         } */
                         WindowEvent::Focused(focused) => {
-                                self.window_state.on_window_focused(focused, &self.window);
-                                self.input_manager.set_dispatch_actions(self.should_dispatch_actions());
+                                self.world
+                                        .get_non_send_resource_mut::<WindowManager>()
+                                        .unwrap()
+                                        .on_window_focused(focused);
                         },
                         WindowEvent::Resized(new_size) => {
                                 self.renderer.on_window_resize(new_size.width, new_size.height);
@@ -476,51 +471,31 @@ impl Application {
         }
 
         fn update(&mut self, control_flow: &mut ControlFlow) -> AnyResult<()> {
-                self.input_manager.set_dispatch_actions(self.should_dispatch_actions());
+                if self.should_dispatch_actions() {
+                        let new_action_events = self.input_manager.drain_events();
+                        let mut action_events = self.world.get_resource_mut::<Events<ActionEvent>>().unwrap();
+                        for new_action_event in new_action_events {
+                                action_events.send(new_action_event);
+                        }
 
-                let mut camera = self
+                        let pollable_actions = self.input_manager.poll_actions();
+                        self.world.insert_resource(PollableActions(pollable_actions));
+                }
+
+                let cursor_state = self
                         .world
-                        .entity_mut(self.world.get_resource::<ActiveCamera>().unwrap().0);
-                let mut camera_orien = camera.get_mut::<EulerAngles>().unwrap();
+                        .get_non_send_resource::<WindowManager>()
+                        .unwrap()
+                        .cursor_state();
+                self.world
+                        .insert_resource(ActiveCameraControlEnabled(cursor_state == CursorState::Hidden));
 
-                for (action_id, strength) in self.action_receiver.receive(self.delta_time) {
-                        if self.window_state.cursor_state != CursorState::Hidden {
-                                continue;
-                        }
-
-                        match action_id {
-                                YAW_POSITIVE => camera_orien.yaw_by(strength.0 * ROTATION_PER_SECOND),
-                                YAW_NEGATIVE => camera_orien.yaw_by(-strength.0 * ROTATION_PER_SECOND),
-                                PITCH_POSITIVE => camera_orien.pitch_by(strength.0 * ROTATION_PER_SECOND),
-                                PITCH_NEGATIVE => camera_orien.pitch_by(-strength.0 * ROTATION_PER_SECOND),
-                                ROLL_POSITIVE => camera_orien.roll_by(strength.0 * ROTATION_PER_SECOND),
-                                ROLL_NEGATIVE => camera_orien.roll_by(-strength.0 * ROTATION_PER_SECOND),
-                                _ => continue,
-                        }
-                }
-
-                // self.tps_counter.tick_and_map(|t| info!("TPS: {}", t));
                 self.schedule.run(&mut self.world);
-
-                *control_flow = *self.world.get_resource::<ControlFlow>().unwrap();
-
-                for window_command in self.world.get_resource_mut::<Vec<WindowCommand>>().unwrap().drain(..) {
-                        match window_command {
-                                WindowCommand::SetCursorState(cursor_state) => {
-                                        self.window_state.set_cursor_state(
-                                                &self.window,
-                                                self.imgui_manager.imgui_context.io_mut(),
-                                                cursor_state,
-                                        );
-                                },
-                                WindowCommand::SetWindowMode(window_mode) => {
-                                        self.window_state.set_window_mode(&self.window, window_mode);
-                                },
-                        }
-                }
 
                 let ui = self.imgui_manager.build_imgui_ui(&self.window, &mut self.world)?;
                 self.renderer.draw_world(&mut self.world, ui.render())?;
+
+                *control_flow = *self.world.get_resource::<ControlFlow>().unwrap();
 
                 Ok(())
         }
@@ -528,76 +503,14 @@ impl Application {
         fn should_dispatch_actions(&self) -> bool {
                 return !(self.world.get_resource::<ImguiWantCaptureMouse>().unwrap().0
                         || self.world.get_resource::<ImguiWantCaptureKeyboard>().unwrap().0
-                        || !self.window_state.has_focus);
+                        || !self.world
+                                .get_non_send_resource::<WindowManager>()
+                                .unwrap()
+                                .is_focused());
         }
 
         fn on_quit(&mut self) {
                 self.renderer.destroy().unwrap();
-        }
-}
-
-pub struct WindowState {
-        window_mode: WindowMode,
-        fullscreen_video_mode: VideoMode,
-        cursor_state: CursorState,
-        has_focus: bool,
-}
-
-impl WindowState {
-        fn new(
-                window: &Window,
-                imgui_io: &mut imgui::Io,
-                window_mode: WindowMode,
-                fullscreen_video_mode: VideoMode,
-                cursor_state: CursorState,
-        ) -> Self {
-                Self::set_cursor_state_inner(window, imgui_io, cursor_state);
-
-                Self {
-                        window_mode,
-                        fullscreen_video_mode,
-                        cursor_state,
-                        has_focus: true,
-                }
-        }
-
-        pub fn on_window_focused(&mut self, focused: bool, window: &Window) {
-                self.has_focus = focused;
-
-                if self.window_mode == WindowMode::Fullscreen {
-                        let window_mode = if focused {
-                                WindowMode::Fullscreen
-                        } else {
-                                WindowMode::Windowed
-                        };
-
-                        self.set_window_mode_silently(window, window_mode);
-                }
-        }
-
-        pub fn set_cursor_state(&mut self, window: &Window, imgui_io: &mut imgui::Io, cursor_state: CursorState) {
-                self.cursor_state = cursor_state;
-                Self::set_cursor_state_inner(window, imgui_io, cursor_state);
-        }
-
-        pub fn set_window_mode(&mut self, window: &Window, window_mode: WindowMode) {
-                self.window_mode = window_mode;
-                self.set_window_mode_silently(window, window_mode);
-        }
-
-        pub fn set_window_mode_silently(&mut self, window: &Window, window_mode: WindowMode) {
-                window.set_fullscreen(match window_mode {
-                        WindowMode::Windowed => None,
-                        WindowMode::Borderless => Some(Fullscreen::Borderless(None)),
-                        WindowMode::Fullscreen => Some(Fullscreen::Exclusive(self.fullscreen_video_mode.clone())),
-                });
-        }
-
-        fn set_cursor_state_inner(window: &Window, imgui_io: &mut imgui::Io, cursor_state: CursorState) {
-                window.set_cursor_visible(cursor_state != CursorState::Hidden);
-                window.set_cursor_grab(cursor_state == CursorState::Hidden).unwrap();
-                imgui_io.config_flags
-                        .set(imgui::ConfigFlags::NO_MOUSE, cursor_state == CursorState::Hidden);
         }
 }
 
@@ -637,6 +550,7 @@ fn spawn_entities(mut commands: Commands) {
                 })
                 .id();
         commands.insert_resource(ActiveCamera(player_head));
+        commands.insert_resource(ActiveCameraControlEnabled(true));
 
         let colt = commands
                 .spawn()
@@ -767,19 +681,16 @@ fn process_actions(
         tick_time: Res<TickTime>,
         player: Res<Player>,
         camera: Res<ActiveCamera>,
-        action_receiver: NonSend<ActionReceiver>,
+        mut actions: ActionReader,
         mut control_flow: ResMut<ControlFlow>,
-        mut window_mode: ResMut<WindowMode>,
-        mut cursor_state: ResMut<CursorState>,
-        // TODO: make commands by observing modifications to Res<WindowMode>, etc.
-        mut window_commands: ResMut<Vec<WindowCommand>>,
+        window_manager: NonSend<WindowManager>,
         global_transform_query: Query<&GlobalTransform>,
         mut transform_query: Query<&mut Transform>,
 ) {
         let mut desired_dir = Vec3::new(0.0, 0.0, 0.0);
 
-        for (action_id, strength) in action_receiver.receive(tick_time.0) {
-                match action_id {
+        for (action_id, strength) in actions.read(tick_time.0) {
+                match *action_id {
                         MOVE_FORWARD => desired_dir.z -= strength.0,
                         MOVE_BACKWARD => desired_dir.z += strength.0,
                         MOVE_RIGHTWARD => desired_dir.x += strength.0,
@@ -790,21 +701,21 @@ fn process_actions(
                                 *control_flow = ControlFlow::Exit;
                         },
                         TOGGLE_CURSOR => {
-                                *cursor_state = match *cursor_state {
+                                let new_cursor_state = match window_manager.cursor_state() {
                                         CursorState::Normal => CursorState::Hidden,
                                         CursorState::Hidden => CursorState::Normal,
                                 };
 
-                                window_commands.push(WindowCommand::SetCursorState(*cursor_state));
+                                commands.add(WindowCommand::SetCursorState(new_cursor_state));
                         },
                         CYCLE_WINDOW_MODE => {
-                                *window_mode = match *window_mode {
+                                let new_window_mode = match window_manager.window_mode() {
                                         WindowMode::Windowed => WindowMode::Borderless,
                                         WindowMode::Borderless => WindowMode::Fullscreen,
                                         WindowMode::Fullscreen => WindowMode::Windowed,
                                 };
 
-                                window_commands.push(WindowCommand::SetWindowMode(*window_mode));
+                                commands.add(WindowCommand::SetWindowMode(new_window_mode));
                         },
                         _ => (),
                 }
@@ -907,6 +818,55 @@ fn init_new_transforms(mut commands: Commands, new_transforms: Query<(Entity, &T
                 commands.entity(e).insert(GlobalTransform(*new_transform));
                 commands.entity(e).insert(PreviousGlobalTransform(*new_transform));
                 commands.entity(e).insert(InterpGlobalTransform(*new_transform));
+        }
+}
+
+fn unfixed_action_handling_system(
+        mut commands: Commands,
+        mut euler_angles_query: Query<&mut EulerAngles>,
+        mut actions: ActionReader,
+        active_camera: Res<ActiveCamera>,
+        camera_control_enabled: Res<ActiveCameraControlEnabled>,
+        tick_time: Res<TickTime>,
+) {
+        let mut camera_orien = euler_angles_query.get_mut(active_camera.0).unwrap();
+
+        for (action_id, strength) in actions.read(tick_time.0) {
+                // if self.window_state.cursor_state != CursorState::Hidden {
+                if !camera_control_enabled.0 {
+                        continue;
+                }
+
+                match *action_id {
+                        YAW_POSITIVE => camera_orien.yaw_by(strength.0 * ROTATION_PER_SECOND),
+                        YAW_NEGATIVE => camera_orien.yaw_by(-strength.0 * ROTATION_PER_SECOND),
+                        PITCH_POSITIVE => camera_orien.pitch_by(strength.0 * ROTATION_PER_SECOND),
+                        PITCH_NEGATIVE => camera_orien.pitch_by(-strength.0 * ROTATION_PER_SECOND),
+                        ROLL_POSITIVE => camera_orien.roll_by(strength.0 * ROTATION_PER_SECOND),
+                        ROLL_NEGATIVE => camera_orien.roll_by(-strength.0 * ROTATION_PER_SECOND),
+                        _ => continue,
+                }
+        }
+}
+
+struct PollableActions(pub HashMap<ActionId, ActionStrength>);
+
+#[derive(SystemParam)]
+struct ActionReader<'w, 's> {
+        action_events: EventReader<'w, 's, ActionEvent>,
+        pollable_actions: Res<'w, PollableActions>,
+}
+
+impl<'w, 's> ActionReader<'w, 's> {
+        pub fn read<'a>(&mut self, coefficient: f32) -> impl Iterator<Item = (&ActionId, ActionStrength)> + '_ {
+                let action_events = self.action_events.iter().map(|e| (&e.action_id, e.strength));
+                let pollable_actions = self
+                        .pollable_actions
+                        .0
+                        .iter()
+                        .map(move |(id, s)| (id, ActionStrength(s.0 * coefficient)));
+
+                pollable_actions.chain(action_events)
         }
 }
 
@@ -1093,8 +1053,20 @@ enum WindowCommand {
         SetWindowMode(WindowMode),
 }
 
+impl Command for WindowCommand {
+        fn write(self, world: &mut World) {
+                let mut window_manager = world.get_non_send_resource_mut::<WindowManager>().unwrap();
+
+                match self {
+                        WindowCommand::SetCursorState(cursor_state) => window_manager.set_cursor_state(cursor_state),
+                        WindowCommand::SetWindowMode(window_mode) => window_manager.set_window_mode(window_mode),
+                }
+        }
+}
+
 #[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
 enum CoreStage {
+        First,
         Startup,
         Update,
         Render,
@@ -1103,6 +1075,11 @@ enum CoreStage {
 #[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
 enum StartupStage {
         Startup,
+}
+
+#[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
+enum FirstStage {
+        First,
 }
 
 #[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]

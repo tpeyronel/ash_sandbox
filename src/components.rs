@@ -6,6 +6,8 @@ use crate::my_glm::*;
 
 pub struct Player(pub Entity);
 
+pub struct ActiveCameraControlEnabled(pub bool);
+
 pub struct ActiveCamera(pub Entity);
 
 pub struct TickTime(pub f32);

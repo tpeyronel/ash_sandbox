@@ -1,18 +1,11 @@
-use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self},
-        Arc, Mutex,
-};
-
 use crate::{
         actions::ActionId,
         constants::PIXELS_PER_UNIT,
         hashmap::{GetOrInsert, HashMap},
 };
 use enum_map::EnumMap;
-use log::error;
 #[allow(unused_imports)]
-use log::info;
+use log::{error, info};
 use winit::event::{DeviceEvent, KeyboardInput};
 
 pub type KeyCode = winit::event::VirtualKeyCode;
@@ -32,76 +25,46 @@ const KEY_ACTION_STRENGTH: ActionStrength = ActionStrength(1.0);
 pub struct InputManager {
         binding_map: InputBindingMap,
 
-        action_event_senders: Vec<mpsc::Sender<ActionEvent>>,
-        pollable_actions: Arc<Mutex<HashMap<ActionId, ActionStrength>>>,
+        action_events: Vec<ActionEvent>,
+        pollable_actions: HashMap<ActionId, ActionStrength>,
 
         mouse_input_processor: MouseInputProcessor,
         keyboard_input_processor: KeyboardInputProcessor,
-
-        should_dispatch_actions: bool,
-        should_poll_actions: Arc<AtomicBool>,
 }
 
 impl InputManager {
-        pub fn new(should_dispatch_actions: bool) -> Self {
+        pub fn new() -> Self {
                 Self {
                         binding_map: InputBindingMap::new(),
 
-                        action_event_senders: Vec::new(),
-                        pollable_actions: Arc::new(Mutex::new(HashMap::new())),
+                        action_events: Vec::new(),
+                        pollable_actions: HashMap::new(),
 
                         mouse_input_processor: MouseInputProcessor::new(),
                         keyboard_input_processor: KeyboardInputProcessor::new(),
-
-                        should_dispatch_actions,
-                        should_poll_actions: Arc::new(AtomicBool::new(should_dispatch_actions)),
                 }
-        }
-
-        pub fn set_dispatch_actions(&mut self, dispatch_actions: bool) {
-                self.should_dispatch_actions = dispatch_actions;
-                self.should_poll_actions.store(dispatch_actions, Ordering::Relaxed);
-        }
-
-        pub fn create_action_receiver(&mut self) -> ActionReceiver {
-                let (action_events_tx, action_events_rx) = mpsc::channel();
-
-                self.action_event_senders.push(action_events_tx);
-
-                ActionReceiver::new(
-                        Arc::clone(&self.should_poll_actions),
-                        self.pollable_actions.clone(),
-                        action_events_rx,
-                )
         }
 
         pub fn push_input_binding_map(&mut self, map: InputBindingMap) {
                 self.binding_map = map;
         }
 
+        pub fn drain_events(&mut self) -> Vec<ActionEvent> {
+                std::mem::replace(&mut self.action_events, Vec::new())
+        }
+
+        pub fn poll_actions(&mut self) -> HashMap<ActionId, ActionStrength> {
+                self.pollable_actions.clone()
+        }
+
         pub fn on_device_event(&mut self, device_event: &DeviceEvent) {
-                let action_events_senders = &self.action_event_senders;
-                let should_dispatch_actions = self.should_dispatch_actions;
-
-                let mut dispatch_action = |action_event: ActionEvent| {
-                        if !should_dispatch_actions {
-                                return;
-                        }
-
-                        for tx in action_events_senders {
-                                if let Err(err) = tx.send(action_event.clone()) {
-                                        error!("Error occurred sending action event: {}", err);
-                                }
-                        }
-                };
-
                 match device_event {
                         DeviceEvent::MouseMotion { delta: (dx, dy) } => {
                                 self.mouse_input_processor.process_mouse_motion(
-                                        &self.binding_map.mouse_bindings,
                                         *dx as f32,
                                         -*dy as f32,
-                                        &mut dispatch_action,
+                                        &self.binding_map.mouse_bindings,
+                                        &mut self.action_events,
                                 );
                         },
                         DeviceEvent::MouseWheel { .. } => (),
@@ -109,10 +72,10 @@ impl InputManager {
                         DeviceEvent::Button { .. } => (),
                         DeviceEvent::Key(input) => {
                                 self.keyboard_input_processor.process_keyboard_input(
-                                        &self.binding_map.key_bindings,
-                                        &self.pollable_actions,
                                         input,
-                                        &mut dispatch_action,
+                                        &self.binding_map.key_bindings,
+                                        &mut self.pollable_actions,
+                                        &mut self.action_events,
                                 );
                         },
                         _ => (),
@@ -171,47 +134,6 @@ impl<'a> IntoIterator for &'a KeyboardState {
                         .iter()
                         .enumerate()
                         .map(f as fn((usize, &KeyState)) -> (KeyCode, KeyState))
-        }
-}
-
-pub struct ActionReceiver {
-        should_poll_actions: Arc<AtomicBool>,
-        pollable_actions: Arc<Mutex<HashMap<ActionId, ActionStrength>>>,
-        action_events: mpsc::Receiver<ActionEvent>,
-}
-
-impl ActionReceiver {
-        pub fn new(
-                should_poll_actions: Arc<AtomicBool>,
-                pollable_actions: Arc<Mutex<HashMap<ActionId, ActionStrength>>>,
-                action_events: mpsc::Receiver<ActionEvent>,
-        ) -> Self {
-                Self {
-                        should_poll_actions,
-                        pollable_actions,
-                        action_events,
-                }
-        }
-
-        pub fn receive(&self, delta_time: f32) -> Vec<(ActionId, ActionStrength)> {
-                let action_events = self.action_events.try_iter().map(|e| (e.action_id, e.strength));
-
-                self.poll_actions()
-                        .into_iter()
-                        .map(|(id, s)| (id, ActionStrength(s.0 * delta_time)))
-                        .chain(action_events)
-                        .collect()
-        }
-
-        fn poll_actions(&self) -> HashMap<ActionId, ActionStrength> {
-                if self.should_poll_actions.load(Ordering::Relaxed) {
-                        self.pollable_actions
-                                .lock()
-                                .expect("Failed to lock pollable actions!")
-                                .clone()
-                } else {
-                        HashMap::new()
-                }
         }
 }
 
@@ -288,10 +210,10 @@ impl KeyboardInputProcessor {
 
         fn process_keyboard_input(
                 &mut self,
-                key_bindings: &KeyBindings,
-                pollable_actions: &Mutex<HashMap<ActionId, ActionStrength>>,
                 input: &KeyboardInput,
-                dispatch_action: &mut impl FnMut(ActionEvent),
+                key_bindings: &KeyBindings,
+                pollable_actions: &mut HashMap<ActionId, ActionStrength>,
+                action_events: &mut Vec<ActionEvent>,
         ) {
                 let key_code = match input.virtual_keycode {
                         Some(kc) => kc,
@@ -311,28 +233,21 @@ impl KeyboardInputProcessor {
                 match binding.key_binding_type {
                         KeyBindingType::Simple(activator_state) => {
                                 if activator_state == input.state {
-                                        dispatch_action(ActionEvent {
+                                        action_events.push(ActionEvent {
                                                 action_id: binding.action_id.clone(),
                                                 strength: KEY_ACTION_STRENGTH,
                                         });
                                 }
                         },
-                        KeyBindingType::Continuous => {
-                                let mut pollable_actions = pollable_actions
-                                        .lock()
-                                        .expect("Error ocurred locking pollable actions!");
-
-                                match input.state {
-                                        KeyState::Pressed => {
-                                                *pollable_actions.get_mut_or_insert(
-                                                        &binding.action_id,
-                                                        ActionStrength::default(),
-                                                ) = KEY_ACTION_STRENGTH;
-                                        },
-                                        KeyState::Released => {
-                                                pollable_actions.remove(&binding.action_id);
-                                        },
-                                }
+                        KeyBindingType::Continuous => match input.state {
+                                KeyState::Pressed => {
+                                        *pollable_actions
+                                                .get_mut_or_insert(&binding.action_id, ActionStrength::default()) =
+                                                KEY_ACTION_STRENGTH;
+                                },
+                                KeyState::Released => {
+                                        pollable_actions.remove(&binding.action_id);
+                                },
                         },
                 }
         }
@@ -390,17 +305,17 @@ impl MouseInputProcessor {
 
         fn process_mouse_motion(
                 &mut self,
-                mouse_bindings: &MouseBindings,
                 dx: f32,
                 dy: f32,
-                dispatch_action: &mut impl FnMut(ActionEvent),
+                mouse_bindings: &MouseBindings,
+                action_events: &mut Vec<ActionEvent>,
         ) {
                 if let Some(motion_type) = Self::resolve_motion_type(MouseMotionAxis::X, dx) {
-                        self.process_directional_motion(mouse_bindings, motion_type, dx.abs(), dispatch_action)
+                        self.process_directional_motion(mouse_bindings, motion_type, dx.abs(), action_events)
                 }
 
                 if let Some(motion_type) = Self::resolve_motion_type(MouseMotionAxis::Y, dy) {
-                        self.process_directional_motion(mouse_bindings, motion_type, dy.abs(), dispatch_action)
+                        self.process_directional_motion(mouse_bindings, motion_type, dy.abs(), action_events)
                 }
         }
 
@@ -422,7 +337,7 @@ impl MouseInputProcessor {
                 mouse_bindings: &MouseBindings,
                 motion_type: MouseMotionType,
                 delta: f32,
-                dispatch_action: &mut impl FnMut(ActionEvent),
+                action_events: &mut Vec<ActionEvent>,
         ) {
                 let binding = match mouse_bindings.get_motion_binding(motion_type) {
                         Some(binding) => binding,
@@ -440,16 +355,18 @@ impl MouseInputProcessor {
                                 *accumulator -= quotient;
 
                                 for _ in 0..quotient as u32 {
-                                        dispatch_action(ActionEvent {
+                                        action_events.push(ActionEvent {
                                                 action_id: binding.action_id.clone(),
                                                 strength,
-                                        })
+                                        });
                                 }
                         },
-                        None => dispatch_action(ActionEvent {
-                                action_id: binding.action_id.clone(),
-                                strength,
-                        }),
+                        None => {
+                                action_events.push(ActionEvent {
+                                        action_id: binding.action_id.clone(),
+                                        strength,
+                                });
+                        },
                 }
         }
 }
