@@ -12,7 +12,9 @@ pub struct ActiveCamera(pub Entity);
 
 pub struct TickTime(pub f32);
 
-pub struct DeltaTimeAccumulator(pub f32);
+pub struct UpdateTime(pub f32);
+
+pub struct UpdateTimeAccumulator(pub f32);
 
 pub struct UpdateBegin(pub Instant);
 

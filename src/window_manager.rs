@@ -19,11 +19,12 @@ pub struct WindowManager {
 impl WindowManager {
         pub fn new(
                 window: Rc<Window>,
-                window_mode: WindowMode,
                 fullscreen_video_mode: VideoMode,
+                window_mode: WindowMode,
                 cursor_state: CursorState,
         ) -> Self {
                 Self::set_cursor_state_inner(&window, cursor_state);
+                Self::set_window_mode_inner(&window, &fullscreen_video_mode, window_mode);
 
                 Self {
                         window,
@@ -36,14 +37,6 @@ impl WindowManager {
 
         pub fn is_focused(&self) -> bool {
                 self.has_focus
-        }
-
-        pub fn window_mode(&self) -> WindowMode {
-                self.window_mode
-        }
-
-        pub fn cursor_state(&self) -> CursorState {
-                self.cursor_state
         }
 
         pub fn on_window_focused(&mut self, focused: bool) {
@@ -71,17 +64,19 @@ impl WindowManager {
         }
 
         pub fn set_window_mode_silently(&mut self, window_mode: WindowMode) {
-                self.window.set_fullscreen(match window_mode {
-                        WindowMode::Windowed => None,
-                        WindowMode::Borderless => Some(Fullscreen::Borderless(None)),
-                        WindowMode::Fullscreen => Some(Fullscreen::Exclusive(self.fullscreen_video_mode.clone())),
-                });
+                Self::set_window_mode_inner(&self.window, &self.fullscreen_video_mode, window_mode);
         }
 
         fn set_cursor_state_inner(window: &Window, cursor_state: CursorState) {
                 window.set_cursor_visible(cursor_state != CursorState::Hidden);
                 window.set_cursor_grab(cursor_state == CursorState::Hidden).unwrap();
-                // imgui_io.config_flags
-                //         .set(imgui::ConfigFlags::NO_MOUSE, cursor_state == CursorState::Hidden);
+        }
+
+        fn set_window_mode_inner(window: &Window, fullscreen_video_mode: &VideoMode, window_mode: WindowMode) {
+                window.set_fullscreen(match window_mode {
+                        WindowMode::Windowed => None,
+                        WindowMode::Borderless => Some(Fullscreen::Borderless(None)),
+                        WindowMode::Fullscreen => Some(Fullscreen::Exclusive(fullscreen_video_mode.clone())),
+                });
         }
 }

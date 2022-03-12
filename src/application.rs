@@ -12,15 +12,15 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         components::{
-                ActiveCamera, ActiveCameraControlEnabled, AngularVelocity, Billboard, Children, DeltaTimeAccumulator,
-                DirectionalLight, Force, GlobalTransform, ImguiWantCaptureKeyboard, ImguiWantCaptureMouse,
-                InterpScalar, Mass, OrbitalVelocity, Parent, Player, PointLight, PreviousGlobalTransform,
-                ProjectionCamera, Spotlight, TickTime, Transform, UpdateBegin, Velocity,
+                ActiveCamera, ActiveCameraControlEnabled, AngularVelocity, Billboard, Children, DirectionalLight,
+                Force, GlobalTransform, ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, Mass,
+                OrbitalVelocity, Parent, Player, PointLight, PreviousGlobalTransform, ProjectionCamera, Spotlight,
+                TickTime, Transform, UpdateBegin, UpdateTime, UpdateTimeAccumulator, Velocity,
         },
         constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
         hashmap::{GetOrInsertDefault, HashMap},
-        imgui_util::{self},
+        imgui_util,
         input_manager::{
                 ActionEvent, ActionStrength, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState,
                 MouseMotionType,
@@ -37,13 +37,13 @@ use bevy_ecs::{
         event::Events,
         prelude::*,
         schedule::{RunOnce, ShouldRun},
-        system::{Command, SystemParam},
+        system::SystemParam,
 };
 #[allow(unused_imports)]
 use log::{error, info, trace};
 use serde::{Deserialize, Serialize};
 use winit::{
-        event::{Event, StartCause, WindowEvent},
+        event::{Event, WindowEvent},
         event_loop::{ControlFlow, EventLoop},
         window::{Fullscreen, Window, WindowBuilder},
 };
@@ -56,7 +56,6 @@ pub struct Application {
         world: World,
         schedule: Schedule,
         window: Rc<Window>,
-        imgui_manager: ImguiManager,
         input_manager: InputManager,
 
         renderer: Box<dyn Renderer>,
@@ -180,6 +179,7 @@ impl Application {
                 trace!("Initialized ImGui");
 
                 let mut world = World::default();
+                world.insert_non_send(imgui_manager);
                 world.insert_resource(TickTime(1.0 / config.tps as f32));
                 world.insert_resource(ImguiWantCaptureMouse(false));
                 world.insert_resource(ImguiWantCaptureKeyboard(false));
@@ -201,14 +201,20 @@ impl Application {
 
                 world.insert_resource(asset_manager);
                 world.insert_resource(ControlFlow::Poll);
+
+                let cursor_state = CursorState::Normal;
+                let window_mode = WindowMode::Windowed;
+                world.insert_resource(cursor_state);
+                world.insert_resource(window_mode);
                 world.insert_non_send(WindowManager::new(
                         Rc::clone(&window),
-                        WindowMode::Windowed,
                         fullscreen_video_mode,
-                        CursorState::Normal,
+                        window_mode,
+                        cursor_state,
                 ));
 
-                world.insert_resource(DeltaTimeAccumulator(world.get_resource::<TickTime>().unwrap().0));
+                world.insert_resource(UpdateTime(0.0));
+                world.insert_resource(UpdateTimeAccumulator(world.get_resource::<TickTime>().unwrap().0));
 
                 let startup_schedule = Schedule::default().with_run_criteria(RunOnce::default()).with_stage(
                         StartupStage::Startup,
@@ -217,7 +223,14 @@ impl Application {
 
                 let first_schedule = Schedule::default().with_stage(
                         FirstStage::First,
-                        SystemStage::parallel().with_system(unfixed_action_handling_system),
+                        SystemStage::parallel()
+                                .with_system(camera_control_system.label("camera-control-system"))
+                                .with_system(
+                                        unfixed_action_handling_system
+                                                .label("unfixed-action-handling-system")
+                                                .after("camera-control-system"),
+                                )
+                                .with_system(delta_time_system.label("delta-time-system")),
                 );
 
                 let update_schedule = Schedule::default()
@@ -271,6 +284,7 @@ impl Application {
                 let render_schedule = Schedule::default().with_stage(
                         RenderStage::Render,
                         SystemStage::parallel()
+                                .with_system(window_system.label("window-system"))
                                 .with_system(apply_euler_angles.label("apply-euler-angles"))
                                 .with_system(
                                         interpolate_transforms
@@ -287,7 +301,7 @@ impl Application {
 
                 let renderer = Box::new(VkRenderer::new(
                         Rc::clone(&window),
-                        &mut imgui_manager.imgui_context,
+                        &mut world.get_non_send_resource_mut::<ImguiManager>().unwrap().imgui_context,
                         asset_manager_event_rx,
                 )?);
 
@@ -332,7 +346,6 @@ impl Application {
                         world,
                         schedule,
                         window,
-                        imgui_manager,
                         input_manager,
 
                         renderer,
@@ -421,12 +434,12 @@ impl Application {
                 event: winit::event::Event<'_, ()>,
                 control_flow: &mut ControlFlow,
         ) -> AnyResult<()> {
-                self.imgui_manager.handle_winit_event(&self.window, &event);
+                self.world
+                        .get_non_send_resource_mut::<ImguiManager>()
+                        .unwrap()
+                        .handle_winit_event(&self.window, &event);
 
                 match event {
-                        Event::NewEvents(start_cause) => {
-                                self.on_new_events(start_cause);
-                        },
                         Event::DeviceEvent { event, .. } => {
                                 self.input_manager.on_device_event(&event);
                         },
@@ -439,14 +452,6 @@ impl Application {
                 }
 
                 Ok(())
-        }
-
-        fn on_new_events(&mut self, _start_cause: StartCause) {
-                let previous_frame_begin = std::mem::replace(&mut self.frame_begin, Instant::now());
-                let delta_time = self.frame_begin - previous_frame_begin;
-
-                self.delta_time = delta_time.as_secs_f32();
-                self.imgui_manager.on_delta_time_updated(delta_time);
         }
 
         fn on_window_event(&mut self, window_event: WindowEvent, control_flow: &mut ControlFlow) {
@@ -471,33 +476,37 @@ impl Application {
         }
 
         fn update(&mut self, control_flow: &mut ControlFlow) -> AnyResult<()> {
-                if self.should_dispatch_actions() {
+                self.dispatch_actions_to_world();
+
+                self.schedule.run(&mut self.world);
+
+                let mut imgui_manager = self.world.remove_non_send::<ImguiManager>().unwrap();
+                let ui = imgui_manager.build_imgui_ui(&self.window, &mut self.world)?;
+                self.renderer.draw_world(&mut self.world, ui.render())?;
+                self.world.insert_non_send(imgui_manager);
+
+                *control_flow = *self.world.get_resource::<ControlFlow>().unwrap();
+
+                Ok(())
+        }
+
+        fn dispatch_actions_to_world(&mut self) {
+                let should_dispatch_actions = self.should_dispatch_actions();
+
+                if should_dispatch_actions {
                         let new_action_events = self.input_manager.drain_events();
                         let mut action_events = self.world.get_resource_mut::<Events<ActionEvent>>().unwrap();
                         for new_action_event in new_action_events {
                                 action_events.send(new_action_event);
                         }
-
-                        let pollable_actions = self.input_manager.poll_actions();
-                        self.world.insert_resource(PollableActions(pollable_actions));
                 }
 
-                let cursor_state = self
-                        .world
-                        .get_non_send_resource::<WindowManager>()
-                        .unwrap()
-                        .cursor_state();
-                self.world
-                        .insert_resource(ActiveCameraControlEnabled(cursor_state == CursorState::Hidden));
-
-                self.schedule.run(&mut self.world);
-
-                let ui = self.imgui_manager.build_imgui_ui(&self.window, &mut self.world)?;
-                self.renderer.draw_world(&mut self.world, ui.render())?;
-
-                *control_flow = *self.world.get_resource::<ControlFlow>().unwrap();
-
-                Ok(())
+                let pollable_actions = if should_dispatch_actions {
+                        self.input_manager.poll_actions()
+                } else {
+                        HashMap::new()
+                };
+                self.world.insert_resource(PollableActions(pollable_actions));
         }
 
         fn should_dispatch_actions(&self) -> bool {
@@ -658,15 +667,23 @@ fn spawn_entities(mut commands: Commands) {
                 .id();
 }
 
-fn should_update(
+fn delta_time_system(
         mut update_begin: ResMut<UpdateBegin>,
-        mut accumulator: ResMut<DeltaTimeAccumulator>,
+        mut update_time: ResMut<UpdateTime>,
+        mut imgui_manager: NonSendMut<ImguiManager>,
+) {
+        let prev_update_begin = std::mem::replace(&mut update_begin.0, Instant::now());
+        let dt = update_begin.0 - prev_update_begin;
+        update_time.0 = dt.as_secs_f32();
+        imgui_manager.on_delta_time_updated(dt);
+}
+
+fn should_update(
+        mut accumulator: ResMut<UpdateTimeAccumulator>,
+        update_time: Res<UpdateTime>,
         tick_time: Res<TickTime>,
 ) -> ShouldRun {
-        let prev_update_begin = std::mem::replace(&mut update_begin.0, Instant::now());
-        let time_since_last_update = (update_begin.0 - prev_update_begin).as_secs_f32();
-
-        accumulator.0 += time_since_last_update;
+        accumulator.0 += update_time.0;
 
         if accumulator.0 >= tick_time.0 {
                 accumulator.0 -= tick_time.0;
@@ -683,7 +700,8 @@ fn process_actions(
         camera: Res<ActiveCamera>,
         mut actions: ActionReader,
         mut control_flow: ResMut<ControlFlow>,
-        window_manager: NonSend<WindowManager>,
+        mut cursor_state: ResMut<CursorState>,
+        mut window_mode: ResMut<WindowMode>,
         global_transform_query: Query<&GlobalTransform>,
         mut transform_query: Query<&mut Transform>,
 ) {
@@ -701,21 +719,17 @@ fn process_actions(
                                 *control_flow = ControlFlow::Exit;
                         },
                         TOGGLE_CURSOR => {
-                                let new_cursor_state = match window_manager.cursor_state() {
+                                *cursor_state = match *cursor_state {
                                         CursorState::Normal => CursorState::Hidden,
                                         CursorState::Hidden => CursorState::Normal,
                                 };
-
-                                commands.add(WindowCommand::SetCursorState(new_cursor_state));
                         },
                         CYCLE_WINDOW_MODE => {
-                                let new_window_mode = match window_manager.window_mode() {
+                                *window_mode = match *window_mode {
                                         WindowMode::Windowed => WindowMode::Borderless,
                                         WindowMode::Borderless => WindowMode::Fullscreen,
                                         WindowMode::Fullscreen => WindowMode::Windowed,
                                 };
-
-                                commands.add(WindowCommand::SetWindowMode(new_window_mode));
                         },
                         _ => (),
                 }
@@ -821,17 +835,28 @@ fn init_new_transforms(mut commands: Commands, new_transforms: Query<(Entity, &T
         }
 }
 
+fn camera_control_system(
+        cursor_state: Res<CursorState>,
+        mut camera_control_enabled: ResMut<ActiveCameraControlEnabled>,
+) {
+        let enable_camera_control = *cursor_state == CursorState::Hidden;
+
+        if camera_control_enabled.0 != enable_camera_control {
+                camera_control_enabled.0 = enable_camera_control;
+        }
+}
+
 fn unfixed_action_handling_system(
         mut commands: Commands,
         mut euler_angles_query: Query<&mut EulerAngles>,
         mut actions: ActionReader,
         active_camera: Res<ActiveCamera>,
         camera_control_enabled: Res<ActiveCameraControlEnabled>,
-        tick_time: Res<TickTime>,
+        update_time: Res<UpdateTime>,
 ) {
         let mut camera_orien = euler_angles_query.get_mut(active_camera.0).unwrap();
 
-        for (action_id, strength) in actions.read(tick_time.0) {
+        for (action_id, strength) in actions.read(update_time.0) {
                 // if self.window_state.cursor_state != CursorState::Hidden {
                 if !camera_control_enabled.0 {
                         continue;
@@ -886,6 +911,27 @@ fn persist_transforms(mut transforms: Query<(&GlobalTransform, &mut PreviousGlob
         }
 }
 
+fn window_system(
+        mut window_manager: NonSendMut<WindowManager>,
+        mut imgui_manager: NonSendMut<ImguiManager>,
+        window_mode: Res<WindowMode>,
+        cursor_state: Res<CursorState>,
+) {
+        if window_mode.is_changed() {
+                window_manager.set_window_mode(*window_mode);
+        }
+
+        if cursor_state.is_changed() {
+                window_manager.set_cursor_state(*cursor_state);
+
+                imgui_manager
+                        .imgui_context
+                        .io_mut()
+                        .config_flags
+                        .set(imgui::ConfigFlags::NO_MOUSE, *cursor_state == CursorState::Hidden);
+        }
+}
+
 fn apply_euler_angles(mut query: Query<(&EulerAngles, &mut Transform)>) {
         for (euler_angles, mut transform) in query.iter_mut() {
                 transform.rotation = euler_angles.to_quat();
@@ -929,7 +975,7 @@ fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transfo
 
 fn interpolate_transforms(
         mut query: Query<(&PreviousGlobalTransform, &GlobalTransform, &mut InterpGlobalTransform)>,
-        accumulator: Res<DeltaTimeAccumulator>,
+        accumulator: Res<UpdateTimeAccumulator>,
         tick_time: Res<TickTime>,
         euler_angles_query: Query<&EulerAngles>,
         parent_query: Query<&Parent>,
@@ -1047,22 +1093,6 @@ impl ImguiManager {
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct InterpGlobalTransform(pub Transform);
-
-enum WindowCommand {
-        SetCursorState(CursorState),
-        SetWindowMode(WindowMode),
-}
-
-impl Command for WindowCommand {
-        fn write(self, world: &mut World) {
-                let mut window_manager = world.get_non_send_resource_mut::<WindowManager>().unwrap();
-
-                match self {
-                        WindowCommand::SetCursorState(cursor_state) => window_manager.set_cursor_state(cursor_state),
-                        WindowCommand::SetWindowMode(window_mode) => window_manager.set_window_mode(window_mode),
-                }
-        }
-}
 
 #[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
 enum CoreStage {
