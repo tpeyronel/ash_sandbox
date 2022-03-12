@@ -12,10 +12,11 @@ use crate::{
         application_config::ApplicationConfig,
         asset_manager::*,
         components::{
-                ActiveCamera, ActiveCameraControlEnabled, AngularVelocity, Billboard, Children, DirectionalLight,
-                Force, GlobalTransform, ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, Mass,
-                OrbitalVelocity, Parent, Player, PointLight, PreviousGlobalTransform, ProjectionCamera, Spotlight,
-                TickTime, Transform, UpdateBegin, UpdateTime, UpdateTimeAccumulator, Velocity,
+                ActiveCamera, ActiveCameraControlEnabled, AngularVelocity, Billboard, Children, ClearWorldTrackers,
+                DirectionalLight, Force, GlobalTransform, ImguiWantCaptureKeyboard, ImguiWantCaptureMouse,
+                InterpScalar, Mass, OrbitalVelocity, Parent, Player, PointLight, PreviousGlobalTransform,
+                ProjectionCamera, Spotlight, TickTime, Transform, UpdateBegin, UpdateTime, UpdateTimeAccumulator,
+                Velocity,
         },
         constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
@@ -487,14 +488,18 @@ impl Application {
 
                 *control_flow = *self.world.get_resource::<ControlFlow>().unwrap();
 
+                if let Some(_) = self.world.remove_resource::<ClearWorldTrackers>() {
+                        self.world.clear_trackers();
+                }
+
                 Ok(())
         }
 
         fn dispatch_actions_to_world(&mut self) {
                 let should_dispatch_actions = self.should_dispatch_actions();
 
+                let new_action_events = self.input_manager.drain_events();
                 if should_dispatch_actions {
-                        let new_action_events = self.input_manager.drain_events();
                         let mut action_events = self.world.get_resource_mut::<Events<ActionEvent>>().unwrap();
                         for new_action_event in new_action_events {
                                 action_events.send(new_action_event);
@@ -510,12 +515,22 @@ impl Application {
         }
 
         fn should_dispatch_actions(&self) -> bool {
-                return !(self.world.get_resource::<ImguiWantCaptureMouse>().unwrap().0
-                        || self.world.get_resource::<ImguiWantCaptureKeyboard>().unwrap().0
-                        || !self.world
-                                .get_non_send_resource::<WindowManager>()
-                                .unwrap()
-                                .is_focused());
+                let window_manager = self.world.get_non_send_resource::<WindowManager>().unwrap();
+                if !window_manager.is_focused() {
+                        return false;
+                }
+
+                // Check with cursor state needed due to bug with imgui
+                let is_cursor_visible = window_manager.cursor_state() == CursorState::Normal;
+                if is_cursor_visible && self.world.get_resource::<ImguiWantCaptureMouse>().unwrap().0 {
+                        return false;
+                }
+
+                if self.world.get_resource::<ImguiWantCaptureKeyboard>().unwrap().0 {
+                        return false;
+                }
+
+                return true;
         }
 
         fn on_quit(&mut self) {
@@ -611,8 +626,8 @@ fn spawn_entities(mut commands: Commands) {
         let billboard = commands
                 .spawn()
                 .insert(Transform {
-                        translation: Vec3::new(0.0, 0.5, 0.0),
-                        scale: Vec3::new(1.0, 0.5, 1.0),
+                        translation: Vec3::new(0.0, 0.25, 0.0),
+                        scale: Vec3::splat(0.5) * Vec3::new(1.0, 0.25, 1.0),
                         ..Transform::identity()
                 })
                 .insert(Billboard)
@@ -621,6 +636,21 @@ fn spawn_entities(mut commands: Commands) {
 
         commands.add(CreateModelInstanceFromName {
                 entity: billboard,
+                model_name: "landscape".to_string(),
+        });
+
+        let static_billboard = commands
+                .spawn()
+                .insert(Transform {
+                        translation: Vec3::new(0.0, 1.5, 0.0),
+                        scale: Vec3::splat(2.5) * Vec3::new(1.0, 0.5, 1.0),
+                        ..Transform::identity()
+                })
+                .insert(Billboard)
+                .id();
+
+        commands.add(CreateModelInstanceFromName {
+                entity: static_billboard,
                 model_name: "landscape".to_string(),
         });
 
@@ -679,6 +709,7 @@ fn delta_time_system(
 }
 
 fn should_update(
+        mut commands: Commands,
         mut accumulator: ResMut<UpdateTimeAccumulator>,
         update_time: Res<UpdateTime>,
         tick_time: Res<TickTime>,
@@ -687,6 +718,7 @@ fn should_update(
 
         if accumulator.0 >= tick_time.0 {
                 accumulator.0 -= tick_time.0;
+                commands.insert_resource(ClearWorldTrackers);
                 ShouldRun::Yes
         } else {
                 ShouldRun::No

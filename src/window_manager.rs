@@ -39,6 +39,10 @@ impl WindowManager {
                 self.has_focus
         }
 
+        pub fn cursor_state(&self) -> CursorState {
+                self.cursor_state
+        }
+
         pub fn on_window_focused(&mut self, focused: bool) {
                 self.has_focus = focused;
 

@@ -18,6 +18,8 @@ pub struct UpdateTimeAccumulator(pub f32);
 
 pub struct UpdateBegin(pub Instant);
 
+pub struct ClearWorldTrackers;
+
 pub struct InterpScalar(pub f32);
 
 pub struct ImguiWantCaptureMouse(pub bool);
