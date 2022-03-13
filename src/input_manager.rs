@@ -49,6 +49,8 @@ impl InputManager {
                 self.binding_map = map;
                 self.keyboard_input_processor
                         .set_key_bindings(self.binding_map.key_bindings.clone());
+                self.mouse_input_processor
+                        .set_mouse_bindings(self.binding_map.mouse_bindings.clone());
         }
 
         pub fn drain_events(&mut self) -> Vec<ActionEvent> {
@@ -80,21 +82,18 @@ impl InputManager {
         pub fn on_device_event(&mut self, device_event: &DeviceEvent) {
                 match device_event {
                         DeviceEvent::MouseMotion { delta: (dx, dy) } => {
-                                let new_action_events = self.mouse_input_processor.process_mouse_motion(
+                                self.mouse_input_processor.process_mouse_motion(
                                         *dx as f32,
                                         -*dy as f32,
-                                        &self.binding_map.mouse_bindings,
+                                        &mut self.action_events,
                                 );
-
-                                self.action_events.extend(new_action_events);
                         },
                         DeviceEvent::MouseWheel { .. } => (),
                         DeviceEvent::Motion { .. } => (),
                         DeviceEvent::Button { .. } => (),
                         DeviceEvent::Key(input) => {
-                                let new_action_events = self.keyboard_input_processor.process_keyboard_input(input);
-
-                                self.action_events.extend(new_action_events);
+                                self.keyboard_input_processor
+                                        .process_keyboard_input(input, &mut self.action_events);
                         },
                         _ => (),
                 }
@@ -278,50 +277,51 @@ impl KeyboardInputProcessor {
                 }
         }
 
-        fn process_keyboard_input(&mut self, input: &KeyboardInput) -> Vec<ActionEvent> {
+        fn process_keyboard_input(&mut self, input: &KeyboardInput, action_events: &mut Vec<ActionEvent>) {
                 let key_code = match input.virtual_keycode {
                         Some(kc) => kc,
-                        None => return Vec::new(),
+                        None => return,
                 };
 
                 // Key repeat, ignore
                 if self.keyboard_state[key_code] == input.state {
-                        return Vec::new();
+                        return;
                 }
 
                 self.keyboard_state[key_code] = input.state;
 
                 let binding = match self.key_bindings.get(key_code) {
                         Some(b) => b,
-                        None => return Vec::new(),
+                        None => return,
                 };
 
                 match binding.key_binding_type {
                         KeyBindingType::Simple(activator_state) => {
-                                if self.enabled && activator_state == input.state {
-                                        vec![ActionEvent {
+                                if !self.enabled {
+                                        return;
+                                }
+
+                                if activator_state == input.state {
+                                        action_events.push(ActionEvent {
                                                 action_id: binding.action_id.clone(),
                                                 strength: KEY_ACTION_STRENGTH,
-                                        }]
-                                } else {
-                                        Vec::new()
+                                        })
                                 }
                         },
                         KeyBindingType::Continuous => match input.state {
                                 KeyState::Pressed => {
                                         self.pollable_actions
                                                 .insert(binding.action_id.clone(), KEY_ACTION_STRENGTH);
-                                        Vec::new()
                                 },
                                 KeyState::Released => {
                                         self.pollable_actions.remove(&binding.action_id);
-                                        Vec::new()
                                 },
                         },
                 }
         }
 }
 
+#[derive(Clone)]
 struct MouseBindings {
         motion_bindings: EnumMap<MouseMotionType, Option<MouseMotionBinding>>,
 }
@@ -342,6 +342,7 @@ impl MouseBindings {
         }
 }
 
+#[derive(Clone)]
 struct MouseMotionBinding {
         action_id: ActionId,
         threshold: Option<f32>,
@@ -362,7 +363,9 @@ pub enum MouseMotionType {
 }
 
 struct MouseInputProcessor {
+        mouse_bindings: MouseBindings,
         accumulators: HashMap<ActionId, f32>,
+
         pollable_actions: HashMap<ActionId, ActionStrength>,
         enabled: bool,
 }
@@ -370,6 +373,7 @@ struct MouseInputProcessor {
 impl MouseInputProcessor {
         fn new() -> Self {
                 Self {
+                        mouse_bindings: MouseBindings::new(),
                         accumulators: HashMap::new(),
                         pollable_actions: HashMap::new(),
                         enabled: true,
@@ -380,22 +384,22 @@ impl MouseInputProcessor {
                 self.enabled.then(|| self.pollable_actions.clone())
         }
 
-        fn process_mouse_motion(&mut self, dx: f32, dy: f32, mouse_bindings: &MouseBindings) -> Vec<ActionEvent> {
+        fn set_mouse_bindings(&mut self, mouse_bindings: MouseBindings) {
+                self.mouse_bindings = mouse_bindings;
+        }
+
+        fn process_mouse_motion(&mut self, dx: f32, dy: f32, action_events: &mut Vec<ActionEvent>) {
                 if !self.enabled {
-                        return Vec::new();
+                        return;
                 }
 
-                let mut action_events = Vec::new();
-
                 if let Some(motion_type) = Self::determine_motion_type(MouseMotionAxis::X, dx) {
-                        action_events.extend(self.process_directional_motion(mouse_bindings, motion_type, dx.abs()))
+                        self.process_directional_motion(motion_type, dx.abs(), action_events);
                 }
 
                 if let Some(motion_type) = Self::determine_motion_type(MouseMotionAxis::Y, dy) {
-                        action_events.extend(self.process_directional_motion(mouse_bindings, motion_type, dy.abs()))
+                        self.process_directional_motion(motion_type, dy.abs(), action_events);
                 }
-
-                action_events
         }
 
         fn determine_motion_type(motion_axis: MouseMotionAxis, delta: f32) -> Option<MouseMotionType> {
@@ -413,13 +417,13 @@ impl MouseInputProcessor {
 
         fn process_directional_motion(
                 &mut self,
-                mouse_bindings: &MouseBindings,
                 motion_type: MouseMotionType,
                 delta: f32,
-        ) -> Vec<ActionEvent> {
-                let binding = match mouse_bindings.get_motion_binding(motion_type) {
+                action_events: &mut Vec<ActionEvent>,
+        ) {
+                let binding = match self.mouse_bindings.get_motion_binding(motion_type) {
                         Some(binding) => binding,
-                        None => return Vec::new(),
+                        None => return,
                 };
 
                 let accumulator = self.accumulators.get_mut_or_insert(&binding.action_id, 0.0);
@@ -432,19 +436,17 @@ impl MouseInputProcessor {
                                 let quotient = (*accumulator / threshold).trunc();
                                 *accumulator -= quotient;
 
-                                let action_event = ActionEvent {
-                                        action_id: binding.action_id.clone(),
-                                        strength,
-                                };
-
-                                vec![action_event; quotient as usize]
+                                for _ in 0..quotient as u32 {
+                                        action_events.push(ActionEvent {
+                                                action_id: binding.action_id.clone(),
+                                                strength,
+                                        });
+                                }
                         },
-                        None => {
-                                vec![ActionEvent {
-                                        action_id: binding.action_id.clone(),
-                                        strength,
-                                }]
-                        },
+                        None => action_events.push(ActionEvent {
+                                action_id: binding.action_id.clone(),
+                                strength,
+                        }),
                 }
         }
 }
