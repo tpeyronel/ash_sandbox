@@ -1,3 +1,5 @@
+use std::ops::{Index, IndexMut};
+
 use crate::{
         actions::ActionId,
         constants::PIXELS_PER_UNIT,
@@ -25,11 +27,10 @@ const KEY_ACTION_STRENGTH: ActionStrength = ActionStrength(1.0);
 pub struct InputManager {
         binding_map: InputBindingMap,
 
-        action_events: Vec<ActionEvent>,
-        pollable_actions: HashMap<ActionId, ActionStrength>,
-
         mouse_input_processor: MouseInputProcessor,
         keyboard_input_processor: KeyboardInputProcessor,
+
+        action_events: Vec<ActionEvent>,
 }
 
 impl InputManager {
@@ -38,7 +39,6 @@ impl InputManager {
                         binding_map: InputBindingMap::new(),
 
                         action_events: Vec::new(),
-                        pollable_actions: HashMap::new(),
 
                         mouse_input_processor: MouseInputProcessor::new(),
                         keyboard_input_processor: KeyboardInputProcessor::new(),
@@ -47,6 +47,8 @@ impl InputManager {
 
         pub fn push_input_binding_map(&mut self, map: InputBindingMap) {
                 self.binding_map = map;
+                self.keyboard_input_processor
+                        .set_key_bindings(self.binding_map.key_bindings.clone());
         }
 
         pub fn drain_events(&mut self) -> Vec<ActionEvent> {
@@ -54,29 +56,45 @@ impl InputManager {
         }
 
         pub fn poll_actions(&mut self) -> HashMap<ActionId, ActionStrength> {
-                self.pollable_actions.clone()
+                let mut pollable_actions = HashMap::new();
+
+                if let Some(actions) = self.mouse_input_processor.poll_actions() {
+                        pollable_actions.extend(actions);
+                }
+
+                if let Some(actions) = self.keyboard_input_processor.poll_actions() {
+                        pollable_actions.extend(actions);
+                }
+
+                pollable_actions
+        }
+
+        pub fn set_ignore_mouse(&mut self, ignore_mouse: bool) {
+                self.mouse_input_processor.enabled = !ignore_mouse;
+        }
+
+        pub fn set_ignore_keyboard(&mut self, ignore_keyboard: bool) {
+                self.keyboard_input_processor.enabled = !ignore_keyboard;
         }
 
         pub fn on_device_event(&mut self, device_event: &DeviceEvent) {
                 match device_event {
                         DeviceEvent::MouseMotion { delta: (dx, dy) } => {
-                                self.mouse_input_processor.process_mouse_motion(
+                                let new_action_events = self.mouse_input_processor.process_mouse_motion(
                                         *dx as f32,
                                         -*dy as f32,
                                         &self.binding_map.mouse_bindings,
-                                        &mut self.action_events,
                                 );
+
+                                self.action_events.extend(new_action_events);
                         },
                         DeviceEvent::MouseWheel { .. } => (),
                         DeviceEvent::Motion { .. } => (),
                         DeviceEvent::Button { .. } => (),
                         DeviceEvent::Key(input) => {
-                                self.keyboard_input_processor.process_keyboard_input(
-                                        input,
-                                        &self.binding_map.key_bindings,
-                                        &mut self.pollable_actions,
-                                        &mut self.action_events,
-                                );
+                                let new_action_events = self.keyboard_input_processor.process_keyboard_input(input);
+
+                                self.action_events.extend(new_action_events);
                         },
                         _ => (),
                 }
@@ -96,16 +114,20 @@ impl KeyboardState {
                 }
         }
 
-        fn set_key_state(&mut self, key_code: KeyCode, key_state: KeyState) {
-                *self.get_mut(key_code) = key_state;
-        }
-
-        fn get(&self, key_code: KeyCode) -> KeyState {
-                self.key_states[key_code as usize]
+        fn get(&self, key_code: KeyCode) -> &KeyState {
+                &self.key_states[key_code as usize]
         }
 
         fn get_mut(&mut self, key_code: KeyCode) -> &mut KeyState {
                 &mut self.key_states[key_code as usize]
+        }
+
+        #[allow(unused)]
+        fn key_states(&self) -> impl Iterator<Item = (KeyCode, KeyState)> + '_ {
+                self.key_states
+                        .iter()
+                        .enumerate()
+                        .map(|(kc, ks)| (unsafe { std::mem::transmute::<u32, KeyCode>(kc as u32) }, *ks))
         }
 
         #[allow(unused)]
@@ -114,6 +136,20 @@ impl KeyboardState {
                         KeyState::Pressed => Some(unsafe { std::mem::transmute::<u32, KeyCode>(kc as u32) }),
                         KeyState::Released => None,
                 })
+        }
+}
+
+impl Index<KeyCode> for KeyboardState {
+        type Output = KeyState;
+
+        fn index(&self, index: KeyCode) -> &Self::Output {
+                self.get(index)
+        }
+}
+
+impl IndexMut<KeyCode> for KeyboardState {
+        fn index_mut(&mut self, index: KeyCode) -> &mut Self::Output {
+                self.get_mut(index)
         }
 }
 
@@ -171,6 +207,7 @@ impl InputBindingMap {
         }
 }
 
+#[derive(Clone)]
 struct KeyBindings {
         key_bindings: HashMap<KeyCode, KeyBinding>,
 }
@@ -198,55 +235,87 @@ impl KeyBindings {
 }
 
 struct KeyboardInputProcessor {
+        key_bindings: KeyBindings,
         keyboard_state: KeyboardState,
+        pollable_actions: HashMap<ActionId, ActionStrength>,
+        enabled: bool,
 }
 
 impl KeyboardInputProcessor {
         fn new() -> Self {
                 Self {
+                        key_bindings: KeyBindings::new(),
                         keyboard_state: KeyboardState::new(),
+                        pollable_actions: HashMap::new(),
+                        enabled: true,
                 }
         }
 
-        fn process_keyboard_input(
-                &mut self,
-                input: &KeyboardInput,
-                key_bindings: &KeyBindings,
-                pollable_actions: &mut HashMap<ActionId, ActionStrength>,
-                action_events: &mut Vec<ActionEvent>,
-        ) {
+        fn poll_actions(&self) -> Option<HashMap<ActionId, ActionStrength>> {
+                self.enabled.then(|| self.pollable_actions.clone())
+        }
+
+        fn set_key_bindings(&mut self, key_bindings: KeyBindings) {
+                self.key_bindings = key_bindings;
+                self.pollable_actions.clear();
+
+                for (key_code, key_state) in self.keyboard_state.key_states() {
+                        let binding = match self.key_bindings.get(key_code) {
+                                Some(b) => b,
+                                None => continue,
+                        };
+
+                        match binding.key_binding_type {
+                                KeyBindingType::Simple(_) => (),
+                                KeyBindingType::Continuous => match key_state {
+                                        KeyState::Pressed => {
+                                                self.pollable_actions
+                                                        .insert(binding.action_id.clone(), KEY_ACTION_STRENGTH);
+                                        },
+                                        KeyState::Released => (),
+                                },
+                        }
+                }
+        }
+
+        fn process_keyboard_input(&mut self, input: &KeyboardInput) -> Vec<ActionEvent> {
                 let key_code = match input.virtual_keycode {
                         Some(kc) => kc,
-                        None => return,
+                        None => return Vec::new(),
                 };
 
-                if self.keyboard_state.get(key_code) == input.state {
-                        return;
+                // Key repeat, ignore
+                if self.keyboard_state[key_code] == input.state {
+                        return Vec::new();
                 }
-                self.keyboard_state.set_key_state(key_code, input.state);
 
-                let binding = match key_bindings.get(key_code) {
+                self.keyboard_state[key_code] = input.state;
+
+                let binding = match self.key_bindings.get(key_code) {
                         Some(b) => b,
-                        None => return,
+                        None => return Vec::new(),
                 };
 
                 match binding.key_binding_type {
                         KeyBindingType::Simple(activator_state) => {
-                                if activator_state == input.state {
-                                        action_events.push(ActionEvent {
+                                if self.enabled && activator_state == input.state {
+                                        vec![ActionEvent {
                                                 action_id: binding.action_id.clone(),
                                                 strength: KEY_ACTION_STRENGTH,
-                                        });
+                                        }]
+                                } else {
+                                        Vec::new()
                                 }
                         },
                         KeyBindingType::Continuous => match input.state {
                                 KeyState::Pressed => {
-                                        *pollable_actions
-                                                .get_mut_or_insert(&binding.action_id, ActionStrength::default()) =
-                                                KEY_ACTION_STRENGTH;
+                                        self.pollable_actions
+                                                .insert(binding.action_id.clone(), KEY_ACTION_STRENGTH);
+                                        Vec::new()
                                 },
                                 KeyState::Released => {
-                                        pollable_actions.remove(&binding.action_id);
+                                        self.pollable_actions.remove(&binding.action_id);
+                                        Vec::new()
                                 },
                         },
                 }
@@ -294,32 +363,42 @@ pub enum MouseMotionType {
 
 struct MouseInputProcessor {
         accumulators: HashMap<ActionId, f32>,
+        pollable_actions: HashMap<ActionId, ActionStrength>,
+        enabled: bool,
 }
 
 impl MouseInputProcessor {
         fn new() -> Self {
                 Self {
                         accumulators: HashMap::new(),
+                        pollable_actions: HashMap::new(),
+                        enabled: true,
                 }
         }
 
-        fn process_mouse_motion(
-                &mut self,
-                dx: f32,
-                dy: f32,
-                mouse_bindings: &MouseBindings,
-                action_events: &mut Vec<ActionEvent>,
-        ) {
-                if let Some(motion_type) = Self::resolve_motion_type(MouseMotionAxis::X, dx) {
-                        self.process_directional_motion(mouse_bindings, motion_type, dx.abs(), action_events)
-                }
-
-                if let Some(motion_type) = Self::resolve_motion_type(MouseMotionAxis::Y, dy) {
-                        self.process_directional_motion(mouse_bindings, motion_type, dy.abs(), action_events)
-                }
+        fn poll_actions(&self) -> Option<HashMap<ActionId, ActionStrength>> {
+                self.enabled.then(|| self.pollable_actions.clone())
         }
 
-        fn resolve_motion_type(motion_axis: MouseMotionAxis, delta: f32) -> Option<MouseMotionType> {
+        fn process_mouse_motion(&mut self, dx: f32, dy: f32, mouse_bindings: &MouseBindings) -> Vec<ActionEvent> {
+                if !self.enabled {
+                        return Vec::new();
+                }
+
+                let mut action_events = Vec::new();
+
+                if let Some(motion_type) = Self::determine_motion_type(MouseMotionAxis::X, dx) {
+                        action_events.extend(self.process_directional_motion(mouse_bindings, motion_type, dx.abs()))
+                }
+
+                if let Some(motion_type) = Self::determine_motion_type(MouseMotionAxis::Y, dy) {
+                        action_events.extend(self.process_directional_motion(mouse_bindings, motion_type, dy.abs()))
+                }
+
+                action_events
+        }
+
+        fn determine_motion_type(motion_axis: MouseMotionAxis, delta: f32) -> Option<MouseMotionType> {
                 if delta == 0.0 {
                         return None;
                 }
@@ -337,11 +416,10 @@ impl MouseInputProcessor {
                 mouse_bindings: &MouseBindings,
                 motion_type: MouseMotionType,
                 delta: f32,
-                action_events: &mut Vec<ActionEvent>,
-        ) {
+        ) -> Vec<ActionEvent> {
                 let binding = match mouse_bindings.get_motion_binding(motion_type) {
                         Some(binding) => binding,
-                        None => return,
+                        None => return Vec::new(),
                 };
 
                 let accumulator = self.accumulators.get_mut_or_insert(&binding.action_id, 0.0);
@@ -354,18 +432,18 @@ impl MouseInputProcessor {
                                 let quotient = (*accumulator / threshold).trunc();
                                 *accumulator -= quotient;
 
-                                for _ in 0..quotient as u32 {
-                                        action_events.push(ActionEvent {
-                                                action_id: binding.action_id.clone(),
-                                                strength,
-                                        });
-                                }
-                        },
-                        None => {
-                                action_events.push(ActionEvent {
+                                let action_event = ActionEvent {
                                         action_id: binding.action_id.clone(),
                                         strength,
-                                });
+                                };
+
+                                vec![action_event; quotient as usize]
+                        },
+                        None => {
+                                vec![ActionEvent {
+                                        action_id: binding.action_id.clone(),
+                                        strength,
+                                }]
                         },
                 }
         }

@@ -174,7 +174,9 @@ impl Application {
 
                         ui.show_demo_window(&mut false);
 
-                        world.get_resource_mut::<ImguiWantCaptureMouse>().unwrap().0 = ui.io().want_capture_mouse;
+                        let cursor_state = *world.get_resource::<CursorState>().unwrap();
+                        let want_capture_mouse = ui.io().want_capture_mouse && cursor_state == CursorState::Normal;
+                        world.get_resource_mut::<ImguiWantCaptureMouse>().unwrap().0 = want_capture_mouse;
                         world.get_resource_mut::<ImguiWantCaptureKeyboard>().unwrap().0 = ui.io().want_capture_keyboard;
                 });
                 trace!("Initialized ImGui");
@@ -496,6 +498,12 @@ impl Application {
         }
 
         fn dispatch_actions_to_world(&mut self) {
+                let imgui_want_capture_mouse = self.world.get_resource::<ImguiWantCaptureMouse>().unwrap().0;
+                self.input_manager.set_ignore_mouse(imgui_want_capture_mouse);
+
+                let imgui_want_capture_keyboard = self.world.get_resource::<ImguiWantCaptureKeyboard>().unwrap().0;
+                self.input_manager.set_ignore_keyboard(imgui_want_capture_keyboard);
+
                 let should_dispatch_actions = self.should_dispatch_actions();
 
                 let new_action_events = self.input_manager.drain_events();
@@ -517,16 +525,6 @@ impl Application {
         fn should_dispatch_actions(&self) -> bool {
                 let window_manager = self.world.get_non_send_resource::<WindowManager>().unwrap();
                 if !window_manager.is_focused() {
-                        return false;
-                }
-
-                // Check with cursor state needed due to bug with imgui
-                let is_cursor_visible = window_manager.cursor_state() == CursorState::Normal;
-                if is_cursor_visible && self.world.get_resource::<ImguiWantCaptureMouse>().unwrap().0 {
-                        return false;
-                }
-
-                if self.world.get_resource::<ImguiWantCaptureKeyboard>().unwrap().0 {
                         return false;
                 }
 
