@@ -38,7 +38,7 @@ use bevy_ecs::{
         event::Events,
         prelude::*,
         schedule::{RunOnce, ShouldRun},
-        system::SystemParam,
+        system::{Resource, SystemParam},
 };
 #[allow(unused_imports)]
 use log::{error, info, trace};
@@ -219,88 +219,8 @@ impl Application {
                 world.insert_resource(UpdateTime(0.0));
                 world.insert_resource(UpdateTimeAccumulator(world.get_resource::<TickTime>().unwrap().0));
 
-                let startup_schedule = Schedule::default().with_run_criteria(RunOnce::default()).with_stage(
-                        StartupStage::Startup,
-                        SystemStage::parallel().with_system(spawn_entities),
-                );
-
-                let first_schedule = Schedule::default().with_stage(
-                        FirstStage::First,
-                        SystemStage::parallel()
-                                .with_system(camera_control_system.label("camera-control-system"))
-                                .with_system(
-                                        unfixed_action_handling_system
-                                                .label("unfixed-action-handling-system")
-                                                .after("camera-control-system"),
-                                )
-                                .with_system(delta_time_system.label("delta-time-system")),
-                );
-
-                let update_schedule = Schedule::default()
-                        .with_run_criteria(should_update.system())
-                        .with_stage(
-                                UpdateStage::PreUpdate,
-                                SystemStage::parallel()
-                                        .with_system(update_tps_counter)
-                                        .with_system(hierarchy_maintenance_system.label("hierarchy-maintenance"))
-                                        .with_system(renormalize_quaternions.after("hierarchy-maintenance"))
-                                        .with_system(init_new_transforms.label("init-new-transforms")),
-                        )
-                        .with_stage_after(
-                                UpdateStage::PreUpdate,
-                                UpdateStage::Update,
-                                SystemStage::parallel()
-                                        .with_system(persist_transforms.label("persist-transforms"))
-                                        .with_system(
-                                                process_actions.label("process-actions").after("persist-transforms"),
-                                        )
-                                        .with_system(
-                                                apply_euler_angles.label("apply-euler-angles").after("process-actions"),
-                                        )
-                                        .with_system(integrate_force.label("linear-force").after("apply-euler-angles"))
-                                        .with_system(
-                                                integrate_linear_velocity
-                                                        .label("linear-velocity")
-                                                        .after("linear-force"),
-                                        )
-                                        .with_system(
-                                                integrate_angular_velocities
-                                                        .label("angular-velocity")
-                                                        .after("linear-velocity"),
-                                        )
-                                        .with_system(
-                                                integrate_orbital_velocities
-                                                        .label("orbital-velocity")
-                                                        .after("angular-velocity"),
-                                        )
-                                        .with_system(
-                                                billboard_system.label("billboard-sytem").after("orbital-velocity"),
-                                        )
-                                        .with_system(
-                                                global_transform_system
-                                                        .label("global-transform-system")
-                                                        .after("billboard-sytem"),
-                                        ),
-                        )
-                        .with_stage_after(UpdateStage::Update, UpdateStage::PostUpdate, SystemStage::parallel());
-
-                let render_schedule = Schedule::default().with_stage(
-                        RenderStage::Render,
-                        SystemStage::parallel()
-                                .with_system(window_system.label("window-system"))
-                                .with_system(apply_euler_angles.label("apply-euler-angles"))
-                                .with_system(
-                                        interpolate_transforms
-                                                .label("interpolate-transforms")
-                                                .after("apply-euler-angles"),
-                                ),
-                );
-
-                let schedule = Schedule::default()
-                        .with_stage(CoreStage::Startup, startup_schedule)
-                        .with_stage_after(CoreStage::Startup, CoreStage::First, first_schedule)
-                        .with_stage_after(CoreStage::Startup, CoreStage::Update, update_schedule)
-                        .with_stage_after(CoreStage::Update, CoreStage::Render, render_schedule);
+                let mut schedule = Self::create_schedule();
+                register_event::<ActionEvent>(&mut world, &mut schedule);
 
                 let renderer = Box::new(VkRenderer::new(
                         Rc::clone(&window),
@@ -308,7 +228,6 @@ impl Application {
                         asset_manager_event_rx,
                 )?);
 
-                world.insert_resource(Events::<ActionEvent>::default());
                 let mut input_manager = InputManager::new();
 
                 let mut input_map = InputBindingMap::new();
@@ -430,6 +349,94 @@ impl Application {
 
                 trace!("Initialized AssetManager");
                 Ok((asset_manager, event_rx))
+        }
+
+        fn create_schedule() -> Schedule {
+                let startup_schedule = Schedule::default().with_run_criteria(RunOnce::default()).with_stage(
+                        StartupStage::Startup,
+                        SystemStage::parallel().with_system(spawn_entities),
+                );
+
+                let first_schedule = Schedule::default().with_stage(
+                        FirstStage::First,
+                        SystemStage::parallel()
+                                .with_system(camera_control_system.label("camera-control-system"))
+                                .with_system(
+                                        unfixed_action_handling_system
+                                                .label("unfixed-action-handling-system")
+                                                .after("camera-control-system"),
+                                )
+                                .with_system(delta_time_system.label("delta-time-system")),
+                );
+
+                let update_schedule = Schedule::default()
+                        .with_run_criteria(should_update.system())
+                        .with_stage(
+                                UpdateStage::PreUpdate,
+                                SystemStage::parallel()
+                                        .with_system(update_tps_counter)
+                                        .with_system(hierarchy_maintenance_system.label("hierarchy-maintenance"))
+                                        .with_system(renormalize_quaternions.after("hierarchy-maintenance"))
+                                        .with_system(init_new_transforms.label("init-new-transforms")),
+                        )
+                        .with_stage_after(
+                                UpdateStage::PreUpdate,
+                                UpdateStage::Update,
+                                SystemStage::parallel()
+                                        .with_system(persist_transforms.label("persist-transforms"))
+                                        .with_system(
+                                                process_actions.label("process-actions").after("persist-transforms"),
+                                        )
+                                        .with_system(
+                                                apply_euler_angles.label("apply-euler-angles").after("process-actions"),
+                                        )
+                                        .with_system(integrate_force.label("linear-force").after("apply-euler-angles"))
+                                        .with_system(
+                                                integrate_linear_velocity
+                                                        .label("linear-velocity")
+                                                        .after("linear-force"),
+                                        )
+                                        .with_system(
+                                                integrate_angular_velocities
+                                                        .label("angular-velocity")
+                                                        .after("linear-velocity"),
+                                        )
+                                        .with_system(
+                                                integrate_orbital_velocities
+                                                        .label("orbital-velocity")
+                                                        .after("angular-velocity"),
+                                        )
+                                        .with_system(
+                                                billboard_system.label("billboard-sytem").after("orbital-velocity"),
+                                        )
+                                        .with_system(
+                                                global_transform_system
+                                                        .label("global-transform-system")
+                                                        .after("billboard-sytem"),
+                                        ),
+                        )
+                        .with_stage_after(UpdateStage::Update, UpdateStage::PostUpdate, SystemStage::parallel());
+
+                let render_schedule = Schedule::default().with_stage(
+                        RenderStage::Render,
+                        SystemStage::parallel()
+                                .with_system(window_system.label("window-system"))
+                                .with_system(apply_euler_angles.label("apply-euler-angles"))
+                                .with_system(
+                                        interpolate_transforms
+                                                .label("interpolate-transforms")
+                                                .after("apply-euler-angles"),
+                                ),
+                );
+
+                let cleanup_stage = SystemStage::parallel().with_run_criteria(should_perform_cleanup_system);
+
+                Schedule::default()
+                        .with_stage(CoreStage::Startup, startup_schedule)
+                        .with_stage_after(CoreStage::Startup, CoreStage::First, first_schedule)
+                        .with_stage_after(CoreStage::Startup, CoreStage::Update, update_schedule)
+                        .with_stage_after(CoreStage::Update, CoreStage::Render, render_schedule)
+                        .with_stage_after(CoreStage::Render, CoreStage::Cleanup, cleanup_stage)
         }
 
         fn on_winit_event(
@@ -1052,6 +1059,14 @@ fn billboard_system(
         }
 }
 
+fn should_perform_cleanup_system(clear_world_trackers: Option<Res<ClearWorldTrackers>>) -> ShouldRun {
+        if clear_world_trackers.is_some() {
+                ShouldRun::Yes
+        } else {
+                ShouldRun::No
+        }
+}
+
 pub struct ImguiManager {
         imgui_context: imgui::Context,
         imgui_platform: imgui_winit_support::WinitPlatform,
@@ -1126,10 +1141,11 @@ pub struct InterpGlobalTransform(pub Transform);
 
 #[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
 enum CoreStage {
-        First,
         Startup,
+        First,
         Update,
         Render,
+        Cleanup,
 }
 
 #[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
@@ -1152,4 +1168,10 @@ enum UpdateStage {
 #[derive(Clone, Hash, Debug, Eq, PartialEq, StageLabel)]
 enum RenderStage {
         Render,
+}
+
+fn register_event<T: Resource>(world: &mut World, schedule: &mut Schedule) {
+        let events = Events::<T>::from_world(world);
+        world.insert_resource(events);
+        schedule.add_system_to_stage(CoreStage::Cleanup, Events::<T>::update_system);
 }
