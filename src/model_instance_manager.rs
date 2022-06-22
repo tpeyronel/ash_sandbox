@@ -10,12 +10,21 @@ pub struct ModelInstance {
         pub model: ModelId,
 }
 
-pub struct CreateModelInstanceFromName {
+pub struct CmdAddModelInstanceByName {
         pub entity: Entity,
         pub model_name: String,
 }
 
-impl Command for CreateModelInstanceFromName {
+impl CmdAddModelInstanceByName {
+        pub fn from_str(entity: Entity, model_name: &str) -> Self {
+                Self {
+                        entity,
+                        model_name: model_name.to_string(),
+                }
+        }
+}
+
+impl Command for CmdAddModelInstanceByName {
         fn write(self, world: &mut World) {
                 let model = world
                         .get_resource::<AssetManager>()

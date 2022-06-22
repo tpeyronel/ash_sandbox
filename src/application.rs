@@ -26,7 +26,7 @@ use crate::{
                 ActionEvent, ActionStrength, InputBindingMap, InputManager, KeyBindingType, KeyCode, KeyState,
                 MouseMotionType,
         },
-        model_instance_manager::CreateModelInstanceFromName,
+        model_instance_manager::CmdAddModelInstanceByName,
         my_glm::*,
         renderer::Renderer,
         skybox::Skybox,
@@ -591,10 +591,7 @@ fn spawn_entities(mut commands: Commands) {
                 })
                 .id();
 
-        commands.add(CreateModelInstanceFromName {
-                entity: colt,
-                model_name: "colt".to_string(),
-        });
+        commands.add(CmdAddModelInstanceByName::from_str(colt, "colt"));
 
         let icosphere = commands
                 .spawn()
@@ -604,10 +601,7 @@ fn spawn_entities(mut commands: Commands) {
                 .insert(Velocity(Vec3::new(0.0, 0.0, 0.0)))
                 .id();
 
-        commands.add(CreateModelInstanceFromName {
-                entity: icosphere,
-                model_name: "icosphere".to_string(),
-        });
+        commands.add(CmdAddModelInstanceByName::from_str(icosphere, "icosphere"));
 
         let backpack = commands
                 .spawn()
@@ -623,10 +617,7 @@ fn spawn_entities(mut commands: Commands) {
                 })
                 .id();
 
-        commands.add(CreateModelInstanceFromName {
-                entity: backpack,
-                model_name: "backpack".to_string(),
-        });
+        commands.add(CmdAddModelInstanceByName::from_str(backpack, "backpack"));
 
         let billboard = commands
                 .spawn()
@@ -639,10 +630,7 @@ fn spawn_entities(mut commands: Commands) {
                 .insert(Parent(backpack))
                 .id();
 
-        commands.add(CreateModelInstanceFromName {
-                entity: billboard,
-                model_name: "landscape".to_string(),
-        });
+        commands.add(CmdAddModelInstanceByName::from_str(billboard, "landscape"));
 
         let static_billboard = commands
                 .spawn()
@@ -654,20 +642,14 @@ fn spawn_entities(mut commands: Commands) {
                 .insert(Billboard)
                 .id();
 
-        commands.add(CreateModelInstanceFromName {
-                entity: static_billboard,
-                model_name: "landscape".to_string(),
-        });
+        commands.add(CmdAddModelInstanceByName::from_str(static_billboard, "landscape"));
 
         let grass_plane = commands
                 .spawn()
                 .insert(Transform::from_translation(Vec3::new(0.0, -1.0, 0.0)))
                 .id();
 
-        commands.add(CreateModelInstanceFromName {
-                entity: grass_plane,
-                model_name: "grass-plane".to_string(),
-        });
+        commands.add(CmdAddModelInstanceByName::from_str(grass_plane, "grass-plane"));
 
         let light = commands
                 .spawn()
@@ -688,10 +670,7 @@ fn spawn_entities(mut commands: Commands) {
                 })
                 .id();
 
-        commands.add(CreateModelInstanceFromName {
-                entity: light,
-                model_name: "lit-icosphere".to_string(),
-        });
+        commands.add(CmdAddModelInstanceByName::from_str(light, "lit-icosphere"));
 
         let _dir_light = commands
                 .spawn()
