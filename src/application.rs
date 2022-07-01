@@ -331,6 +331,8 @@ impl Application {
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/basic_shader/basic_shader.yaml"))?;
                 let color_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/color_shader/color_shader.yaml"))?;
+                let billboard_shader = asset_manager
+                        .load_shader_from_yaml(Path::new("res/shader/billboard_shader/billboard_shader.yaml"))?;
 
                 let _model_colt = asset_manager.import_gltf_file(Path::new("res/model/new-colt/colt.gltf"))?;
                 let _model_grass_plane =
@@ -339,13 +341,18 @@ impl Application {
                 let _model_icosphere =
                         asset_manager.import_gltf_file(Path::new("res/model/icosphere/icosphere.gltf"))?;
                 let _model_lit_icosphere = asset_manager.import_gltf_file_with_shader(
-                        std::path::Path::new("res/model/lit-icosphere/lit-icosphere.gltf"),
+                        Path::new("res/model/lit-icosphere/lit-icosphere.gltf"),
                         color_shader,
                 )?;
-                let _model_backpack =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/backpack/backpack.gltf"))?;
-                let _model_landscape =
-                        asset_manager.import_gltf_file(std::path::Path::new("res/model/landscape/landscape.gltf"))?;
+                let _model_backpack = asset_manager.import_gltf_file(Path::new("res/model/backpack/backpack.gltf"))?;
+                let _model_landscape = asset_manager.import_gltf_file_with_shader(
+                        Path::new("res/model/landscape/landscape.gltf"),
+                        billboard_shader,
+                )?;
+                let _model_health_bar = asset_manager.import_gltf_file_with_shader(
+                        Path::new("res/model/health-bar/health-bar.gltf"),
+                        billboard_shader,
+                )?;
 
                 trace!("Initialized AssetManager");
                 Ok((asset_manager, event_rx))
@@ -630,7 +637,7 @@ fn spawn_entities(mut commands: Commands) {
                 .insert(Parent(backpack))
                 .id();
 
-        commands.add(CmdAddModelInstanceByName::from_str(billboard, "landscape"));
+        commands.add(CmdAddModelInstanceByName::from_str(billboard, "health-bar"));
 
         let static_billboard = commands
                 .spawn()
@@ -642,7 +649,7 @@ fn spawn_entities(mut commands: Commands) {
                 .insert(Billboard)
                 .id();
 
-        commands.add(CmdAddModelInstanceByName::from_str(static_billboard, "landscape"));
+        commands.add(CmdAddModelInstanceByName::from_str(static_billboard, "health-bar"));
 
         let grass_plane = commands
                 .spawn()
@@ -1025,7 +1032,8 @@ fn billboard_system(
 
         for (billboard, global_transform, mut transform) in transform_billboard_query.iter_mut() {
                 let mut desired_global_rotation =
-                        Quat::face_towards(global_transform.0.translation, camera_transform.0.translation, Vec3::UP);
+                        camera_transform.0.rotation * Quat::from_axis_angle(Vec3::UP, 180.0f32.to_radians());
+                // Quat::face_towards(global_transform.0.translation, camera_transform.0.translation, Vec3::UP);
 
                 if let Ok(parent) = parent_query.get(billboard) {
                         if let Ok(parent_global_transform) = global_transform_query.get(parent.0) {

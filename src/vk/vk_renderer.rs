@@ -238,6 +238,16 @@ impl Renderer for VkRenderer {
 
                 let mut buffer_transform_idx = 0;
 
+                let camera_right = Vec4::from((camera_orien * Vec3::RIGHT, 0.0));
+                let camera_up = Vec4::from((camera_orien * Vec3::UP, 0.0));
+
+                frame_data.billboard_data_buffer.write(&BillboardData {
+                        billboard_center: Vec4::ZERO,
+                        billboard_scale: Vec4::splat(0.5),
+                        camera_right,
+                        camera_up,
+                })?;
+
                 unsafe {
                         self.vk_context.device.cmd_set_viewport(
                                 *frame_data.draw_cmd_buffer,
@@ -558,6 +568,14 @@ impl VkRenderer {
                                 stage_flags: vk::ShaderStageFlags::VERTEX,
                                 p_immutable_samplers: std::ptr::null(),
                         },
+                        // BillboardData
+                        vk::DescriptorSetLayoutBinding {
+                                binding: 1,
+                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                                descriptor_count: 1,
+                                stage_flags: vk::ShaderStageFlags::VERTEX,
+                                p_immutable_samplers: std::ptr::null(),
+                        },
                 ];
 
                 unsafe { dst_set_layout_cache.create_layout(bindings) }
@@ -836,6 +854,7 @@ struct VkFrameData {
         world_lights_buffer: VkBuffer,
         material_data_buffer: VkBuffer,
         object_matrices_buffer: VkDynamicUniformBuffer<ObjectMatrices>,
+        billboard_data_buffer: VkBuffer, // Should be VkDynamicUniformBuffer
 }
 
 impl VkFrameData {
@@ -861,7 +880,7 @@ impl VkFrameData {
                 let world_matrices_buffer = VkBuffer::new_uniform_buffer(
                         &vk_context.device,
                         Rc::clone(&vk_context.allocator),
-                        std::mem::size_of::<WorldMatrices>() as vk::DeviceSize,
+                        world_matrices_buffer_size,
                 )?;
 
                 let world_lights_buffer_size = std::mem::size_of::<WorldLights>() as vk::DeviceSize;
@@ -927,10 +946,32 @@ impl VkFrameData {
                         .buffer_info(std::slice::from_ref(&object_matrices_buffer_info))
                         .build();
 
+                let billboard_data_buffer_size = std::mem::size_of::<BillboardData>() as vk::DeviceSize;
+                let billboard_data_buffer = VkBuffer::new_uniform_buffer(
+                        &vk_context.device,
+                        Rc::clone(&vk_context.allocator),
+                        billboard_data_buffer_size,
+                )?;
+
+                let billboard_data_buffer_info = vk::DescriptorBufferInfo {
+                        buffer: *billboard_data_buffer,
+                        offset: 0,
+                        range: billboard_data_buffer_size,
+                };
+
+                let billboard_data_dst_write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .dst_set(object_dst_set)
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .buffer_info(std::slice::from_ref(&billboard_data_buffer_info))
+                        .build();
+
                 let writes = [
                         world_matrices_dst_write,
                         world_lights_dst_write,
                         object_matrices_dst_write,
+                        billboard_data_dst_write,
                 ];
                 unsafe { vk_context.device.update_descriptor_sets(&writes, &[]) };
 
@@ -944,6 +985,7 @@ impl VkFrameData {
                         world_lights_buffer,
                         material_data_buffer,
                         object_matrices_buffer,
+                        billboard_data_buffer,
                 })
         }
 
@@ -971,6 +1013,7 @@ impl Drop for VkFrameData {
                 unsafe {
                         self.present_complete_semaphore.destroy();
                         self.img_available_semaphore.destroy();
+                        self.billboard_data_buffer.destroy();
                         self.object_matrices_buffer.destroy();
                         self.material_data_buffer.destroy();
                         self.world_lights_buffer.destroy();
@@ -1028,6 +1071,14 @@ pub struct MaterialData {
         specular_color: Vec4,
         shininess_and_ambient_strength: Vec2,
         specular_strength_and_diffuse_strength: Vec2,
+}
+
+#[allow(dead_code)]
+struct BillboardData {
+        billboard_center: Vec4,
+        billboard_scale: Vec4,
+        camera_right: Vec4,
+        camera_up: Vec4,
 }
 
 #[allow(dead_code)]

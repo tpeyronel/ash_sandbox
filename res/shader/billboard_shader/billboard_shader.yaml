@@ -1,0 +1,10 @@
+---
+name: "billboard-shader"
+vertex-shader: "billboard_shader.vert"
+fragment-shader: "billboard_shader.frag"
+uniforms:
+  - "matrices"
+vertex-inputs:
+  - "positions"
+  - "normals"
+  - "texture-coordinates"
