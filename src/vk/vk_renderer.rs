@@ -1029,6 +1029,7 @@ enum BeginFrameResult {
 }
 
 #[allow(dead_code)]
+#[repr(C)]
 struct WorldMatrices {
         view_pos: Vec4,
         view: Mat4,
@@ -1037,12 +1038,14 @@ struct WorldMatrices {
 }
 
 #[allow(dead_code)]
+#[repr(C)]
 struct WorldDirectionalLight {
         direction: Vec4,
         color: Vec4,
 }
 
 #[allow(dead_code)]
+#[repr(C)]
 struct WorldPointLight {
         pos: Vec4,
         color: Vec4,
@@ -1050,6 +1053,7 @@ struct WorldPointLight {
 }
 
 #[allow(dead_code)]
+#[repr(C)]
 struct WorldSpotlight {
         pos: Vec4,
         dir: Vec4, // xyz=direction w=angle
@@ -1058,6 +1062,7 @@ struct WorldSpotlight {
 }
 
 #[allow(dead_code)]
+#[repr(C)]
 struct WorldLights {
         dir_light: WorldDirectionalLight,
         point_light: WorldPointLight,
@@ -1065,6 +1070,7 @@ struct WorldLights {
 }
 
 #[allow(dead_code)]
+#[repr(C)]
 pub struct MaterialData {
         ambient_color: Vec4,
         diffuse_color: Vec4,
@@ -1074,6 +1080,7 @@ pub struct MaterialData {
 }
 
 #[allow(dead_code)]
+#[repr(C)]
 struct BillboardData {
         billboard_center: Vec4,
         billboard_scale: Vec4,
@@ -1082,6 +1089,7 @@ struct BillboardData {
 }
 
 #[allow(dead_code)]
+#[repr(C)]
 struct ObjectMatrices {
         model: Mat4,
         mvp: Mat4,
@@ -1089,12 +1097,14 @@ struct ObjectMatrices {
 }
 
 #[allow(dead_code)]
+#[repr(C)]
 struct MatricesMMvp {
         model: Mat4,
         mvp: Mat4,
 }
 
 #[allow(dead_code)]
+#[repr(C)]
 struct UniformLights {
         light_pos: Vec4,
         light_color: Vec4,
