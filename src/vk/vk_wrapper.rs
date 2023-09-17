@@ -1,4 +1,4 @@
-use std::{cell::Cell, ffi::CStr, ops::Deref, rc::Rc};
+use std::{cell::Cell, ops::Deref, rc::Rc};
 
 use ash::{extensions::ext::DebugUtils, prelude::VkResult, vk};
 #[allow(unused_imports)]
@@ -162,9 +162,8 @@ impl VkPhysicalDevice {
                         .filter_map(|&pd| Self::is_device_suitable(instance, surface, pd))
                         .find(|&(pd, _)| unsafe {
                                 let props = instance.get_physical_device_properties(pd);
-                                let name = CStr::from_ptr(props.device_name.as_ptr()).to_str().unwrap();
 
-                                name == "NVIDIA GeForce GTX 970"
+                                props.device_type == vk::PhysicalDeviceType::DISCRETE_GPU
                         })
                         .expect("Couldn't find suitable VkPhysicalDevice"))
         }
