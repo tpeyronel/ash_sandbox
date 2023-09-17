@@ -61,7 +61,7 @@ impl VkSwapchain {
         ) -> AnyResult<Self> {
                 let color_format = Self::choose_color_format(&surface, physical_device)?;
                 debug!("VkSwapchain color format ({:?})", color_format);
-                let depth_format = vk::Format::D24_UNORM_S8_UINT;
+                let depth_format = Self::choose_depth_format(&instance, physical_device)?;
 
                 let surface_capabilities = unsafe {
                         surface.loader()
@@ -179,8 +179,7 @@ impl VkSwapchain {
                         debug!("VkSwapchain color format ({:?})", self.color_format);
                 }
 
-                let depth_format = vk::Format::D24_UNORM_S8_UINT;
-                self.depth_format = depth_format;
+                self.depth_format = Self::choose_depth_format(&self.instance, self.physical_device)?;
 
                 let surface_capabilities = unsafe {
                         self.surface
@@ -255,7 +254,7 @@ impl VkSwapchain {
                         let (depth_img, depth_img_view) = Self::create_depth_img_resources(
                                 Rc::clone(&self.device),
                                 Rc::clone(&self.allocator),
-                                depth_format,
+                                self.depth_format,
                                 &self.extent,
                                 self.samples,
                         )?;
@@ -339,6 +338,24 @@ impl VkSwapchain {
                 } else {
                         Ok(formats[0])
                 }
+        }
+
+        fn choose_depth_format(instance: &VkInstance, physical_device: vk::PhysicalDevice) -> VkResult<vk::Format> {
+                let fmt_candidates = [
+                        vk::Format::D32_SFLOAT,
+                        vk::Format::D32_SFLOAT_S8_UINT,
+                        vk::Format::D24_UNORM_S8_UINT,
+                        vk::Format::D16_UNORM,
+                        vk::Format::D16_UNORM_S8_UINT,
+                ];
+
+                let features = vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT;
+
+                fmt_candidates.into_iter().find(|&fmt| {
+                        let fmt_props = unsafe { instance.get_physical_device_format_properties(physical_device, fmt) };
+
+                        (fmt_props.optimal_tiling_features & features) == features
+                }).ok_or(vk::Result::ERROR_FORMAT_NOT_SUPPORTED)
         }
 
         fn clamp_image_count(image_count: u32, surface_capabilities: &vk::SurfaceCapabilitiesKHR) -> u32 {
@@ -519,7 +536,7 @@ impl VkSwapchain {
                         let depth_img_view_cinfo = vk::ImageViewCreateInfo {
                                 image: *depth_img,
                                 view_type: vk::ImageViewType::TYPE_2D,
-                                format: vk::Format::D24_UNORM_S8_UINT,
+                                format,
                                 components: vk::ComponentMapping::default(),
                                 subresource_range: vk::ImageSubresourceRange {
                                         aspect_mask: vk::ImageAspectFlags::DEPTH,
