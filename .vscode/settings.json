@@ -1,5 +1,9 @@
 {
     "[rust]": {
         "editor.indentSize": 8,
+        "editor.inlayHints.enabled": "offUnlessPressed",
     },
+    "[glsl]": {
+        "editor.indentSize": 8,
+    }
 }
