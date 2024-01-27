@@ -7,7 +7,7 @@ version = "0.1.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = {version = "1.0.53", features = ["backtrace"]}
+anyhow = { version = "1.0.53", features = ["backtrace"] }
 approx = "0.5.0"
 ash = "0.35.1"
 ash-window = "0.9.0"
@@ -24,20 +24,21 @@ gltf = "0.16.0"
 hashbrown = "0.12.0"
 image = "0.24.1"
 imgui = "0.8.2"
-imgui-rs-vulkan-renderer = {git = "https://github.com/TorvalHG/imgui-rs-vulkan-renderer"}
+imgui-rs-vulkan-renderer = { git = "https://github.com/TorvalHG/imgui-rs-vulkan-renderer" }
 imgui-winit-support = "0.8.2"
 lazy-regex = "3.1.0"
 log = "0.4.14"
 memoffset = "0.6.1"
 regex = "1.10.2"
-serde = {version = "1.0.133", features = ["derive"]}
+serde = { version = "1.0.133", features = ["derive"] }
 serde_json = "1.0.75"
 serde_yaml = "0.8.23"
+shader_resource_derive = { path = "./crates/shader_resource_derive" }
 slotmap = "1.0.2"
 stb_image = "0.2.3"
 thiserror = "1.0.30"
-tps-counter = {git = "https://github.com/TorvalHG/tps-counter"}
-vk-mem = {git = "https://github.com/TorvalHG/vk-mem-rs"}
+tps-counter = { git = "https://github.com/TorvalHG/tps-counter" }
+vk-mem = { git = "https://github.com/TorvalHG/vk-mem-rs" }
 winit = "0.25.0"
 
 [profile.dev.package."*"]

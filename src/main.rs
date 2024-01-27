@@ -16,6 +16,7 @@ mod model_instance_manager;
 mod my_glm;
 mod renderer;
 mod shader_preprocessor;
+mod shader_resource;
 mod shader_resource_registry;
 mod shader_resources;
 mod skybox;

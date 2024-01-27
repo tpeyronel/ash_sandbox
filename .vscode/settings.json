@@ -5,5 +5,9 @@
     },
     "[glsl]": {
         "editor.indentSize": 8,
-    }
+    },
+    "rust-analyzer.linkedProjects": [
+        ".\\Cargo.toml",
+        ".\\crates\\shader_resource_derive\\Cargo.toml"
+    ]
 }

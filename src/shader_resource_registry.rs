@@ -1,7 +1,10 @@
 use hashbrown::HashMap;
 use thiserror::Error;
 
-use crate::asset_manager::{ShaderResource, ShaderResourceId};
+use crate::{
+        asset_manager::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
+        shader_resource::ShaderStruct,
+};
 
 #[derive(Error, Debug)]
 pub enum ShaderResourceRegisterError {
@@ -31,6 +34,18 @@ impl ShaderResourceRegistry {
                 self.registers.insert(shader_resource.id.clone(), shader_resource);
 
                 Ok(())
+        }
+
+        pub fn register_struct<T: ShaderStruct>(
+                &mut self,
+                id: ShaderResourceId,
+                provider: ShaderResourceProvider,
+        ) -> Result<(), ShaderResourceRegisterError> {
+                self.register(ShaderResource {
+                        id,
+                        resource_type: ShaderResourceType::Struct(T::shader_struct_declaration()),
+                        provider,
+                })
         }
 
         pub fn get(&self, shader_resource_id: &ShaderResourceId) -> Option<&ShaderResource> {

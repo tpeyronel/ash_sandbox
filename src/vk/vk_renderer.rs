@@ -1,11 +1,11 @@
-use std::{rc::Rc, slice, time::Instant};
-
 use ash::{prelude::VkResult, vk};
+use std::{rc::Rc, slice, time::Instant};
 
 use bevy_ecs::prelude::World;
 use crossbeam_channel::Receiver;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
+use shader_resource_derive::ShaderStruct;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use super::{
@@ -17,15 +17,13 @@ use super::{
 };
 use crate::{
         application::InterpGlobalTransform,
-        asset_manager::{
-                AssetManager, AssetManagerEvent, MaterialMesh, ShaderResourceId, ShaderStructDeclaration,
-                ShaderStructDeclarationProvider, ShaderStructField, ShaderStructFieldType,
-        },
+        asset_manager::{AssetManager, AssetManagerEvent, MaterialMesh, ShaderResourceId},
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
         hashmap::HashMap,
         model_instance_manager::ModelInstance,
         my_glm::*,
         renderer::Renderer,
+        shader_resource::{ShaderStruct, ShaderStructDeclaration, ShaderStructField, ShaderStructFieldType},
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_OBJECT_MATRICES,
                 SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
@@ -1086,6 +1084,7 @@ enum BeginFrameResult {
 
 #[allow(dead_code)]
 #[repr(C)]
+#[derive(ShaderStruct)]
 // TODO: move out of this file (as it is not vulkan specific).
 pub struct WorldMatrices {
         view_pos: Vec4,
@@ -1094,89 +1093,26 @@ pub struct WorldMatrices {
         vp: Mat4,
 }
 
-impl ShaderStructDeclarationProvider for WorldMatrices {
-        fn shader_struct_declaration() -> ShaderStructDeclaration {
-                ShaderStructDeclaration {
-                        type_name: "WorldMatrices".to_string(),
-                        fields: vec![
-                                ShaderStructField {
-                                        field_name: "view_pos".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "view".to_string(),
-                                        field_type: ShaderStructFieldType::Mat4,
-                                },
-                                ShaderStructField {
-                                        field_name: "proj".to_string(),
-                                        field_type: ShaderStructFieldType::Mat4,
-                                },
-                                ShaderStructField {
-                                        field_name: "vp".to_string(),
-                                        field_type: ShaderStructFieldType::Mat4,
-                                },
-                        ],
-                }
-        }
-}
-
 #[allow(dead_code)]
 #[repr(C)]
+#[derive(ShaderStruct)]
 struct WorldDirectionalLight {
         direction: Vec4,
         color: Vec4,
 }
 
-impl ShaderStructDeclarationProvider for WorldDirectionalLight {
-        fn shader_struct_declaration() -> ShaderStructDeclaration {
-                ShaderStructDeclaration {
-                        type_name: "WorldDirectionalLight".to_string(),
-                        fields: vec![
-                                ShaderStructField {
-                                        field_name: "direction".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "color".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                        ],
-                }
-        }
-}
-
 #[allow(dead_code)]
 #[repr(C)]
+#[derive(ShaderStruct)]
 struct WorldPointLight {
         pos: Vec4,
         color: Vec4,
         kc_kl_kq: Vec4,
 }
 
-impl ShaderStructDeclarationProvider for WorldPointLight {
-        fn shader_struct_declaration() -> ShaderStructDeclaration {
-                ShaderStructDeclaration {
-                        type_name: "WorldPointLight".to_string(),
-                        fields: vec![
-                                ShaderStructField {
-                                        field_name: "pos".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "color".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "kc_kl_kq".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                        ],
-                }
-        }
-}
-
 #[allow(dead_code)]
 #[repr(C)]
+#[derive(ShaderStruct)]
 struct WorldSpotlight {
         pos: Vec4,
         dir: Vec4, // xyz=direction w=angle
@@ -1184,70 +1120,18 @@ struct WorldSpotlight {
         kc_kl_kq_inner: Vec4, // w=inner radius percentage
 }
 
-impl ShaderStructDeclarationProvider for WorldSpotlight {
-        fn shader_struct_declaration() -> ShaderStructDeclaration {
-                ShaderStructDeclaration {
-                        type_name: "WorldSpotlight".to_string(),
-                        fields: vec![
-                                ShaderStructField {
-                                        field_name: "pos".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "dir".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "color".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "kc_kl_kq_inner".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                        ],
-                }
-        }
-}
-
 #[allow(dead_code)]
 #[repr(C)]
+#[derive(ShaderStruct)]
 pub struct WorldLights {
         dir_light: WorldDirectionalLight,
         point_light: WorldPointLight,
         spotlight: WorldSpotlight,
 }
 
-impl ShaderStructDeclarationProvider for WorldLights {
-        fn shader_struct_declaration() -> ShaderStructDeclaration {
-                ShaderStructDeclaration {
-                        type_name: "WorldLights".to_string(),
-                        fields: vec![
-                                ShaderStructField {
-                                        field_name: "dir_light".to_string(),
-                                        field_type: ShaderStructFieldType::Struct(
-                                                WorldDirectionalLight::shader_struct_declaration(),
-                                        ),
-                                },
-                                ShaderStructField {
-                                        field_name: "point_light".to_string(),
-                                        field_type: ShaderStructFieldType::Struct(
-                                                WorldPointLight::shader_struct_declaration(),
-                                        ),
-                                },
-                                ShaderStructField {
-                                        field_name: "spotlight".to_string(),
-                                        field_type: ShaderStructFieldType::Struct(
-                                                WorldSpotlight::shader_struct_declaration(),
-                                        ),
-                                },
-                        ],
-                }
-        }
-}
-
 #[allow(dead_code)]
 #[repr(C)]
+#[derive(ShaderStruct)]
 pub struct MaterialData {
         pub ambient_color: Vec4,
         pub diffuse_color: Vec4,
@@ -1256,38 +1140,9 @@ pub struct MaterialData {
         pub specular_strength_and_diffuse_strength: Vec2,
 }
 
-impl ShaderStructDeclarationProvider for MaterialData {
-        fn shader_struct_declaration() -> ShaderStructDeclaration {
-                ShaderStructDeclaration {
-                        type_name: "MaterialData".to_string(),
-                        fields: vec![
-                                ShaderStructField {
-                                        field_name: "ambient_color".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "diffuse_color".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "specular_color".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "shininess_and_ambient_strength".to_string(),
-                                        field_type: ShaderStructFieldType::Vec2,
-                                },
-                                ShaderStructField {
-                                        field_name: "specular_strength_and_diffuse_strength".to_string(),
-                                        field_type: ShaderStructFieldType::Vec2,
-                                },
-                        ],
-                }
-        }
-}
-
 #[allow(dead_code)]
 #[repr(C)]
+#[derive(ShaderStruct)]
 pub struct BillboardData {
         billboard_center: Vec4,
         billboard_scale: Vec4,
@@ -1295,60 +1150,13 @@ pub struct BillboardData {
         camera_up: Vec4,
 }
 
-impl ShaderStructDeclarationProvider for BillboardData {
-        fn shader_struct_declaration() -> ShaderStructDeclaration {
-                ShaderStructDeclaration {
-                        type_name: "BillboardData".to_string(),
-                        fields: vec![
-                                ShaderStructField {
-                                        field_name: "billboard_center".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "billboard_scale".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "camera_right".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                                ShaderStructField {
-                                        field_name: "camera_up".to_string(),
-                                        field_type: ShaderStructFieldType::Vec4,
-                                },
-                        ],
-                }
-        }
-}
-
 #[allow(dead_code)]
 #[repr(C)]
+#[derive(ShaderStruct)]
 pub struct ObjectMatrices {
         model: Mat4,
         mvp: Mat4,
         normal: Mat4,
-}
-
-impl ShaderStructDeclarationProvider for ObjectMatrices {
-        fn shader_struct_declaration() -> ShaderStructDeclaration {
-                ShaderStructDeclaration {
-                        type_name: "ObjectMatrices".to_string(),
-                        fields: vec![
-                                ShaderStructField {
-                                        field_name: "model".to_string(),
-                                        field_type: ShaderStructFieldType::Mat4,
-                                },
-                                ShaderStructField {
-                                        field_name: "mvp".to_string(),
-                                        field_type: ShaderStructFieldType::Mat4,
-                                },
-                                ShaderStructField {
-                                        field_name: "normal".to_string(),
-                                        field_type: ShaderStructFieldType::Mat4,
-                                },
-                        ],
-                }
-        }
 }
 
 #[allow(dead_code)]

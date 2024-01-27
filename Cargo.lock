@@ -139,6 +139,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "shader_resource_derive",
  "slotmap",
  "stb_image",
  "thiserror",
@@ -2079,6 +2080,15 @@ dependencies = [
  "ryu",
  "serde",
  "yaml-rust",
+]
+
+[[package]]
+name = "shader_resource_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.48",
 ]
 
 [[package]]
