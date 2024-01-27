@@ -6,6 +6,8 @@ use syn::{parse_macro_input, spanned::Spanned, DeriveInput};
 pub fn derive_shader_struct_declaration_provider(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let input = parse_macro_input!(input as DeriveInput);
 
+        assert_repr_c(&input);
+
         let name = &input.ident;
         let declaration = shader_struct_declaration(&input);
 
@@ -22,6 +24,24 @@ pub fn derive_shader_struct_declaration_provider(input: proc_macro::TokenStream)
         // println!("{}", output);
 
         output
+}
+
+fn assert_repr_c(input: &DeriveInput) {
+        let mut repr_c = false;
+        for attr in &input.attrs {
+                if attr.path().is_ident("repr") {
+                        let _ = attr.parse_nested_meta(|meta| {
+                                // #[repr(C)]
+                                if meta.path.is_ident("C") {
+                                        repr_c = true;
+                                }
+
+                                Ok(())
+                        });
+                }
+        }
+
+        assert!(repr_c, "struct is not marked with #[repr(C)]");
 }
 
 fn shader_struct_declaration(input: &DeriveInput) -> TokenStream {
@@ -47,9 +67,7 @@ fn shader_struct_declaration_fields(data: &syn::Data) -> TokenStream {
                         syn::Fields::Unnamed(_) => panic!("fields must be named"),
                         syn::Fields::Unit => panic!("must contain at least one field"),
                         syn::Fields::Named(fields) => {
-                                let children = fields.named
-                                        .iter()
-                                        .map(|f| shader_struct_field(f));
+                                let children = fields.named.iter().map(|f| shader_struct_field(f));
 
                                 quote! {
                                         #(#children),*
