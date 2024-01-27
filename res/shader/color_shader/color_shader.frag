@@ -1,43 +1,9 @@
 #version 450
 #extension GL_EXT_debug_printf : enable
 
-struct DirectionalLight {
-        vec4 dir;
-        vec4 color;
-};
-
-struct PointLight {
-        vec4 pos;
-        vec4 color;
-        vec4 kc_kl_kq;
-};
-
-struct Spotlight {
-        vec4 pos;
-        vec4 dir;
-        vec4 color;
-        vec4 kc_kl_kq;
-};
-
-layout (set = 0, binding = 0) uniform WorldMatrices {
-        vec4 view_pos;
-        mat4 view;
-        mat4 proj;
-} u_world_matrices;
-
-layout (set = 0, binding = 1) uniform WorldLights {
-        DirectionalLight dir_light;
-        PointLight point_light;
-        Spotlight spotlight;
-} u_lights;
-
-layout (set = 1, binding = 0) uniform texture2D u_texture;
-layout (set = 1, binding = 1) uniform sampler u_sampler;
-layout (set = 1, binding = 2) uniform MaterialData {
-        vec4 ambient_color;
-        vec4 diffuse_color;
-} u_material;
-
+#resource WorldMatrices u_world_matrices : WORLD_MATRICES;
+#resource WorldLights u_lights : WORLD_LIGHTS;
+#resource MaterialData u_material : MATERIAL_DATA;
 
 layout (location = 0) in vec3 i_frag_pos;
 layout (location = 1) in vec3 i_normal;

@@ -2,6 +2,7 @@ use std::{
         borrow::Cow,
         cell::Cell,
         ffi::{c_void, CStr, CString},
+        io::{self, Write},
         os::raw::c_char,
 };
 
@@ -346,6 +347,8 @@ unsafe extern "system" fn vk_debug_callback(
                 message,
         );
 
+        let mut stdout = io::stdout();
+        let _ = stdout.flush();
         println!();
         match message_severity {
                 vk::DebugUtilsMessageSeverityFlagsEXT::INFO => log::info!("{}", display),
@@ -354,6 +357,7 @@ unsafe extern "system" fn vk_debug_callback(
                 vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => (),
                 _ => log::info!("{}", display),
         }
+        let _ = stdout.flush();
 
         vk::FALSE
 }

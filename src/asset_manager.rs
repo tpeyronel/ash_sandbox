@@ -3,7 +3,6 @@ use std::{
         ops::{Index, IndexMut},
         path::{Path, PathBuf},
         process::Command,
-        sync::Arc,
 };
 
 use crossbeam_channel::Receiver;
@@ -25,7 +24,16 @@ use crate::{
         },
         hashmap::HashMap,
         my_glm::*,
-        util::{default, log_if_error},
+        shader_preprocessor::{PreprocessedShaderStage, ShaderPreprocessor},
+        shader_resource_registry::ShaderResourceRegistry,
+        shader_resources::{
+                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_MATERIAL_DATA,
+                SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE, SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE,
+                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS,
+                SHADER_RESOURCE_WORLD_MATRICES,
+        },
+        util::default,
+        vk::vk_renderer::{BillboardData, MaterialData, ObjectMatrices, WorldLights, WorldMatrices},
         AnyResult,
 };
 
@@ -100,6 +108,48 @@ pub struct Material {
         pub occlusion_texture: Option<TextureId>,
         pub emissive_texture: Option<TextureId>,
         pub emissive_factor: Vec3,
+}
+
+impl Material {
+        // fn get_shader_resource_data(&self, resource: &ShaderResourceId, f: impl FnOnce(Option<ShaderResourceData>)) {
+        //         match resource {
+        //                 SHADER_RESOURCE_DIFFUSE_TEXTURE => {
+        //                         f(Some(ShaderResourceData::Image2D(self.base_color_texture)));
+        //                 },
+        //                 SHADER_RESOURCE_MATERIAL_DATA => {
+        //                         let data = MaterialData {
+        //                                 ambient_color: self.base_color_factor,
+        //                                 diffuse_color: self.base_color_factor,
+        //                                 specular_color: self.base_color_factor,
+        //                                 shininess_and_ambient_strength: Vec2::new(
+        //                                         self.shininess,
+        //                                         self.ambient_strength,
+        //                                 ),
+        //                                 specular_strength_and_diffuse_strength: Vec2::new(
+        //                                         self.specular_strength,
+        //                                         self.diffuse_strength,
+        //                                 ),
+        //                         };
+
+        //                         let bytes = unsafe {
+        //                                 ::core::slice::from_raw_parts(
+        //                                         (&data as *const MaterialData) as *const u8,
+        //                                         ::core::mem::size_of::<MaterialData>(),
+        //                                 )
+        //                         };
+
+        //                         f(Some(ShaderResourceData::StructData(bytes)));
+        //                 },
+        //                 _ => {
+        //                         f(None);
+        //                 },
+        //         }
+        // }
+}
+
+pub enum ShaderResourceData<'a> {
+        StructData(&'a [u8]),
+        Image2D(TextureId),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -202,23 +252,22 @@ pub struct ShaderDeclaration {
         pub vertex_inputs: Vec<String>,
 }
 
-pub type ShaderResourceId = String;
-
 slotmap::new_key_type! { pub struct ShaderId; }
 
 #[derive(Debug, Clone)]
 pub struct Shader {
         pub name: String,
-        pub vert_module: Arc<ShaderModule>,
-        pub frag_module: Arc<ShaderModule>,
+        pub vert_shader_path: PathBuf,
+        pub vert_shader: PreprocessedShaderStage,
+        pub frag_shader_path: PathBuf,
+        pub frag_shader: PreprocessedShaderStage,
         pub disable_depth_test: bool,
         pub cull_mode: CullMode,
-        pub resources: Vec<ShaderResourceId>,
         pub vertex_inputs: Vec<String>,
 }
 
 impl Shader {
-        pub fn from_yaml(path: &Path) -> Result<Self, ShaderLoadError> {
+        pub fn from_yaml(shader_resources: &ShaderResourceRegistry, path: &Path) -> Result<Self, ShaderLoadError> {
                 let yaml = std::fs::read_to_string(path)?;
                 let declaration: ShaderDeclaration = serde_yaml::from_str(&yaml)?;
 
@@ -228,11 +277,18 @@ impl Shader {
 
                 Ok(Self {
                         name: declaration.name.clone(),
-                        vert_module: Arc::new(ShaderModule::from_glsl_file(directory.join(&declaration.vert_shader))?),
-                        frag_module: Arc::new(ShaderModule::from_glsl_file(directory.join(&declaration.frag_shader))?),
+                        vert_shader_path: directory.join(&declaration.vert_shader),
+                        vert_shader: ShaderPreprocessor::preprocess_glsl_source(
+                                shader_resources,
+                                &std::fs::read_to_string(directory.join(&declaration.vert_shader))?,
+                        )?,
+                        frag_shader_path: directory.join(&declaration.frag_shader),
+                        frag_shader: ShaderPreprocessor::preprocess_glsl_source(
+                                shader_resources,
+                                &std::fs::read_to_string(directory.join(&declaration.frag_shader))?,
+                        )?,
                         disable_depth_test: declaration.disable_depth_test,
                         cull_mode: declaration.cull_mode,
-                        resources: declaration.uniforms,
                         vertex_inputs: declaration.vertex_inputs,
                 })
         }
@@ -244,7 +300,7 @@ pub struct ShaderModule {
 }
 
 impl ShaderModule {
-        fn from_glsl_file(path: PathBuf) -> Result<Self, ShaderLoadError> {
+        pub fn from_glsl_file(path: PathBuf) -> Result<Self, ShaderLoadError> {
                 let input_path = path.into_os_string().into_string()?;
                 let output_path = format!("{}.spv", input_path);
 
@@ -268,9 +324,112 @@ impl ShaderModule {
         }
 }
 
+pub type ShaderResourceId = String;
+
 #[derive(Debug, Clone)]
 pub struct ShaderResource {
-        pub elements: Vec<ShaderResourceElement>,
+        pub id: ShaderResourceId,
+        pub resource_type: ShaderResourceType,
+        pub provider: ShaderResourceProvider,
+}
+
+#[derive(Debug, Clone)]
+pub enum ShaderResourceType {
+        Struct(ShaderStructDeclaration),
+        Image2D,
+        ImageCube,
+}
+
+impl ShaderResourceType {
+        pub fn glsl_type_name<'a>(&'a self) -> &'a str {
+                match self {
+                        ShaderResourceType::Struct(ShaderStructDeclaration { type_name, .. }) => &type_name,
+                        ShaderResourceType::Image2D => "sampler2D",
+                        ShaderResourceType::ImageCube => "samplerCube",
+                }
+        }
+
+        pub fn glsl_complete_type(&self) -> String {
+                match self {
+                        ShaderResourceType::Struct(ShaderStructDeclaration { type_name, fields }) => {
+                                let body: String = fields
+                                        .iter()
+                                        .map(|f| format!("\t{} {};", f.field_type.glsl_type_name(), f.field_name))
+                                        .collect::<Vec<String>>()
+                                        .join("\n");
+
+                                format!("{} {{\n{}\n}}", type_name, body)
+                        },
+                        _ => self.glsl_type_name().to_owned(),
+                }
+        }
+}
+
+pub trait ShaderStructDeclarationProvider {
+        fn shader_struct_declaration() -> ShaderStructDeclaration;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShaderStructDeclaration {
+        pub type_name: String,
+        pub fields: Vec<ShaderStructField>,
+}
+
+impl ShaderStructDeclaration {
+        pub fn compute_size(&self) -> usize {
+                self.fields
+                        .iter()
+                        .map(|f| match &f.field_type {
+                                ShaderStructFieldType::Struct(child) => child.compute_size(),
+                                ShaderStructFieldType::Vec2 => std::mem::size_of::<Vec2>(),
+                                ShaderStructFieldType::Vec4 => std::mem::size_of::<Vec4>(),
+                                ShaderStructFieldType::Mat4 => std::mem::size_of::<Mat4>(),
+                        })
+                        .sum()
+        }
+
+        pub fn glsl_type_declaration(&self) -> String {
+                let fields = self
+                        .fields
+                        .iter()
+                        .map(|f| format!("\t{} {};", f.field_type.glsl_type_name(), f.field_name))
+                        .collect::<Vec<String>>()
+                        .join("\n");
+
+                format!("struct {} {{\n{}\n}};\n\n", self.type_name, fields)
+        }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShaderStructField {
+        pub field_name: String,
+        pub field_type: ShaderStructFieldType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShaderStructFieldType {
+        Struct(ShaderStructDeclaration),
+        Vec2,
+        Vec4,
+        Mat4,
+}
+
+impl ShaderStructFieldType {
+        pub fn glsl_type_name(&self) -> &str {
+                match self {
+                        ShaderStructFieldType::Vec2 => "vec2",
+                        ShaderStructFieldType::Vec4 => "vec4",
+                        ShaderStructFieldType::Mat4 => "mat4",
+                        ShaderStructFieldType::Struct(ShaderStructDeclaration { type_name, .. }) => &type_name,
+                }
+        }
+}
+
+#[derive(Debug, Hash, Clone, Copy)]
+pub enum ShaderResourceProvider {
+        World,
+        Material,
+        Mesh,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -368,6 +527,12 @@ pub enum ShaderLoadError {
         IoError(#[from] std::io::Error),
         #[error("error ocurred compiling shaders: {0}")]
         CompileError(std::process::ExitStatus),
+        #[error("invalid preprocessor directive syntax for '{0}'")]
+        InvalidPreprocessorDirective(&'static str),
+        #[error("unknown shader resource id '{0}'")]
+        UnknownShaderResourceId(String),
+        #[error("mismatched shader resource type: '{0}' vs '{1}'")]
+        MismatchedShaderResourceType(String, String),
 }
 
 impl From<OsString> for ShaderLoadError {
@@ -848,7 +1013,7 @@ impl AssetStorage {
 pub struct AssetManager {
         pub assets: AssetStorage,
 
-        shader_resources: HashMap<ShaderResourceId, ShaderResource>,
+        shader_resources: ShaderResourceRegistry,
         shader_names: HashMap<String, ShaderId>,
 
         pub skybox_model: ModelId,
@@ -861,6 +1026,119 @@ pub struct AssetManager {
 impl AssetManager {
         pub fn new() -> AnyResult<(Self, Receiver<AssetManagerEvent>)> {
                 let (mut assets, event_rx) = AssetStorage::new();
+                let mut shader_resources = ShaderResourceRegistry::new();
+
+                shader_resources
+                        .register(ShaderResource {
+                                id: SHADER_RESOURCE_WORLD_MATRICES.to_string(),
+                                resource_type: ShaderResourceType::Struct(WorldMatrices::shader_struct_declaration()),
+                                provider: ShaderResourceProvider::World,
+                        })
+                        .unwrap();
+                assets.images
+                        .event_tx
+                        .send(AssetManagerEvent::ShaderResourceInserted(
+                                SHADER_RESOURCE_WORLD_MATRICES.to_string(),
+                        ))
+                        .unwrap();
+
+                shader_resources
+                        .register(ShaderResource {
+                                id: SHADER_RESOURCE_WORLD_LIGHTS.to_string(),
+                                resource_type: ShaderResourceType::Struct(WorldLights::shader_struct_declaration()),
+                                provider: ShaderResourceProvider::World,
+                        })
+                        .unwrap();
+                assets.images
+                        .event_tx
+                        .send(AssetManagerEvent::ShaderResourceInserted(
+                                SHADER_RESOURCE_WORLD_LIGHTS.to_string(),
+                        ))
+                        .unwrap();
+
+                shader_resources
+                        .register(ShaderResource {
+                                id: SHADER_RESOURCE_BILLBOARD_DATA.to_string(),
+                                resource_type: ShaderResourceType::Struct(BillboardData::shader_struct_declaration()),
+                                provider: ShaderResourceProvider::World, // TODO: should be per mesh
+                        })
+                        .unwrap();
+                assets.images
+                        .event_tx
+                        .send(AssetManagerEvent::ShaderResourceInserted(
+                                SHADER_RESOURCE_BILLBOARD_DATA.to_string(),
+                        ))
+                        .unwrap();
+
+                shader_resources
+                        .register(ShaderResource {
+                                id: SHADER_RESOURCE_OBJECT_MATRICES.to_string(),
+                                resource_type: ShaderResourceType::Struct(ObjectMatrices::shader_struct_declaration()),
+                                provider: ShaderResourceProvider::Mesh,
+                        })
+                        .unwrap();
+                assets.images
+                        .event_tx
+                        .send(AssetManagerEvent::ShaderResourceInserted(
+                                SHADER_RESOURCE_OBJECT_MATRICES.to_string(),
+                        ))
+                        .unwrap();
+
+                shader_resources
+                        .register(ShaderResource {
+                                id: SHADER_RESOURCE_MATERIAL_DATA.to_string(),
+                                resource_type: ShaderResourceType::Struct(MaterialData::shader_struct_declaration()),
+                                provider: ShaderResourceProvider::Material,
+                        })
+                        .unwrap();
+                assets.images
+                        .event_tx
+                        .send(AssetManagerEvent::ShaderResourceInserted(
+                                SHADER_RESOURCE_MATERIAL_DATA.to_string(),
+                        ))
+                        .unwrap();
+
+                shader_resources
+                        .register(ShaderResource {
+                                id: SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE.to_string(),
+                                resource_type: ShaderResourceType::Image2D,
+                                provider: ShaderResourceProvider::Material,
+                        })
+                        .unwrap();
+                assets.images
+                        .event_tx
+                        .send(AssetManagerEvent::ShaderResourceInserted(
+                                SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE.to_string(),
+                        ))
+                        .unwrap();
+
+                shader_resources
+                        .register(ShaderResource {
+                                id: SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE.to_string(),
+                                resource_type: ShaderResourceType::Image2D,
+                                provider: ShaderResourceProvider::Material,
+                        })
+                        .unwrap();
+                assets.images
+                        .event_tx
+                        .send(AssetManagerEvent::ShaderResourceInserted(
+                                SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE.to_string(),
+                        ))
+                        .unwrap();
+
+                shader_resources
+                        .register(ShaderResource {
+                                id: SHADER_RESOURCE_SKYBOX.to_string(),
+                                resource_type: ShaderResourceType::ImageCube,
+                                provider: ShaderResourceProvider::World,
+                        })
+                        .unwrap();
+                assets.images
+                        .event_tx
+                        .send(AssetManagerEvent::ShaderResourceInserted(
+                                SHADER_RESOURCE_SKYBOX.to_string(),
+                        ))
+                        .unwrap();
 
                 let default_sampler = assets.samplers.insert(Sampler {
                         name: Some("default-sampler".into()),
@@ -896,9 +1174,10 @@ impl AssetManager {
                         sampler: default_sampler,
                 });
 
-                let default_shader = assets.shaders.insert(Shader::from_yaml(Path::new(
-                        "res/shader/basic_shader/basic_shader.yaml",
-                ))?);
+                let default_shader = assets.shaders.insert(Shader::from_yaml(
+                        &shader_resources,
+                        Path::new("res/shader/basic_shader/basic_shader.yaml"),
+                )?);
 
                 let default_material = assets.materials.insert(Material {
                         name: Some("default-material".into()),
@@ -918,7 +1197,10 @@ impl AssetManager {
                         emissive_factor: Vec3::splat(0.0),
                 });
 
-                let skybox_shader = Shader::from_yaml(Path::new("res/shader/skybox_shader/skybox_shader.yaml"))?;
+                let skybox_shader = Shader::from_yaml(
+                        &shader_resources,
+                        Path::new("res/shader/skybox_shader/skybox_shader.yaml"),
+                )?;
                 let skybox_shader = assets.shaders.insert(skybox_shader);
 
                 let (cube_bundle, cube_model_name) = AssetBundle::from_gltf(Path::new("res/model/cube/cube.gltf"))?;
@@ -946,7 +1228,7 @@ impl AssetManager {
                         Self {
                                 assets,
 
-                                shader_resources: HashMap::new(),
+                                shader_resources,
                                 shader_names: HashMap::new(),
 
                                 skybox_model,
@@ -959,16 +1241,19 @@ impl AssetManager {
                 ))
         }
 
-        pub fn register_shader_resource(
-                &mut self,
-                shader_resource_id: ShaderResourceId,
-                shader_resource: ShaderResource,
-        ) {
-                self.shader_resources.insert(shader_resource_id, shader_resource);
+        pub fn register_shader_resource(&mut self, shader_resource: ShaderResource) {
+                assert!(self.shader_resources.get(&shader_resource.id).is_none());
+
+                self.assets
+                        .images
+                        .event_tx
+                        .send(AssetManagerEvent::ShaderResourceInserted(shader_resource.id.clone()))
+                        .unwrap();
+                self.shader_resources.register(shader_resource).unwrap();
         }
 
         pub fn load_shader_from_yaml(&mut self, path: &Path) -> Result<ShaderId, ShaderLoadError> {
-                let shader = Shader::from_yaml(path)?;
+                let shader = Shader::from_yaml(&self.shader_resources, path)?;
                 if self.shader_names.contains_key(&shader.name) {
                         return Err(ShaderLoadError::ShaderNameAlreadyRegistered(shader.name));
                 }
@@ -1109,7 +1394,7 @@ impl AssetManager {
         }
 
         #[allow(dead_code)]
-        pub fn shader_resources(&self) -> &HashMap<ShaderResourceId, ShaderResource> {
+        pub fn shader_resources(&self) -> &ShaderResourceRegistry {
                 &self.shader_resources
         }
 
@@ -1215,6 +1500,9 @@ pub enum AssetManagerEvent {
         ModelInserted(ModelId),
         ModelChanged(ModelId),
         ModelRemoved(ModelId),
+        ShaderResourceInserted(ShaderResourceId),
+        ShaderResourceChanged(ShaderResourceId),
+        ShaderResourceRemoved(ShaderResourceId),
         ShaderInserted(ShaderId),
         ShaderChanged(ShaderId),
         ShaderRemoved(ShaderId),
@@ -1255,15 +1543,15 @@ impl<K: Key, V, E: From<SlotMapEvent<K>>> ObservableSlotMap<K, V, E> {
         #[allow(dead_code)]
         pub fn insert(&mut self, v: V) -> K {
                 let k = self.inner.insert(v);
-                self.event_tx.send(SlotMapEvent::Inserted(k).into());
-                self.event_tx.send(SlotMapEvent::Changed(k).into());
+                self.event_tx.send(SlotMapEvent::Inserted(k).into()).unwrap();
+                self.event_tx.send(SlotMapEvent::Changed(k).into()).unwrap();
                 k
         }
 
         #[allow(dead_code)]
         pub fn remove(&mut self, k: K) -> Option<V> {
                 let v = self.inner.remove(k);
-                self.event_tx.send(SlotMapEvent::Removed(k).into());
+                self.event_tx.send(SlotMapEvent::Removed(k).into()).unwrap();
                 v
         }
 
@@ -1274,7 +1562,7 @@ impl<K: Key, V, E: From<SlotMapEvent<K>>> ObservableSlotMap<K, V, E> {
 
         #[allow(dead_code)]
         pub fn get_mut(&mut self, k: K) -> Option<&mut V> {
-                self.event_tx.send(SlotMapEvent::Changed(k).into());
+                self.event_tx.send(SlotMapEvent::Changed(k).into()).unwrap();
                 self.inner.get_mut(k)
         }
 }

@@ -300,14 +300,74 @@ impl_destroyable_expr!(VkBuffer, vk::Buffer, |s: &VkBuffer| {
         }
 });
 
-pub struct VkDynamicUniformBuffer<T: 'static> {
+pub struct VkDynamicUniformBuffer {
+        capacity: usize,
+        buffer: VkBuffer,
+        element_size: usize,
+        element_padded_size: usize,
+}
+
+impl VkDynamicUniformBuffer {
+        pub fn new(
+                pdevice: &VkPhysicalDevice,
+                device: &ash::Device,
+                allocator: Rc<VmaAllocator>,
+                element_size: usize,
+                capacity: usize,
+        ) -> AnyResult<Self> {
+                let element_padded_size = pdevice.calc_padded_size(element_size);
+                let buffer_size = (element_padded_size * capacity) as vk::DeviceSize;
+                let buffer = VkBuffer::new_uniform_buffer(device, allocator, buffer_size)?;
+
+                Ok(Self {
+                        buffer,
+                        capacity,
+                        element_size,
+                        element_padded_size,
+                })
+        }
+
+        pub fn element_padded_size(&self) -> usize {
+                self.element_padded_size
+        }
+
+        // Writes data to buffer with the specified index. Returns the element's offset.
+        pub fn write<T: 'static>(&self, value: &T, index: usize) -> VkResult<usize> {
+                assert!(
+                        index < self.capacity,
+                        "Write to buffer with capacity {} invalid with index {}",
+                        self.capacity,
+                        index
+                );
+
+                assert_eq!(self.element_size, std::mem::size_of::<T>());
+
+                let offset = self.element_padded_size * index;
+                self.buffer.write_offsetted(value, offset)?;
+                Ok(offset)
+        }
+
+        pub unsafe fn destroy(&self) {
+                self.buffer.destroy();
+        }
+}
+
+impl Deref for VkDynamicUniformBuffer {
+        type Target = vk::Buffer;
+
+        fn deref(&self) -> &Self::Target {
+                &*self.buffer
+        }
+}
+
+pub struct VkTypedDynamicUniformBuffer<T: 'static> {
         capacity: usize,
         buffer: VkBuffer,
         element_padded_size: usize,
         _element_type: PhantomData<T>,
 }
 
-impl<T: 'static> VkDynamicUniformBuffer<T> {
+impl<T: 'static> VkTypedDynamicUniformBuffer<T> {
         pub fn new(
                 pdevice: &VkPhysicalDevice,
                 device: &ash::Device,
@@ -349,7 +409,7 @@ impl<T: 'static> VkDynamicUniformBuffer<T> {
         }
 }
 
-impl<T: 'static> Deref for VkDynamicUniformBuffer<T> {
+impl<T: 'static> Deref for VkTypedDynamicUniformBuffer<T> {
         type Target = vk::Buffer;
 
         fn deref(&self) -> &Self::Target {

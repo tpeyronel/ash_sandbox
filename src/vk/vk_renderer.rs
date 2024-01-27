@@ -9,8 +9,7 @@ use log::{debug, error, info, trace, warn};
 use winit::{dpi::PhysicalSize, window::Window};
 
 use super::{
-        vk_asset_manager::{VkAssetManager, VkCubemap},
-        vk_buffer::{VkBuffer, VkDynamicUniformBuffer},
+        vk_asset_manager::{VkAssetManager, VkCubemap, VkDescriptorSetIndex, VkShader, VkShaderResourceType},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
         vk_descriptor_set_layout_cache::VkDescriptorSetLayoutCache,
@@ -19,12 +18,19 @@ use super::{
 };
 use crate::{
         application::InterpGlobalTransform,
-        asset_manager::{AssetManager, AssetManagerEvent, MaterialMesh},
+        asset_manager::{
+                AssetManager, AssetManagerEvent, MaterialMesh, ShaderResourceId, ShaderStructDeclaration, ShaderStructDeclarationProvider, ShaderStructField,
+                ShaderStructFieldType,
+        },
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
-        constants::MAX_OBJECT_MATRICES,
+        hashmap::HashMap,
         model_instance_manager::ModelInstance,
         my_glm::*,
         renderer::Renderer,
+        shader_resources::{
+                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_OBJECT_MATRICES,
+                SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
+        },
         skybox::Skybox,
         util::RefIntoSlice,
 };
@@ -55,6 +61,8 @@ pub struct VkRenderer {
 
         creation_instant: Instant,
         framei: usize,
+
+        world_shader_resource_descriptors_data: HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
 }
 
 impl VkRenderer {
@@ -96,15 +104,13 @@ impl VkRenderer {
 
                 let max_concurrent_frames = MAX_CONCURRENT_FRAMES;
                 let frames_data = (0..max_concurrent_frames)
-                        .map(|_| VkFrameData::new(&mut vk_context, world_dst_set_layout, object_dst_set_layout))
+                        .map(|_| VkFrameData::new(&mut vk_context))
                         .collect::<AnyResult<Vec<VkFrameData>>>()?;
 
                 let vk_asset_manager = VkAssetManager::new(
                         &mut vk_context,
                         swapchain.samples,
                         *render_pass,
-                        world_dst_set_layout,
-                        object_dst_set_layout,
                         swapchain.img_count as usize,
                 )?;
                 trace!("Created VkAssetManager");
@@ -148,6 +154,8 @@ impl VkRenderer {
                         creation_instant: Instant::now(),
 
                         framei: 0,
+
+                        world_shader_resource_descriptors_data: HashMap::new(),
                 })
         }
 }
@@ -190,7 +198,12 @@ impl Renderer for VkRenderer {
                         vp: proj_mat * view_mat,
                 };
 
-                frame_data.world_matrices_buffer.write(&world_matrices)?;
+                Self::write_struct_resource(
+                        self.framei,
+                        &self.vk_asset_manager,
+                        SHADER_RESOURCE_WORLD_MATRICES,
+                        &world_matrices,
+                )?;
 
                 let (light_transform, point_light) = world
                         .query::<(&InterpGlobalTransform, &PointLight)>()
@@ -230,23 +243,37 @@ impl Renderer for VkRenderer {
                         ),
                 };
 
-                frame_data.world_lights_buffer.write(&WorldLights {
+                let world_lights = WorldLights {
                         dir_light,
                         point_light,
                         spotlight,
-                })?;
+                };
+
+                Self::write_struct_resource(
+                        self.framei,
+                        &self.vk_asset_manager,
+                        SHADER_RESOURCE_WORLD_LIGHTS,
+                        &world_lights,
+                )?;
 
                 let mut buffer_transform_idx = 0;
 
                 let camera_right = Vec4::from((camera_orien * Vec3::RIGHT, 0.0));
                 let camera_up = Vec4::from((camera_orien * Vec3::UP, 0.0));
 
-                frame_data.billboard_data_buffer.write(&BillboardData {
+                let billboard_data = BillboardData {
                         billboard_center: Vec4::ZERO,
                         billboard_scale: Vec4::splat(0.5),
                         camera_right,
                         camera_up,
-                })?;
+                };
+
+                Self::write_struct_resource(
+                        self.framei,
+                        &self.vk_asset_manager,
+                        SHADER_RESOURCE_BILLBOARD_DATA,
+                        &billboard_data,
+                )?;
 
                 unsafe {
                         self.vk_context.device.cmd_set_viewport(
@@ -260,30 +287,32 @@ impl Renderer for VkRenderer {
                                 slice::from_ref(&self.swapchain.scissor),
                         );
 
-                        let graphics_pipeline_layout = *self.vk_asset_manager.graphics_pipeline_layout;
-                        self.vk_context.device.cmd_bind_descriptor_sets(
-                                *frame_data.draw_cmd_buffer,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                graphics_pipeline_layout,
-                                0,
-                                &[frame_data.world_dst_set],
-                                &[],
-                        );
+                        // let graphics_pipeline_layout = *self.vk_asset_manager.graphics_pipeline_layout;
+                        // self.vk_context.device.cmd_bind_descriptor_sets(
+                        //         *frame_data.draw_cmd_buffer,
+                        //         vk::PipelineBindPoint::GRAPHICS,
+                        //         graphics_pipeline_layout,
+                        //         0,
+                        //         &[frame_data.world_dst_set],
+                        //         &[],
+                        // );
 
                         let asset_manager = world.remove_resource::<AssetManager>().unwrap();
 
                         if let Some(skybox) = world.get_resource::<Skybox>() {
                                 let vk_skybox = &self.vk_asset_manager.cubemaps[skybox.0];
-                                frame_data.update_skybox(&self.vk_context.device, vk_skybox);
+                                Self::update_skybox(
+                                        &self.vk_asset_manager,
+                                        &mut self.world_shader_resource_descriptors_data,
+                                        vk_skybox,
+                                );
 
                                 Self::draw_model_instance(
                                         &self.vk_context.device,
                                         *frame_data.draw_cmd_buffer,
-                                        &frame_data.object_matrices_buffer,
-                                        frame_data.object_dst_set,
-                                        graphics_pipeline_layout,
                                         &asset_manager,
                                         &self.vk_asset_manager,
+                                        &self.world_shader_resource_descriptors_data,
                                         self.framei,
                                         &WorldMatrices {
                                                 view_pos: Vec4::from((camera_pos, 1.0)),
@@ -307,11 +336,9 @@ impl Renderer for VkRenderer {
                                 Self::draw_model_instance(
                                         &self.vk_context.device,
                                         *frame_data.draw_cmd_buffer,
-                                        &frame_data.object_matrices_buffer,
-                                        frame_data.object_dst_set,
-                                        graphics_pipeline_layout,
                                         &asset_manager,
                                         &self.vk_asset_manager,
+                                        &self.world_shader_resource_descriptors_data,
                                         self.framei,
                                         &world_matrices,
                                         minstance,
@@ -581,6 +608,49 @@ impl VkRenderer {
                 unsafe { dst_set_layout_cache.create_layout(bindings) }
         }
 
+        // TODO: check that T is compatible with the shader resource type.
+        fn write_struct_resource<T: 'static>(
+                framei: usize,
+                vk_asset_manager: &VkAssetManager,
+                resource_id: &str,
+                data: &T,
+        ) -> AnyResult<()> {
+                let vk_resource = vk_asset_manager.shader_resources.get(resource_id).unwrap();
+
+                match vk_resource.resource_type {
+                        VkShaderResourceType::UniformBuffer => {
+                                let buffers = vk_asset_manager.shader_resource_buffers.get(resource_id).unwrap();
+                                let buffer = &buffers[framei];
+
+                                buffer.write(data)?;
+                        },
+                        VkShaderResourceType::UniformBufferDynamic => todo!(),
+                        VkShaderResourceType::CombinedImageSampler => panic!(),
+                }
+
+                Ok(())
+        }
+
+        fn write_image_resource(
+                vk_asset_manager: &VkAssetManager,
+                resource_id: &str,
+                image_view: vk::ImageView,
+                sampler: vk::Sampler,
+                world_shader_resource_descriptors_data: &mut HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
+        ) {
+                let vk_resource = vk_asset_manager.shader_resources.get(resource_id).unwrap();
+
+                match vk_resource.resource_type {
+                        VkShaderResourceType::UniformBuffer => panic!(),
+                        VkShaderResourceType::UniformBufferDynamic => panic!(),
+                        VkShaderResourceType::CombinedImageSampler => {
+                                let data = ShaderResourceDescriptorData::Image2D { image_view, sampler };
+
+                                world_shader_resource_descriptors_data.insert(resource_id.to_string(), data);
+                        },
+                }
+        }
+
         fn should_render(&self) -> bool {
                 if self.is_window_minimized() {
                         return false;
@@ -686,12 +756,11 @@ impl VkRenderer {
                         .command_buffers(frame_data.draw_cmd_buffer.deref_into_slice())
                         .wait_semaphores(frame_data.img_available_semaphore.deref_into_slice())
                         .wait_dst_stage_mask(&wait_stages)
-                        .signal_semaphores(frame_data.present_complete_semaphore.deref_into_slice())
-                        .build();
+                        .signal_semaphores(frame_data.present_complete_semaphore.deref_into_slice());
 
                 self.vk_context.device.queue_submit(
                         self.vk_context.queues.graphics,
-                        &[submit_info],
+                        &[submit_info.build()],
                         *frame_data.draw_cmd_buffer.fence,
                 )?;
 
@@ -722,11 +791,9 @@ impl VkRenderer {
         fn draw_model_instance(
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
-                object_matrices_buffer: &VkDynamicUniformBuffer<ObjectMatrices>,
-                object_dst_set: vk::DescriptorSet,
-                pipeline_layout: vk::PipelineLayout,
                 asset_manager: &AssetManager,
                 vk_asset_manager: &VkAssetManager,
+                world_shader_resource_descriptors_data: &HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
                 framei: usize,
                 world_matrices: &WorldMatrices,
                 minstance: &ModelInstance,
@@ -735,23 +802,19 @@ impl VkRenderer {
         ) -> VkResult<()> {
                 //let mut last_material = MaterialID::MAX;
 
-                unsafe {
+                let object_matrices_offset = unsafe {
                         let model = model_matrix;
                         let mvp = world_matrices.vp * model;
                         let normal = model.inverse().transpose();
 
-                        let object_matrices = ObjectMatrices { model, mvp, normal };
-                        let object_matrices_offset =
-                                object_matrices_buffer.write(&object_matrices, buffer_transform_idx)?;
+                        let object_matrices_buffer = &vk_asset_manager
+                                .shader_resource_dynamic_buffers
+                                .get(SHADER_RESOURCE_OBJECT_MATRICES)
+                                .unwrap()[framei];
 
-                        device.cmd_bind_descriptor_sets(
-                                draw_cmd_buffer,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                pipeline_layout,
-                                2,
-                                &[object_dst_set],
-                                &[object_matrices_offset as u32],
-                        )
+                        let object_matrices = ObjectMatrices { model, mvp, normal };
+
+                        object_matrices_buffer.write(&object_matrices, buffer_transform_idx)?
                 };
 
                 let model = asset_manager.model(minstance.model);
@@ -760,11 +823,12 @@ impl VkRenderer {
                         Self::draw_mesh_instance(
                                 device,
                                 draw_cmd_buffer,
-                                pipeline_layout,
                                 asset_manager,
                                 vk_asset_manager,
+                                world_shader_resource_descriptors_data,
                                 framei,
                                 material_mesh,
+                                object_matrices_offset,
                         )?;
                 }
 
@@ -774,14 +838,15 @@ impl VkRenderer {
         fn draw_mesh_instance(
                 device: &VkDevice,
                 draw_cmd_buffer: vk::CommandBuffer,
-                pipeline_layout: vk::PipelineLayout,
                 asset_manager: &AssetManager,
                 vk_asset_manager: &VkAssetManager,
+                world_shader_resource_descriptors_data: &HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
                 framei: usize,
                 material_mesh: &MaterialMesh,
+                object_matrices_offset: usize,
         ) -> VkResult<()> {
                 let material = asset_manager.material(material_mesh.material);
-                let pipeline = *vk_asset_manager.pipelines[material.shader];
+                let vk_shader = &vk_asset_manager.shaders[material.shader];
 
                 let vk_mesh = &vk_asset_manager.meshes[material_mesh.mesh];
                 let vk_material = &vk_asset_manager.materials[material_mesh.material];
@@ -791,11 +856,41 @@ impl VkRenderer {
                 } */
 
                 unsafe {
-                        device.cmd_bind_pipeline(draw_cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                        device.cmd_bind_pipeline(
+                                draw_cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                *vk_shader.graphics_pipeline,
+                        );
+
+                        Self::update_world_descriptors(
+                                device,
+                                world_shader_resource_descriptors_data,
+                                framei,
+                                vk_shader,
+                        );
+
+                        // TODO: actually handle dynamic uniform buffer bindings correctly
+                        device.cmd_bind_descriptor_sets(
+                                draw_cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                *vk_shader.graphics_pipeline_layout,
+                                VkDescriptorSetIndex::Mesh.value(),
+                                &[vk_shader.mesh_dst_set[framei]],
+                                &[object_matrices_offset as u32],
+                        );
+
+                        device.cmd_bind_descriptor_sets(
+                                draw_cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                *vk_shader.graphics_pipeline_layout,
+                                VkDescriptorSetIndex::World.value(),
+                                &[vk_shader.world_dst_set[framei]],
+                                &[],
+                        );
 
                         // TODO: update all materials beforehand, to avoid updating the same material if its shared by multiple meshes.
-                        let material_data_offset = vk_material.material_data_buffer.write(
-                                &MaterialData {
+                        if let Some(material_buffers) = vk_material.buffers.get(SHADER_RESOURCE_MATERIAL_DATA) {
+                                material_buffers[framei].write(&MaterialData {
                                         ambient_color: material.base_color_factor,
                                         diffuse_color: material.base_color_factor,
                                         specular_color: material.base_color_factor,
@@ -807,17 +902,16 @@ impl VkRenderer {
                                                 material.specular_strength,
                                                 material.diffuse_strength,
                                         ),
-                                },
-                                framei,
-                        )?;
+                                })?;
+                        }
 
                         device.cmd_bind_descriptor_sets(
                                 draw_cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
-                                pipeline_layout,
-                                1,
-                                &[vk_material.dst_set],
-                                &[material_data_offset as u32],
+                                *vk_shader.graphics_pipeline_layout,
+                                VkDescriptorSetIndex::Material.value(),
+                                &[vk_material.dst_sets[framei]],
+                                &[],
                         );
                         device.cmd_bind_vertex_buffers(
                                 draw_cmd_buffer,
@@ -837,6 +931,57 @@ impl VkRenderer {
 
                 Ok(())
         }
+
+        fn update_world_descriptors(
+                device: &VkDevice,
+                world_shader_resource_descriptors_data: &HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
+                framei: usize,
+                vk_shader: &VkShader,
+        ) {
+                for (resource_id, binding) in &vk_shader.shader_resource_bindings {
+                        if binding.set != VkDescriptorSetIndex::World {
+                                continue;
+                        }
+
+                        if binding.descriptor_type == vk::DescriptorType::COMBINED_IMAGE_SAMPLER {
+                                let &ShaderResourceDescriptorData::Image2D { image_view, sampler } =
+                                        world_shader_resource_descriptors_data.get(resource_id).unwrap()
+                                else {
+                                        panic!();
+                                };
+
+                                let image_info = vk::DescriptorImageInfo {
+                                        sampler,
+                                        image_view,
+                                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                };
+
+                                let write = vk::WriteDescriptorSet::builder()
+                                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                                        .dst_set(vk_shader.world_dst_set[framei])
+                                        .dst_binding(binding.binding)
+                                        .dst_array_element(0)
+                                        .image_info(image_info.ref_into_slice())
+                                        .build();
+
+                                unsafe { device.update_descriptor_sets(&[write], &[]) };
+                        }
+                }
+        }
+
+        fn update_skybox(
+                vk_asset_manager: &VkAssetManager,
+                world_shader_resource_descriptors_data: &mut HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
+                skybox: &VkCubemap,
+        ) {
+                Self::write_image_resource(
+                        vk_asset_manager,
+                        SHADER_RESOURCE_SKYBOX,
+                        *skybox.image_view,
+                        *skybox.sampler,
+                        world_shader_resource_descriptors_data,
+                );
+        }
 }
 
 struct VkFrameData {
@@ -846,22 +991,21 @@ struct VkFrameData {
         present_complete_semaphore: VkSemaphore,
         // Command buffer used for submitting draw operations of one frame.
         draw_cmd_buffer: VkReusableCommandBuffer,
+        // world_dst_set: vk::DescriptorSet,
+        // object_dst_set: vk::DescriptorSet,
 
-        world_dst_set: vk::DescriptorSet,
-        object_dst_set: vk::DescriptorSet,
-
-        world_matrices_buffer: VkBuffer,
-        world_lights_buffer: VkBuffer,
-        material_data_buffer: VkBuffer,
-        object_matrices_buffer: VkDynamicUniformBuffer<ObjectMatrices>,
-        billboard_data_buffer: VkBuffer, // Should be VkDynamicUniformBuffer
+        // world_matrices_buffer: VkBuffer,
+        // world_lights_buffer: VkBuffer,
+        // material_data_buffer: VkBuffer,
+        // object_matrices_buffer: VkTypedDynamicUniformBuffer<ObjectMatrices>,
+        // billboard_data_buffer: VkBuffer, // Should be VkDynamicUniformBuffer
 }
 
 impl VkFrameData {
         fn new(
                 vk_context: &mut VkContext,
-                world_dst_set_layout: vk::DescriptorSetLayout,
-                object_dst_set_layout: vk::DescriptorSetLayout,
+                // world_dst_set_layout: vk::DescriptorSetLayout,
+                // object_dst_set_layout: vk::DescriptorSetLayout,
         ) -> AnyResult<Self> {
                 let semaphore_cinfo = vk::SemaphoreCreateInfo::builder().build();
                 let img_available_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
@@ -870,141 +1014,123 @@ impl VkFrameData {
                 let draw_cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
 
-                let [world_dst_set, object_dst_set] = unsafe {
-                        vk_context
-                                .dst_set_allocator
-                                .allocate_descriptor_sets(&[world_dst_set_layout, object_dst_set_layout])?
-                };
+                // let [world_dst_set, object_dst_set] = unsafe {
+                //         vk_context
+                //                 .dst_set_allocator
+                //                 .allocate_descriptor_sets(&[world_dst_set_layout, object_dst_set_layout])?
+                // };
 
-                let world_matrices_buffer_size = std::mem::size_of::<WorldMatrices>() as vk::DeviceSize;
-                let world_matrices_buffer = VkBuffer::new_uniform_buffer(
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        world_matrices_buffer_size,
-                )?;
+                // let world_matrices_buffer_size = std::mem::size_of::<WorldMatrices>() as vk::DeviceSize;
+                // let world_matrices_buffer = VkBuffer::new_uniform_buffer(
+                //         &vk_context.device,
+                //         Rc::clone(&vk_context.allocator),
+                //         world_matrices_buffer_size,
+                // )?;
 
-                let world_lights_buffer_size = std::mem::size_of::<WorldLights>() as vk::DeviceSize;
-                let world_lights_buffer = VkBuffer::new_uniform_buffer(
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        world_lights_buffer_size,
-                )?;
+                // let world_lights_buffer_size = std::mem::size_of::<WorldLights>() as vk::DeviceSize;
+                // let world_lights_buffer = VkBuffer::new_uniform_buffer(
+                //         &vk_context.device,
+                //         Rc::clone(&vk_context.allocator),
+                //         world_lights_buffer_size,
+                // )?;
 
-                let material_data_buffer_size = std::mem::size_of::<MaterialData>() as vk::DeviceSize;
-                let material_data_buffer = VkBuffer::new_uniform_buffer(
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        material_data_buffer_size,
-                )?;
+                // let material_data_buffer_size = std::mem::size_of::<MaterialData>() as vk::DeviceSize;
+                // let material_data_buffer = VkBuffer::new_uniform_buffer(
+                //         &vk_context.device,
+                //         Rc::clone(&vk_context.allocator),
+                //         material_data_buffer_size,
+                // )?;
 
-                let object_matrices_buffer = VkDynamicUniformBuffer::new(
-                        &vk_context.pdevice,
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        MAX_OBJECT_MATRICES,
-                )?;
+                // let object_matrices_buffer = VkTypedDynamicUniformBuffer::new(
+                //         &vk_context.pdevice,
+                //         &vk_context.device,
+                //         Rc::clone(&vk_context.allocator),
+                //         MAX_OBJECT_MATRICES,
+                // )?;
 
-                let world_matrices_buffer_info = vk::DescriptorBufferInfo {
-                        buffer: *world_matrices_buffer,
-                        offset: 0,
-                        range: world_matrices_buffer_size,
-                };
+                // let world_matrices_buffer_info = vk::DescriptorBufferInfo {
+                //         buffer: *world_matrices_buffer,
+                //         offset: 0,
+                //         range: world_matrices_buffer_size,
+                // };
 
-                let world_matrices_dst_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .dst_set(world_dst_set)
-                        .dst_binding(0)
-                        .dst_array_element(0)
-                        .buffer_info(std::slice::from_ref(&world_matrices_buffer_info))
-                        .build();
+                // let world_matrices_dst_write = vk::WriteDescriptorSet::builder()
+                //         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                //         .dst_set(world_dst_set)
+                //         .dst_binding(0)
+                //         .dst_array_element(0)
+                //         .buffer_info(std::slice::from_ref(&world_matrices_buffer_info))
+                //         .build();
 
-                let world_lights_buffer_info = vk::DescriptorBufferInfo {
-                        buffer: *world_lights_buffer,
-                        offset: 0,
-                        range: world_lights_buffer_size,
-                };
+                // let world_lights_buffer_info = vk::DescriptorBufferInfo {
+                //         buffer: *world_lights_buffer,
+                //         offset: 0,
+                //         range: world_lights_buffer_size,
+                // };
 
-                let world_lights_dst_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .dst_set(world_dst_set)
-                        .dst_binding(1)
-                        .dst_array_element(0)
-                        .buffer_info(std::slice::from_ref(&world_lights_buffer_info))
-                        .build();
+                // let world_lights_dst_write = vk::WriteDescriptorSet::builder()
+                //         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                //         .dst_set(world_dst_set)
+                //         .dst_binding(1)
+                //         .dst_array_element(0)
+                //         .buffer_info(std::slice::from_ref(&world_lights_buffer_info))
+                //         .build();
 
-                let object_matrices_buffer_info = vk::DescriptorBufferInfo {
-                        buffer: *object_matrices_buffer,
-                        offset: 0,
-                        range: object_matrices_buffer.element_padded_size() as vk::DeviceSize,
-                };
+                // let object_matrices_buffer_info = vk::DescriptorBufferInfo {
+                //         buffer: *object_matrices_buffer,
+                //         offset: 0,
+                //         range: object_matrices_buffer.element_padded_size() as vk::DeviceSize,
+                // };
 
-                let object_matrices_dst_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-                        .dst_set(object_dst_set)
-                        .dst_binding(0)
-                        .dst_array_element(0)
-                        .buffer_info(std::slice::from_ref(&object_matrices_buffer_info))
-                        .build();
+                // let object_matrices_dst_write = vk::WriteDescriptorSet::builder()
+                //         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
+                //         .dst_set(object_dst_set)
+                //         .dst_binding(0)
+                //         .dst_array_element(0)
+                //         .buffer_info(std::slice::from_ref(&object_matrices_buffer_info))
+                //         .build();
 
-                let billboard_data_buffer_size = std::mem::size_of::<BillboardData>() as vk::DeviceSize;
-                let billboard_data_buffer = VkBuffer::new_uniform_buffer(
-                        &vk_context.device,
-                        Rc::clone(&vk_context.allocator),
-                        billboard_data_buffer_size,
-                )?;
+                // let billboard_data_buffer_size = std::mem::size_of::<BillboardData>() as vk::DeviceSize;
+                // let billboard_data_buffer = VkBuffer::new_uniform_buffer(
+                //         &vk_context.device,
+                //         Rc::clone(&vk_context.allocator),
+                //         billboard_data_buffer_size,
+                // )?;
 
-                let billboard_data_buffer_info = vk::DescriptorBufferInfo {
-                        buffer: *billboard_data_buffer,
-                        offset: 0,
-                        range: billboard_data_buffer_size,
-                };
+                // let billboard_data_buffer_info = vk::DescriptorBufferInfo {
+                //         buffer: *billboard_data_buffer,
+                //         offset: 0,
+                //         range: billboard_data_buffer_size,
+                // };
 
-                let billboard_data_dst_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .dst_set(object_dst_set)
-                        .dst_binding(1)
-                        .dst_array_element(0)
-                        .buffer_info(std::slice::from_ref(&billboard_data_buffer_info))
-                        .build();
+                // let billboard_data_dst_write = vk::WriteDescriptorSet::builder()
+                //         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                //         .dst_set(object_dst_set)
+                //         .dst_binding(1)
+                //         .dst_array_element(0)
+                //         .buffer_info(std::slice::from_ref(&billboard_data_buffer_info))
+                //         .build();
 
-                let writes = [
-                        world_matrices_dst_write,
-                        world_lights_dst_write,
-                        object_matrices_dst_write,
-                        billboard_data_dst_write,
-                ];
-                unsafe { vk_context.device.update_descriptor_sets(&writes, &[]) };
+                // let writes = [
+                //         world_matrices_dst_write,
+                //         world_lights_dst_write,
+                //         object_matrices_dst_write,
+                //         billboard_data_dst_write,
+                // ];
+                // unsafe { vk_context.device.update_descriptor_sets(&writes, &[]) };
 
                 Ok(Self {
                         img_available_semaphore,
                         present_complete_semaphore,
                         draw_cmd_buffer,
-                        world_dst_set,
-                        object_dst_set,
-                        world_matrices_buffer,
-                        world_lights_buffer,
-                        material_data_buffer,
-                        object_matrices_buffer,
-                        billboard_data_buffer,
+                        // world_dst_set,
+                        // object_dst_set,
+                        // world_matrices_buffer,
+                        // world_lights_buffer,
+                        // material_data_buffer,
+                        // object_matrices_buffer,
+                        // billboard_data_buffer,
                 })
-        }
-
-        fn update_skybox(&self, device: &VkDevice, skybox: &VkCubemap) {
-                let world_skybox_image_info = vk::DescriptorImageInfo {
-                        sampler: *skybox.sampler,
-                        image_view: *skybox.image_view,
-                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                };
-
-                let world_skybox_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .dst_set(self.world_dst_set)
-                        .dst_binding(3)
-                        .dst_array_element(0)
-                        .image_info(world_skybox_image_info.ref_into_slice())
-                        .build();
-
-                unsafe { device.update_descriptor_sets(&[world_skybox_write], &[]) };
         }
 }
 
@@ -1013,11 +1139,11 @@ impl Drop for VkFrameData {
                 unsafe {
                         self.present_complete_semaphore.destroy();
                         self.img_available_semaphore.destroy();
-                        self.billboard_data_buffer.destroy();
-                        self.object_matrices_buffer.destroy();
-                        self.material_data_buffer.destroy();
-                        self.world_lights_buffer.destroy();
-                        self.world_matrices_buffer.destroy();
+                        // self.billboard_data_buffer.destroy();
+                        // self.object_matrices_buffer.destroy();
+                        // self.material_data_buffer.destroy();
+                        // self.world_lights_buffer.destroy();
+                        // self.world_matrices_buffer.destroy();
                         self.draw_cmd_buffer.destroy();
                 }
         }
@@ -1030,11 +1156,38 @@ enum BeginFrameResult {
 
 #[allow(dead_code)]
 #[repr(C)]
-struct WorldMatrices {
+// TODO: move out of this file (as it is not vulkan specific).
+pub struct WorldMatrices {
         view_pos: Vec4,
         view: Mat4,
         proj: Mat4,
         vp: Mat4,
+}
+
+impl ShaderStructDeclarationProvider for WorldMatrices {
+        fn shader_struct_declaration() -> ShaderStructDeclaration {
+                ShaderStructDeclaration {
+                        type_name: "WorldMatrices".to_string(),
+                        fields: vec![
+                                ShaderStructField {
+                                        field_name: "view_pos".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "view".to_string(),
+                                        field_type: ShaderStructFieldType::Mat4,
+                                },
+                                ShaderStructField {
+                                        field_name: "proj".to_string(),
+                                        field_type: ShaderStructFieldType::Mat4,
+                                },
+                                ShaderStructField {
+                                        field_name: "vp".to_string(),
+                                        field_type: ShaderStructFieldType::Mat4,
+                                },
+                        ],
+                }
+        }
 }
 
 #[allow(dead_code)]
@@ -1044,12 +1197,52 @@ struct WorldDirectionalLight {
         color: Vec4,
 }
 
+impl ShaderStructDeclarationProvider for WorldDirectionalLight {
+        fn shader_struct_declaration() -> ShaderStructDeclaration {
+                ShaderStructDeclaration {
+                        type_name: "WorldDirectionalLight".to_string(),
+                        fields: vec![
+                                ShaderStructField {
+                                        field_name: "direction".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "color".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                        ],
+                }
+        }
+}
+
 #[allow(dead_code)]
 #[repr(C)]
 struct WorldPointLight {
         pos: Vec4,
         color: Vec4,
         kc_kl_kq: Vec4,
+}
+
+impl ShaderStructDeclarationProvider for WorldPointLight {
+        fn shader_struct_declaration() -> ShaderStructDeclaration {
+                ShaderStructDeclaration {
+                        type_name: "WorldPointLight".to_string(),
+                        fields: vec![
+                                ShaderStructField {
+                                        field_name: "pos".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "color".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "kc_kl_kq".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                        ],
+                }
+        }
 }
 
 #[allow(dead_code)]
@@ -1061,39 +1254,171 @@ struct WorldSpotlight {
         kc_kl_kq_inner: Vec4, // w=inner radius percentage
 }
 
+impl ShaderStructDeclarationProvider for WorldSpotlight {
+        fn shader_struct_declaration() -> ShaderStructDeclaration {
+                ShaderStructDeclaration {
+                        type_name: "WorldSpotlight".to_string(),
+                        fields: vec![
+                                ShaderStructField {
+                                        field_name: "pos".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "dir".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "color".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "kc_kl_kq_inner".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                        ],
+                }
+        }
+}
+
 #[allow(dead_code)]
 #[repr(C)]
-struct WorldLights {
+pub struct WorldLights {
         dir_light: WorldDirectionalLight,
         point_light: WorldPointLight,
         spotlight: WorldSpotlight,
 }
 
-#[allow(dead_code)]
-#[repr(C)]
-pub struct MaterialData {
-        ambient_color: Vec4,
-        diffuse_color: Vec4,
-        specular_color: Vec4,
-        shininess_and_ambient_strength: Vec2,
-        specular_strength_and_diffuse_strength: Vec2,
+impl ShaderStructDeclarationProvider for WorldLights {
+        fn shader_struct_declaration() -> ShaderStructDeclaration {
+                ShaderStructDeclaration {
+                        type_name: "WorldLights".to_string(),
+                        fields: vec![
+                                ShaderStructField {
+                                        field_name: "dir_light".to_string(),
+                                        field_type: ShaderStructFieldType::Struct(
+                                                WorldDirectionalLight::shader_struct_declaration(),
+                                        ),
+                                },
+                                ShaderStructField {
+                                        field_name: "point_light".to_string(),
+                                        field_type: ShaderStructFieldType::Struct(
+                                                WorldPointLight::shader_struct_declaration(),
+                                        ),
+                                },
+                                ShaderStructField {
+                                        field_name: "spotlight".to_string(),
+                                        field_type: ShaderStructFieldType::Struct(
+                                                WorldSpotlight::shader_struct_declaration(),
+                                        ),
+                                },
+                        ],
+                }
+        }
 }
 
 #[allow(dead_code)]
 #[repr(C)]
-struct BillboardData {
+pub struct MaterialData {
+        pub ambient_color: Vec4,
+        pub diffuse_color: Vec4,
+        pub specular_color: Vec4,
+        pub shininess_and_ambient_strength: Vec2,
+        pub specular_strength_and_diffuse_strength: Vec2,
+}
+
+impl ShaderStructDeclarationProvider for MaterialData {
+        fn shader_struct_declaration() -> ShaderStructDeclaration {
+                ShaderStructDeclaration {
+                        type_name: "MaterialData".to_string(),
+                        fields: vec![
+                                ShaderStructField {
+                                        field_name: "ambient_color".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "diffuse_color".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "specular_color".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "shininess_and_ambient_strength".to_string(),
+                                        field_type: ShaderStructFieldType::Vec2,
+                                },
+                                ShaderStructField {
+                                        field_name: "specular_strength_and_diffuse_strength".to_string(),
+                                        field_type: ShaderStructFieldType::Vec2,
+                                },
+                        ],
+                }
+        }
+}
+
+#[allow(dead_code)]
+#[repr(C)]
+pub struct BillboardData {
         billboard_center: Vec4,
         billboard_scale: Vec4,
         camera_right: Vec4,
         camera_up: Vec4,
 }
 
+impl ShaderStructDeclarationProvider for BillboardData {
+        fn shader_struct_declaration() -> ShaderStructDeclaration {
+                ShaderStructDeclaration {
+                        type_name: "BillboardData".to_string(),
+                        fields: vec![
+                                ShaderStructField {
+                                        field_name: "billboard_center".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "billboard_scale".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "camera_right".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                                ShaderStructField {
+                                        field_name: "camera_up".to_string(),
+                                        field_type: ShaderStructFieldType::Vec4,
+                                },
+                        ],
+                }
+        }
+}
+
 #[allow(dead_code)]
 #[repr(C)]
-struct ObjectMatrices {
+pub struct ObjectMatrices {
         model: Mat4,
         mvp: Mat4,
         normal: Mat4,
+}
+
+impl ShaderStructDeclarationProvider for ObjectMatrices {
+        fn shader_struct_declaration() -> ShaderStructDeclaration {
+                ShaderStructDeclaration {
+                        type_name: "ObjectMatrices".to_string(),
+                        fields: vec![
+                                ShaderStructField {
+                                        field_name: "model".to_string(),
+                                        field_type: ShaderStructFieldType::Mat4,
+                                },
+                                ShaderStructField {
+                                        field_name: "mvp".to_string(),
+                                        field_type: ShaderStructFieldType::Mat4,
+                                },
+                                ShaderStructField {
+                                        field_name: "normal".to_string(),
+                                        field_type: ShaderStructFieldType::Mat4,
+                                },
+                        ],
+                }
+        }
 }
 
 #[allow(dead_code)]
@@ -1108,4 +1433,11 @@ struct MatricesMMvp {
 struct UniformLights {
         light_pos: Vec4,
         light_color: Vec4,
+}
+
+enum ShaderResourceDescriptorData {
+        Image2D {
+                image_view: vk::ImageView,
+                sampler: vk::Sampler,
+        },
 }

@@ -130,10 +130,9 @@ impl VkReusableCommandBuffer {
                         .command_buffers(std::slice::from_ref(&self.handle))
                         .wait_semaphores(wait_semaphores)
                         .wait_dst_stage_mask(wait_stages)
-                        .signal_semaphores(signal_semaphores)
-                        .build();
+                        .signal_semaphores(signal_semaphores);
 
-                device.queue_submit(submit_queue, std::slice::from_ref(&submit_info), *self.fence)
+                device.queue_submit(submit_queue, &[submit_info.build()], *self.fence)
         }
 
         pub unsafe fn wait(&self, timeout: u64) -> VkResult<()> {

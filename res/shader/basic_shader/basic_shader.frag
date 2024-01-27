@@ -1,47 +1,11 @@
 #version 450
 #extension GL_EXT_debug_printf : enable
 
-struct DirectionalLight {
-        vec4 dir;
-        vec4 color;
-};
-
-struct PointLight {
-        vec4 pos;
-        vec4 color;
-        vec4 kc_kl_kq;
-};
-
-struct Spotlight {
-        vec4 pos;
-        vec4 dir; // xyz=dir w=cutoff angle
-        vec4 color;
-        vec4 kc_kl_kq_inner;
-};
-
-layout (set = 0, binding = 0) uniform WorldMatrices {
-        vec4 view_pos;
-        mat4 view;
-        mat4 proj;
-} u_world_matrices;
-
-layout (set = 0, binding = 1) uniform WorldLights {
-        DirectionalLight dir_light;
-        PointLight point_light;
-        Spotlight spotlight;
-} u_lights;
-
-layout (set = 1, binding = 0) uniform MaterialData {
-        vec4 ambient_color;
-        vec4 diffuse_color;
-        vec4 specular_color;
-        vec2 shininess_and_ambient_strength;
-        vec2 specular_strength_and_diffuse_strength;
-} u_material;
-layout (set = 1, binding = 1) uniform texture2D u_diffuse_map;
-layout (set = 1, binding = 2) uniform texture2D u_specular_map;
-layout (set = 1, binding = 3) uniform sampler u_sampler;
-
+#resource WorldMatrices u_world_matrices : WORLD_MATRICES;
+#resource WorldLights u_lights : WORLD_LIGHTS;
+#resource MaterialData u_material : MATERIAL_DATA;
+#resource sampler2D u_diffuse_map : MATERIAL_DIFFUSE_TEXTURE;
+#resource sampler2D u_specular_map : MATERIAL_SPECULAR_TEXTURE;
 
 layout (location = 0) in vec3 i_frag_pos;
 layout (location = 1) in vec3 i_normal;
@@ -68,7 +32,7 @@ float calc_attenuation(vec3 kc_kl_kq, float distance) {
 }
 
 vec3 calc_dir_light(
-        DirectionalLight dir_light,
+        WorldDirectionalLight dir_light,
         float ambient_strength,
         float specular_strength,
         float diffuse_strength,
@@ -79,7 +43,7 @@ vec3 calc_dir_light(
         vec3 specular_texel
 ) {
         vec3 dir_light_color = u_lights.dir_light.color.rgb;
-        vec3 dir_light_dir = normalize(u_lights.dir_light.dir.xyz);
+        vec3 dir_light_dir = normalize(u_lights.dir_light.direction.xyz);
 
         vec3 ambient = diffuse_texel * ambient_strength * dir_light_color;
         vec3 diffuse = diffuse_texel * calc_diffuse(diffuse_strength, normal, dir_light_dir, dir_light_color);
@@ -89,7 +53,7 @@ vec3 calc_dir_light(
 }
 
 vec3 calc_point_light(
-        PointLight point_light,
+        WorldPointLight point_light,
         float ambient_strength,
         float specular_strength,
         float diffuse_strength,
@@ -113,7 +77,7 @@ vec3 calc_point_light(
 }
 
 vec3 calc_spotlight(
-        Spotlight spotlight,
+        WorldSpotlight spotlight,
         float specular_strength,
         float diffuse_strength,
         float shininess,
@@ -163,8 +127,8 @@ void main() {
         float specular_strength = u_material.specular_strength_and_diffuse_strength.x;
         float diffuse_strength = u_material.specular_strength_and_diffuse_strength.y;
 
-        vec3 diffuse_texel = texture(sampler2D(u_diffuse_map, u_sampler), i_tex_coord).rgb;
-        vec3 specular_texel = texture(sampler2D(u_specular_map, u_sampler), i_tex_coord).rgb;
+        vec3 diffuse_texel = texture(u_diffuse_map, i_tex_coord).rgb;
+        vec3 specular_texel = texture(u_specular_map, i_tex_coord).rgb;
 
         vec3 camera_rdir = normalize(u_world_matrices.view_pos.xyz - i_frag_pos);
         vec3 normal = normalize(i_normal);

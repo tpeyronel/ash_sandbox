@@ -1,10 +1,16 @@
-use std::{ffi::CString, rc::Rc};
+use std::{
+        ffi::CString,
+        path::{Path, PathBuf},
+        rc::Rc,
+};
 
 use ash::{
         prelude::VkResult,
         vk::{self, BufferUsageFlags},
 };
 use crossbeam_channel::Receiver;
+use enum_map::EnumMap;
+use hashbrown::HashMap;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 use slotmap::SecondaryMap;
@@ -12,10 +18,14 @@ use slotmap::SecondaryMap;
 use crate::{
         asset_manager::{
                 AssetManager, AssetManagerEvent, CubemapId, CullMode, ImageFormat, ImageId, IndicesVec, MagFilter,
-                Material, MaterialId, MeshId, MinFilter, SamplerId, ShaderId, WrappingMode,
+                Material, MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule, ShaderResourceId,
+                ShaderResourceProvider, ShaderResourceType, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
+        hashmap::GetOrInsert,
         my_glm::{Vec2, Vec3},
+        shader_preprocessor::{PreprocessedShaderStage, ShaderStageSourceBuilder},
+        shader_resource_registry::ShaderResourceRegistry,
         util::RefIntoSlice,
         vk::{
                 vk_buffer::{BufferData, VkBuffer, VkImmutableBufferCreateInfo},
@@ -32,7 +42,6 @@ use super::{
         vk_descriptor_set_allocator::VkDescriptorSetAllocator,
         vk_descriptor_set_layout_cache::VkDescriptorSetLayoutCache,
         vk_image::VkImageCubemapCreateInfo,
-        vk_renderer::MaterialData,
         vk_wrapper::{VkInstance, VkPipeline, VkPipelineLayout, VkShaderModule, VmaAllocator},
 };
 
@@ -56,8 +65,8 @@ pub struct VkModelImage {
 }
 
 pub struct VkMaterial {
-        pub dst_set: vk::DescriptorSet,
-        pub material_data_buffer: VkDynamicUniformBuffer<MaterialData>,
+        pub dst_sets: Vec<vk::DescriptorSet>,                  // One per concurrent frame
+        pub buffers: HashMap<ShaderResourceId, Vec<VkBuffer>>, // One buffer per concurrent frame
 }
 
 pub struct VkShader {
@@ -65,6 +74,23 @@ pub struct VkShader {
         pub frag_module: VkShaderModule,
         pub vertex_input_bindings: Vec<vk::VertexInputBindingDescription>,
         pub vertex_input_attributes: Vec<vk::VertexInputAttributeDescription>,
+        pub shader_resource_bindings: HashMap<ShaderResourceId, VkShaderResourceBindingDescription>,
+
+        pub world_dst_set: Vec<vk::DescriptorSet>, // One per concurrent frame
+        pub mesh_dst_set: Vec<vk::DescriptorSet>,  // One per concurrent frame
+
+        pub world_dst_set_layout: vk::DescriptorSetLayout,
+        pub material_dst_set_layout: vk::DescriptorSetLayout,
+        pub mesh_dst_set_layout: vk::DescriptorSetLayout,
+
+        pub graphics_pipeline_layout: VkPipelineLayout,
+        pub graphics_pipeline: VkPipeline,
+}
+
+pub struct VkShaderResourceBindingDescription {
+        pub set: VkDescriptorSetIndex,
+        pub binding: u32,
+        pub descriptor_type: vk::DescriptorType,
 }
 
 pub struct VkCubemap {
@@ -88,9 +114,6 @@ pub struct VkAssetManager {
         cmd_buffer: VkReusableCommandBuffer,
         concurrent_frames: usize,
 
-        material_dst_set_layout: vk::DescriptorSetLayout,
-        pub graphics_pipeline_layout: VkPipelineLayout,
-
         swapchain_samples: vk::SampleCountFlags,
         render_pass: vk::RenderPass,
 
@@ -100,8 +123,13 @@ pub struct VkAssetManager {
         pub materials: SecondaryMap<MaterialId, VkMaterial>,
         // pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
         pub shaders: SecondaryMap<ShaderId, VkShader>,
-        pub pipelines: SecondaryMap<ShaderId, VkPipeline>,
+        // pub pipelines: SecondaryMap<ShaderId, VkPipeline>,
         pub cubemaps: SecondaryMap<CubemapId, VkCubemap>,
+
+        pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
+
+        pub shader_resource_buffers: HashMap<ShaderResourceId, Vec<VkBuffer>>, // One buffer per frame
+        pub shader_resource_dynamic_buffers: HashMap<ShaderResourceId, Vec<VkDynamicUniformBuffer>>, // One buffer per frame
 }
 
 impl VkAssetManager {
@@ -109,8 +137,6 @@ impl VkAssetManager {
                 vk_context: &mut VkContext,
                 swapchain_samples: vk::SampleCountFlags,
                 render_pass: vk::RenderPass,
-                world_dst_set_layout: vk::DescriptorSetLayout,
-                object_dst_set_layout: vk::DescriptorSetLayout,
                 concurrent_frames: usize,
         ) -> AnyResult<Self> {
                 assert!(concurrent_frames > 0, "Frames in flight must be greater to zero");
@@ -120,10 +146,6 @@ impl VkAssetManager {
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
                 let material_dst_set_layout =
                         Self::create_material_dst_set_layout(&mut vk_context.dst_set_layout_cache)?;
-                let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
-                        &vk_context.device,
-                        &[world_dst_set_layout, material_dst_set_layout, object_dst_set_layout],
-                )?;
 
                 // trace!("Creating VkShaderResources...");
                 // let vk_shader_resources = Self::create_vk_shader_resources_from_shader_resources(
@@ -143,11 +165,8 @@ impl VkAssetManager {
                         cmd_buffer,
                         concurrent_frames,
 
-                        material_dst_set_layout,
-
                         swapchain_samples,
                         render_pass,
-                        graphics_pipeline_layout,
 
                         meshes: SecondaryMap::new(),
                         images: SecondaryMap::new(),
@@ -155,8 +174,12 @@ impl VkAssetManager {
                         materials: SecondaryMap::new(),
                         // shader_resources: HashMap::new(),
                         shaders: SecondaryMap::new(),
-                        pipelines: SecondaryMap::new(),
+                        // pipelines: SecondaryMap::new(),
                         cubemaps: SecondaryMap::new(),
+
+                        shader_resources: HashMap::new(),
+                        shader_resource_buffers: HashMap::new(),
+                        shader_resource_dynamic_buffers: HashMap::new(),
                 })
         }
 
@@ -193,6 +216,11 @@ impl VkAssetManager {
                                         self.on_material_updated(asset_manager, material_id)?;
                                 },
                                 AssetManagerEvent::MaterialRemoved(_) => todo!(),
+                                AssetManagerEvent::ShaderResourceInserted(shader_resource_id) => {
+                                        self.on_shader_resource_inserted(asset_manager, shader_resource_id)?;
+                                },
+                                AssetManagerEvent::ShaderResourceChanged(_) => todo!(),
+                                AssetManagerEvent::ShaderResourceRemoved(_) => todo!(),
                                 AssetManagerEvent::ShaderChanged(_) => (),
                                 AssetManagerEvent::ShaderInserted(shader_id) => {
                                         self.on_shader_updated(asset_manager, shader_id)?;
@@ -210,23 +238,35 @@ impl VkAssetManager {
         }
 
         pub fn destroy(&mut self) {
+                self.shader_resource_dynamic_buffers
+                        .drain()
+                        .for_each(|(_, mut buffers)| {
+                                buffers.drain(..).for_each(|b| unsafe { b.destroy() });
+                        });
+
+                self.shader_resource_buffers.drain().for_each(|(_, mut buffers)| {
+                        buffers.drain(..).for_each(|b| unsafe { b.destroy() });
+                });
+
                 self.cubemaps.drain().for_each(|(_, cubemap)| unsafe {
                         cubemap.image.destroy();
                         cubemap.image_view.destroy();
                         cubemap.sampler.destroy();
                 });
 
-                self.pipelines.drain().for_each(|(_, pipeline)| unsafe {
-                        pipeline.destroy();
-                });
+                // self.pipelines.drain().for_each(|(_, pipeline)| unsafe {
+                //         pipeline.destroy();
+                // });
 
                 self.shaders.drain().for_each(|(_, shader)| unsafe {
                         shader.vert_module.destroy();
                         shader.frag_module.destroy();
                 });
 
-                self.materials.drain().for_each(|(_, material)| unsafe {
-                        material.material_data_buffer.destroy();
+                self.materials.drain().for_each(|(_, mut material)| {
+                        material.buffers.drain().for_each(|(_, mut buffers)| {
+                                buffers.drain(..).for_each(|b| unsafe { b.destroy() });
+                        });
                 });
 
                 // self.shader_resources.drain().for_each(|(_, shader_resource)| unsafe {
@@ -250,7 +290,6 @@ impl VkAssetManager {
                         mesh.indices.buffer.destroy();
                 });
 
-                unsafe { self.graphics_pipeline_layout.destroy() };
                 unsafe { self.cmd_buffer.destroy() };
                 unsafe { self.dst_set_allocator.destroy() };
         }
@@ -370,14 +409,134 @@ impl VkAssetManager {
                 Ok(())
         }
 
+        fn on_shader_resource_inserted(
+                &mut self,
+                asset_manager: &AssetManager,
+                shader_resource_id: ShaderResourceId,
+        ) -> AnyResult<()> {
+                let Some(shader_resource) = asset_manager.shader_resources().get(&shader_resource_id) else {
+                        return Ok(());
+                };
+
+                let vk_shader_resource_type = match (&shader_resource.resource_type, shader_resource.provider) {
+                        (
+                                ShaderResourceType::Struct(declaration),
+                                ShaderResourceProvider::World | ShaderResourceProvider::Material,
+                        ) => {
+                                let buffers = (0..self.concurrent_frames)
+                                        .map(|_| {
+                                                VkBuffer::new_uniform_buffer(
+                                                        &self.device,
+                                                        Rc::clone(&self.allocator),
+                                                        declaration.compute_size() as vk::DeviceSize,
+                                                )
+                                        })
+                                        .collect::<AnyResult<Vec<VkBuffer>>>()?;
+
+                                self.shader_resource_buffers.insert(shader_resource_id.clone(), buffers);
+
+                                VkShaderResourceType::UniformBuffer
+                        },
+                        (ShaderResourceType::Struct(declaration), ShaderResourceProvider::Mesh) => {
+                                let buffers = (0..self.concurrent_frames)
+                                        .map(|_| {
+                                                VkDynamicUniformBuffer::new(
+                                                        &self.pdevice,
+                                                        &self.device,
+                                                        Rc::clone(&self.allocator),
+                                                        declaration.compute_size(),
+                                                        1024,
+                                                )
+                                        })
+                                        .collect::<AnyResult<Vec<VkDynamicUniformBuffer>>>()?;
+
+                                self.shader_resource_dynamic_buffers
+                                        .insert(shader_resource_id.clone(), buffers);
+
+                                VkShaderResourceType::UniformBufferDynamic
+                        },
+                        (ShaderResourceType::Image2D, ShaderResourceProvider::World) => {
+                                VkShaderResourceType::CombinedImageSampler
+                        },
+                        (ShaderResourceType::Image2D, ShaderResourceProvider::Material) => {
+                                VkShaderResourceType::CombinedImageSampler
+                        },
+                        (ShaderResourceType::Image2D, ShaderResourceProvider::Mesh) => todo!(),
+                        (ShaderResourceType::ImageCube, ShaderResourceProvider::World) => {
+                                VkShaderResourceType::CombinedImageSampler
+                        },
+                        (ShaderResourceType::ImageCube, ShaderResourceProvider::Material) => {
+                                VkShaderResourceType::CombinedImageSampler
+                        },
+                        (ShaderResourceType::ImageCube, ShaderResourceProvider::Mesh) => todo!(),
+                };
+
+                let vk_shader_resource = VkShaderResource {
+                        resource_type: vk_shader_resource_type,
+                };
+
+                self.shader_resources.insert(shader_resource_id, vk_shader_resource);
+
+                Ok(())
+        }
+
         fn on_shader_updated(&mut self, asset_manager: &AssetManager, shader_id: ShaderId) -> AnyResult<()> {
                 let shader = match asset_manager.get_shader(shader_id) {
                         Some(shader) => shader,
                         None => return Ok(()),
                 };
 
-                let vert_module = VkShaderModule::from_code(&self.device, &shader.vert_module.bin)?;
-                let frag_module = VkShaderModule::from_code(&self.device, &shader.frag_module.bin)?;
+                let shader_resource_bindings =
+                        Self::map_shader_resources(asset_manager.shader_resources(), &self.shader_resources, shader);
+
+                let vert_shader_source = Self::complete_shader_stage_source(
+                        asset_manager.shader_resources(),
+                        &shader_resource_bindings,
+                        &shader.vert_shader,
+                );
+                let frag_shader_source = Self::complete_shader_stage_source(
+                        asset_manager.shader_resources(),
+                        &shader_resource_bindings,
+                        &shader.frag_shader,
+                );
+
+                let vert_shader_path =
+                        Self::write_generated_source_to_file(&shader.vert_shader_path, &vert_shader_source);
+                let frag_shader_path =
+                        Self::write_generated_source_to_file(&shader.frag_shader_path, &frag_shader_source);
+
+                let vert_shader_module = ShaderModule::from_glsl_file(vert_shader_path)?;
+                let frag_shader_module = ShaderModule::from_glsl_file(frag_shader_path)?;
+
+                let dst_set_layouts =
+                        Self::create_descriptor_set_layouts_from_bindings(&self.device, &shader_resource_bindings)?;
+
+                let world_dst_set_layout = dst_set_layouts[VkDescriptorSetIndex::World];
+                let material_dst_set_layout = dst_set_layouts[VkDescriptorSetIndex::Material];
+                let mesh_dst_set_layout = dst_set_layouts[VkDescriptorSetIndex::Mesh];
+
+                let world_dst_set = Self::init_world_dst_set(
+                        self.concurrent_frames,
+                        &self.device,
+                        &mut self.dst_set_allocator,
+                        &self.shader_resources,
+                        &self.shader_resource_buffers,
+                        &shader_resource_bindings,
+                        world_dst_set_layout,
+                )?;
+
+                let mesh_dst_set = Self::init_mesh_dst_set(
+                        self.concurrent_frames,
+                        &self.device,
+                        &mut self.dst_set_allocator,
+                        &self.shader_resources,
+                        &self.shader_resource_dynamic_buffers,
+                        &shader_resource_bindings,
+                        mesh_dst_set_layout,
+                )?;
+
+                let vert_module = VkShaderModule::from_code(&self.device, &vert_shader_module.bin)?;
+                let frag_module = VkShaderModule::from_code(&self.device, &frag_shader_module.bin)?;
 
                 let mut vertex_input_bindings = Vec::new();
                 let mut vertex_input_attributes = Vec::new();
@@ -412,27 +571,325 @@ impl VkAssetManager {
                         vertex_input_attributes.push(attribute.build());
                 }
 
+                let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
+                        &self.device,
+                        &[world_dst_set_layout, material_dst_set_layout, mesh_dst_set_layout],
+                )?;
+
+                let graphics_pipeline = Self::create_graphics_pipeline_for_vk_shader(
+                        &self.device,
+                        self.swapchain_samples,
+                        self.render_pass,
+                        *graphics_pipeline_layout,
+                        !shader.disable_depth_test,
+                        shader.cull_mode.into(),
+                        *vert_module,
+                        *frag_module,
+                        &vertex_input_bindings,
+                        &vertex_input_attributes,
+                )?;
+
                 let vk_shader = VkShader {
                         vert_module,
                         frag_module,
                         vertex_input_bindings,
                         vertex_input_attributes,
+                        shader_resource_bindings,
+
+                        world_dst_set,
+                        mesh_dst_set,
+
+                        world_dst_set_layout,
+                        material_dst_set_layout,
+                        mesh_dst_set_layout,
+
+                        graphics_pipeline_layout,
+                        graphics_pipeline,
                 };
 
-                let vk_pipeline = Self::create_graphics_pipeline_from_vk_shader(
-                        &self.device,
-                        self.swapchain_samples,
-                        self.render_pass,
-                        *self.graphics_pipeline_layout,
-                        !shader.disable_depth_test,
-                        shader.cull_mode.into(),
-                        &vk_shader,
-                )?;
-
                 self.shaders.insert(shader_id, vk_shader);
-                self.pipelines.insert(shader_id, vk_pipeline);
+                // self.pipelines.insert(shader_id, vk_pipeline);
 
                 Ok(())
+        }
+
+        fn map_shader_resources(
+                shader_resources: &ShaderResourceRegistry,
+                vk_shader_resources: &HashMap<ShaderResourceId, VkShaderResource>,
+                shader: &Shader,
+        ) -> HashMap<ShaderResourceId, VkShaderResourceBindingDescription> {
+                let mut next_bindings = EnumMap::from_fn(|_| 0);
+                let mut bindings = HashMap::new();
+
+                Self::map_shader_stage_resources(
+                        shader_resources,
+                        vk_shader_resources,
+                        &shader.vert_shader,
+                        &mut next_bindings,
+                        &mut bindings,
+                );
+                Self::map_shader_stage_resources(
+                        shader_resources,
+                        vk_shader_resources,
+                        &shader.frag_shader,
+                        &mut next_bindings,
+                        &mut bindings,
+                );
+
+                return bindings;
+        }
+
+        fn map_shader_stage_resources(
+                shader_resources: &ShaderResourceRegistry,
+                vk_shader_resources: &HashMap<ShaderResourceId, VkShaderResource>,
+                shader_stage: &PreprocessedShaderStage,
+                next_bindings: &mut EnumMap<VkDescriptorSetIndex, u32>,
+                bindings: &mut HashMap<ShaderResourceId, VkShaderResourceBindingDescription>,
+        ) {
+                for requirement in &shader_stage.resources {
+                        if bindings.contains_key(&requirement.resource_id) {
+                                continue;
+                        }
+
+                        let resource = shader_resources
+                                .get(&requirement.resource_id)
+                                .expect(&requirement.resource_id);
+                        let vk_resource = vk_shader_resources
+                                .get(&requirement.resource_id)
+                                .expect(&requirement.resource_id);
+
+                        let set = match resource.provider {
+                                ShaderResourceProvider::World => VkDescriptorSetIndex::World,
+                                ShaderResourceProvider::Material => VkDescriptorSetIndex::Material,
+                                ShaderResourceProvider::Mesh => VkDescriptorSetIndex::Mesh,
+                        };
+
+                        let binding = next_bindings[set];
+                        next_bindings[set] = binding + 1;
+
+                        let descriptor_type = match vk_resource.resource_type {
+                                VkShaderResourceType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
+                                VkShaderResourceType::UniformBufferDynamic => {
+                                        vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC
+                                },
+                                VkShaderResourceType::CombinedImageSampler => {
+                                        vk::DescriptorType::COMBINED_IMAGE_SAMPLER
+                                },
+                        };
+
+                        let binding_description = VkShaderResourceBindingDescription {
+                                set,
+                                binding,
+                                descriptor_type,
+                        };
+                        bindings.insert(requirement.resource_id.clone(), binding_description);
+                }
+        }
+
+        fn complete_shader_stage_source(
+                shader_resources: &ShaderResourceRegistry,
+                resource_bindings: &HashMap<ShaderResourceId, VkShaderResourceBindingDescription>,
+                shader_stage: &PreprocessedShaderStage,
+        ) -> String {
+                let mut source_builder = ShaderStageSourceBuilder::new(&shader_stage.parts);
+
+                for requirement in &shader_stage.resources {
+                        let binding = resource_bindings.get(&requirement.resource_id).unwrap();
+                        let resource = shader_resources.get(&requirement.resource_id).unwrap();
+                        let type_text = resource.resource_type.glsl_complete_type();
+
+                        let suffix = match resource.resource_type {
+                                ShaderResourceType::Struct(_) => "\n",
+                                _ => "",
+                        };
+
+                        let separator = format!(
+                                "layout (set = {}, binding = {}) uniform {} {};\n{}",
+                                binding.set.value(),
+                                binding.binding,
+                                type_text,
+                                requirement.variable_name,
+                                suffix
+                        );
+
+                        source_builder.place(requirement.separator_index, separator)
+                }
+
+                source_builder.build()
+        }
+
+        fn write_generated_source_to_file(original_path: &Path, generated_source: &str) -> PathBuf {
+                let parent_dir = original_path.parent().unwrap();
+                let out_dir = parent_dir.join("out");
+
+                std::fs::create_dir_all(&out_dir).expect("failed to create out directory");
+
+                let gen_path = out_dir.join(original_path.file_name().expect("failed to get file_name"));
+
+                // let mut extension = OsString::from_str("gen.").unwrap();
+                // extension.push(original_path.extension().unwrap());
+                // let mut path = original_path.to_owned();
+                // path.set_extension(extension);
+
+                // let path = PathBuf::from_str(&(path.to_str().unwrap().to_owned() + old_extension)).unwrap();
+
+                std::fs::write(&gen_path, generated_source).expect("failed to write shader source file");
+
+                gen_path
+        }
+
+        // TODO: return HashMap<ShaderResourceProvider, vk::DescriptorSetLayout> (?
+        fn create_descriptor_set_layouts_from_bindings(
+                device: &VkDevice,
+                resource_bindings: &HashMap<ShaderResourceId, VkShaderResourceBindingDescription>,
+        ) -> VkResult<EnumMap<VkDescriptorSetIndex, vk::DescriptorSetLayout>> {
+                let mut set_bindings = HashMap::<VkDescriptorSetIndex, Vec<vk::DescriptorSetLayoutBinding>>::new();
+
+                for resource_binding in resource_bindings.values() {
+                        let binding = vk::DescriptorSetLayoutBinding {
+                                binding: resource_binding.binding,
+                                descriptor_type: resource_binding.descriptor_type,
+                                descriptor_count: 1,
+                                stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                p_immutable_samplers: std::ptr::null(),
+                        };
+
+                        set_bindings
+                                .get_mut_or_insert_with(&resource_binding.set, || vec![])
+                                .push(binding);
+                }
+
+                let set_layouts = EnumMap::from_fn(|i: VkDescriptorSetIndex| {
+                        let bindings = set_bindings.remove(&i).unwrap_or_else(|| vec![]);
+
+                        unsafe {
+                                device.create_descriptor_set_layout(
+                                        &vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings),
+                                        None,
+                                )
+                        }
+                });
+
+                if let Some(err) = set_layouts.iter().find_map(|(_, r)| r.err()) {
+                        return Err(err);
+                }
+
+                Ok(set_layouts.map(|_, r| r.unwrap()))
+        }
+
+        fn init_world_dst_set(
+                concurrent_frames: usize,
+                device: &VkDevice,
+                dst_set_allocator: &mut VkDescriptorSetAllocator,
+                vk_shader_resources: &HashMap<ShaderResourceId, VkShaderResource>,
+                shader_resource_buffers: &HashMap<ShaderResourceId, Vec<VkBuffer>>,
+                resource_bindings: &HashMap<ShaderResourceId, VkShaderResourceBindingDescription>,
+                world_dst_set_layout: vk::DescriptorSetLayout,
+        ) -> VkResult<Vec<vk::DescriptorSet>> {
+                let dst_sets: Vec<vk::DescriptorSet> = (0..concurrent_frames)
+                        .map(|_| unsafe {
+                                dst_set_allocator
+                                        .allocate_descriptor_sets(&[world_dst_set_layout])
+                                        .map(|x| x[0])
+                        })
+                        .collect::<VkResult<Vec<vk::DescriptorSet>>>()?;
+
+                for (resource_id, resource_binding) in resource_bindings {
+                        if resource_binding.set != VkDescriptorSetIndex::World {
+                                continue;
+                        }
+
+                        let vk_resource = vk_shader_resources.get(resource_id).unwrap();
+
+                        match vk_resource.resource_type {
+                                VkShaderResourceType::UniformBuffer => {
+                                        let buffers = shader_resource_buffers.get(resource_id).expect(&format!(
+                                                "no backing buffers for shader resource {}",
+                                                resource_id
+                                        ));
+
+                                        assert_eq!(dst_sets.len(), buffers.len());
+
+                                        for (dst_set, buffer) in Iterator::zip(dst_sets.iter(), buffers.iter()) {
+                                                let buffer_info = vk::DescriptorBufferInfo {
+                                                        buffer: **buffer,
+                                                        offset: 0,
+                                                        range: vk::WHOLE_SIZE,
+                                                };
+
+                                                let dst_write = vk::WriteDescriptorSet::builder()
+                                                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                                                        .dst_set(*dst_set)
+                                                        .dst_binding(resource_binding.binding)
+                                                        .dst_array_element(0)
+                                                        .buffer_info(buffer_info.ref_into_slice());
+
+                                                unsafe { device.update_descriptor_sets(&[dst_write.build()], &[]) };
+                                        }
+                                },
+                                VkShaderResourceType::UniformBufferDynamic => todo!(),
+                                VkShaderResourceType::CombinedImageSampler => (),
+                        }
+                }
+
+                Ok(dst_sets)
+        }
+
+        fn init_mesh_dst_set(
+                concurrent_frames: usize,
+                device: &VkDevice,
+                dst_set_allocator: &mut VkDescriptorSetAllocator,
+                vk_shader_resources: &HashMap<ShaderResourceId, VkShaderResource>,
+                shader_resource_dynamic_buffers: &HashMap<ShaderResourceId, Vec<VkDynamicUniformBuffer>>,
+                resource_bindings: &HashMap<ShaderResourceId, VkShaderResourceBindingDescription>,
+                mesh_dst_set_layout: vk::DescriptorSetLayout,
+        ) -> VkResult<Vec<vk::DescriptorSet>> {
+                let dst_sets: Vec<vk::DescriptorSet> = (0..concurrent_frames)
+                        .map(|_| unsafe {
+                                dst_set_allocator
+                                        .allocate_descriptor_sets(&[mesh_dst_set_layout])
+                                        .map(|x| x[0])
+                        })
+                        .collect::<VkResult<Vec<vk::DescriptorSet>>>()?;
+
+                for (resource_id, resource_binding) in resource_bindings {
+                        if resource_binding.set != VkDescriptorSetIndex::Mesh {
+                                continue;
+                        }
+
+                        let vk_resource = vk_shader_resources.get(resource_id).unwrap();
+
+                        match vk_resource.resource_type {
+                                VkShaderResourceType::UniformBuffer => todo!(),
+                                VkShaderResourceType::UniformBufferDynamic => {
+                                        let buffers = shader_resource_dynamic_buffers.get(resource_id).expect(
+                                                &format!("no backing buffers for shader resource {}", resource_id),
+                                        );
+
+                                        assert_eq!(dst_sets.len(), buffers.len());
+
+                                        for (dst_set, buffer) in Iterator::zip(dst_sets.iter(), buffers.iter()) {
+                                                let buffer_info = vk::DescriptorBufferInfo {
+                                                        buffer: **buffer,
+                                                        offset: 0,
+                                                        range: buffer.element_padded_size() as vk::DeviceSize,
+                                                };
+
+                                                let dst_write = vk::WriteDescriptorSet::builder()
+                                                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
+                                                        .dst_set(*dst_set)
+                                                        .dst_binding(resource_binding.binding)
+                                                        .dst_array_element(0)
+                                                        .buffer_info(buffer_info.ref_into_slice());
+
+                                                unsafe { device.update_descriptor_sets(&[dst_write.build()], &[]) };
+                                        }
+                                },
+                                VkShaderResourceType::CombinedImageSampler => (),
+                        }
+                }
+
+                Ok(dst_sets)
         }
 
         fn on_cubemap_updated(&mut self, asset_manager: &AssetManager, cubemap_id: CubemapId) -> AnyResult<()> {
@@ -677,45 +1134,87 @@ impl VkAssetManager {
                 asset_manager: &AssetManager,
                 material_id: MaterialId,
         ) -> AnyResult<Option<VkMaterial>> {
-                let material = match asset_manager.get_material(material_id) {
-                        Some(material) => material,
-                        None => return Ok(None),
+                let Some(material) = asset_manager.get_material(material_id) else {
+                        return Ok(None);
                 };
 
-                let [material_dst_set] = unsafe {
-                        self.dst_set_allocator
-                                .allocate_descriptor_sets(&[self.material_dst_set_layout])?
+                let Some(vk_shader) = self.shaders.get(material.shader) else {
+                        return Ok(None);
                 };
 
-                let material_data_buffer = VkDynamicUniformBuffer::new(
-                        &self.pdevice,
-                        &self.device,
-                        Rc::clone(&self.allocator),
-                        self.concurrent_frames,
-                )?;
+                let dst_sets = (0..self.concurrent_frames)
+                        .map(|_| unsafe {
+                                self.dst_set_allocator
+                                        .allocate_descriptor_sets(&[vk_shader.material_dst_set_layout])
+                                        .map(|x| x[0])
+                        })
+                        .collect::<VkResult<Vec<vk::DescriptorSet>>>()?;
 
-                let buffer_info = vk::DescriptorBufferInfo {
-                        buffer: *material_data_buffer,
-                        offset: 0,
-                        range: material_data_buffer.element_padded_size() as vk::DeviceSize,
-                };
+                let mut buffers: HashMap<ShaderResourceId, Vec<VkBuffer>> = HashMap::new();
 
-                let write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-                        .dst_set(material_dst_set)
-                        .dst_binding(0)
-                        .dst_array_element(0)
-                        .buffer_info(std::slice::from_ref(&buffer_info))
-                        .build();
+                for (resource_id, resource_binding) in &vk_shader.shader_resource_bindings {
+                        if resource_binding.set != VkDescriptorSetIndex::Material {
+                                continue;
+                        }
 
-                unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+                        let resource = asset_manager.shader_resources().get(resource_id).unwrap();
+                        let vk_resource = self.shader_resources.get(resource_id).unwrap();
 
-                self.update_vk_material(asset_manager, material, material_dst_set);
+                        let mut resource_buffers = vec![];
 
-                let vk_material = VkMaterial {
-                        dst_set: material_dst_set,
-                        material_data_buffer,
-                };
+                        for &dst_set in &dst_sets {
+                                let write = vk::WriteDescriptorSet::builder()
+                                        .descriptor_type(vk_resource.resource_type.descriptor_type())
+                                        .dst_set(dst_set)
+                                        .dst_binding(resource_binding.binding)
+                                        .dst_array_element(0);
+
+                                match vk_resource.resource_type {
+                                        VkShaderResourceType::UniformBuffer => {
+                                                let ShaderResourceType::Struct(declaration) = &resource.resource_type
+                                                else {
+                                                        panic!()
+                                                };
+
+                                                let buffer = VkBuffer::new_uniform_buffer(
+                                                        &self.device,
+                                                        Rc::clone(&self.allocator),
+                                                        declaration.compute_size() as vk::DeviceSize,
+                                                )?;
+
+                                                let buffer_info = vk::DescriptorBufferInfo {
+                                                        buffer: *buffer,
+                                                        offset: 0,
+                                                        range: vk::WHOLE_SIZE,
+                                                };
+
+                                                resource_buffers.push(buffer);
+
+                                                let write = write.buffer_info(buffer_info.ref_into_slice());
+                                                unsafe { self.device.update_descriptor_sets(&[write.build()], &[]) };
+                                        },
+                                        VkShaderResourceType::UniformBufferDynamic => panic!("{}", resource_id),
+                                        VkShaderResourceType::CombinedImageSampler => {
+                                                let texture = asset_manager.texture(material.base_color_texture);
+
+                                                let image_info = vk::DescriptorImageInfo {
+                                                        sampler: *self.samplers[texture.sampler],
+                                                        image_view: *self.images[texture.image].image_view,
+                                                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                                };
+
+                                                let write = write.image_info(image_info.ref_into_slice());
+                                                unsafe { self.device.update_descriptor_sets(&[write.build()], &[]) };
+                                        },
+                                };
+                        }
+
+                        buffers.insert(resource_id.clone(), resource_buffers);
+                }
+
+                // self.update_vk_material(asset_manager, material, material_dst_set);
+
+                let vk_material = VkMaterial { dst_sets, buffers };
 
                 Ok(Some(vk_material))
         }
@@ -742,8 +1241,7 @@ impl VkAssetManager {
                         .dst_set(material_dst_set)
                         .dst_binding(1)
                         .dst_array_element(0)
-                        .image_info(diffuse_image_info.ref_into_slice())
-                        .build();
+                        .image_info(diffuse_image_info.ref_into_slice());
 
                 let specular_image_info = vk::DescriptorImageInfo {
                         image_view: **specular_vk_image_view,
@@ -755,8 +1253,7 @@ impl VkAssetManager {
                         .dst_set(material_dst_set)
                         .dst_binding(2)
                         .dst_array_element(0)
-                        .image_info(specular_image_info.ref_into_slice())
-                        .build();
+                        .image_info(specular_image_info.ref_into_slice());
 
                 let sampler_info = vk::DescriptorImageInfo {
                         sampler: **color_vk_sampler,
@@ -767,44 +1264,50 @@ impl VkAssetManager {
                         .dst_set(material_dst_set)
                         .dst_binding(3)
                         .dst_array_element(0)
-                        .image_info(sampler_info.ref_into_slice())
-                        .build();
+                        .image_info(sampler_info.ref_into_slice());
 
                 unsafe {
                         self.device.update_descriptor_sets(
-                                &[diffuse_image_write, specular_image_write, sampler_write],
+                                &[
+                                        diffuse_image_write.build(),
+                                        specular_image_write.build(),
+                                        sampler_write.build(),
+                                ],
                                 &[],
                         )
                 };
         }
 
-        fn create_graphics_pipeline_from_vk_shader(
+        fn create_graphics_pipeline_for_vk_shader(
                 device: &Rc<VkDevice>,
                 swapchain_samples: vk::SampleCountFlags,
                 render_pass: vk::RenderPass,
                 pipeline_layout: vk::PipelineLayout,
                 enable_depth_test: bool,
                 cull_mode: vk::CullModeFlags,
-                shader: &VkShader,
+                vert_module: vk::ShaderModule,
+                frag_module: vk::ShaderModule,
+                vertex_input_bindings: &[vk::VertexInputBindingDescription],
+                vertex_input_attributes: &[vk::VertexInputAttributeDescription],
         ) -> VkResult<VkPipeline> {
                 let entry_point = CString::new("main").unwrap();
 
                 let shader_stages = [
                         vk::PipelineShaderStageCreateInfo::builder()
                                 .stage(vk::ShaderStageFlags::VERTEX)
-                                .module(*shader.vert_module)
+                                .module(vert_module)
                                 .name(&entry_point)
                                 .build(),
                         vk::PipelineShaderStageCreateInfo::builder()
                                 .stage(vk::ShaderStageFlags::FRAGMENT)
-                                .module(*shader.frag_module)
+                                .module(frag_module)
                                 .name(&entry_point)
                                 .build(),
                 ];
 
                 let vert_input_cinfo = vk::PipelineVertexInputStateCreateInfo::builder()
-                        .vertex_binding_descriptions(&shader.vertex_input_bindings)
-                        .vertex_attribute_descriptions(&shader.vertex_input_attributes);
+                        .vertex_binding_descriptions(&vertex_input_bindings)
+                        .vertex_attribute_descriptions(&vertex_input_attributes);
 
                 let input_assembly_cinfo = vk::PipelineInputAssemblyStateCreateInfo::builder()
                         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
@@ -849,8 +1352,7 @@ impl VkAssetManager {
                         .depth_write_enable(true)
                         .depth_compare_op(vk::CompareOp::LESS)
                         .depth_bounds_test_enable(false)
-                        .stencil_test_enable(false)
-                        .build();
+                        .stencil_test_enable(false);
 
                 let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::builder()
                         .color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -877,10 +1379,9 @@ impl VkAssetManager {
                         .dynamic_state(&pipeline_dyn_state_cinfo)
                         .layout(pipeline_layout)
                         .render_pass(render_pass)
-                        .subpass(0)
-                        .build();
+                        .subpass(0);
 
-                unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
+                unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo.build()) }
         }
 
         // fn vk_format_from_component_and_data_type(comp_type: ComponentType, data_type: DataType) -> vk::Format {
@@ -1038,6 +1539,45 @@ impl From<CullMode> for vk::CullModeFlags {
                         CullMode::None => vk::CullModeFlags::NONE,
                         CullMode::Front => vk::CullModeFlags::FRONT,
                         CullMode::Back => vk::CullModeFlags::BACK,
+                }
+        }
+}
+
+struct VkAssetManagerFrameData {}
+
+pub struct VkShaderResource {
+        pub resource_type: VkShaderResourceType,
+}
+
+pub enum VkShaderResourceType {
+        UniformBuffer,
+        UniformBufferDynamic,
+        CombinedImageSampler,
+}
+
+impl VkShaderResourceType {
+        fn descriptor_type(&self) -> vk::DescriptorType {
+                match self {
+                        VkShaderResourceType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
+                        VkShaderResourceType::UniformBufferDynamic => vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
+                        VkShaderResourceType::CombinedImageSampler => vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                }
+        }
+}
+
+#[derive(Debug, Clone, Copy, Enum, Hash, PartialEq, Eq)]
+pub enum VkDescriptorSetIndex {
+        World,
+        Material,
+        Mesh,
+}
+
+impl VkDescriptorSetIndex {
+        pub fn value(&self) -> u32 {
+                match self {
+                        VkDescriptorSetIndex::World => 0,
+                        VkDescriptorSetIndex::Material => 1,
+                        VkDescriptorSetIndex::Mesh => 2,
                 }
         }
 }
