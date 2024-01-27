@@ -12,15 +12,14 @@ use super::{
         vk_asset_manager::{VkAssetManager, VkCubemap, VkDescriptorSetIndex, VkShader, VkShaderResourceType},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
-        vk_descriptor_set_layout_cache::VkDescriptorSetLayoutCache,
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
         vk_wrapper::{VkDevice, VkRenderPass, VkSemaphore},
 };
 use crate::{
         application::InterpGlobalTransform,
         asset_manager::{
-                AssetManager, AssetManagerEvent, MaterialMesh, ShaderResourceId, ShaderStructDeclaration, ShaderStructDeclarationProvider, ShaderStructField,
-                ShaderStructFieldType,
+                AssetManager, AssetManagerEvent, MaterialMesh, ShaderResourceId, ShaderStructDeclaration,
+                ShaderStructDeclarationProvider, ShaderStructField, ShaderStructFieldType,
         },
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
         hashmap::HashMap,
@@ -98,9 +97,6 @@ impl VkRenderer {
                 let setup_cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
                 trace!("Allocated VkCommandBuffers");
-
-                let world_dst_set_layout = Self::create_world_dst_set_layout(&mut vk_context.dst_set_layout_cache)?;
-                let object_dst_set_layout = Self::create_object_dst_set_layout(&mut vk_context.dst_set_layout_cache)?;
 
                 let max_concurrent_frames = MAX_CONCURRENT_FRAMES;
                 let frames_data = (0..max_concurrent_frames)
@@ -542,72 +538,6 @@ impl VkRenderer {
                 unsafe { VkRenderPass::new(device, &render_pass_cinfo) }
         }
 
-        fn create_world_dst_set_layout(
-                dst_set_layout_cache: &mut VkDescriptorSetLayoutCache,
-        ) -> VkResult<vk::DescriptorSetLayout> {
-                let bindings = vec![
-                        // WorldMatrices
-                        vk::DescriptorSetLayoutBinding {
-                                binding: 0,
-                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                                p_immutable_samplers: std::ptr::null(),
-                        },
-                        // WorldDirectionalLight
-                        vk::DescriptorSetLayoutBinding {
-                                binding: 1,
-                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                                p_immutable_samplers: std::ptr::null(),
-                        },
-                        // WorldLight
-                        vk::DescriptorSetLayoutBinding {
-                                binding: 2,
-                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                                p_immutable_samplers: std::ptr::null(),
-                        },
-                        // Skybox
-                        vk::DescriptorSetLayoutBinding {
-                                binding: 3,
-                                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                                p_immutable_samplers: std::ptr::null(),
-                        },
-                ];
-
-                unsafe { dst_set_layout_cache.create_layout(bindings) }
-        }
-
-        fn create_object_dst_set_layout(
-                dst_set_layout_cache: &mut VkDescriptorSetLayoutCache,
-        ) -> VkResult<vk::DescriptorSetLayout> {
-                let bindings = vec![
-                        // ObjectMatrices
-                        vk::DescriptorSetLayoutBinding {
-                                binding: 0,
-                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::VERTEX,
-                                p_immutable_samplers: std::ptr::null(),
-                        },
-                        // BillboardData
-                        vk::DescriptorSetLayoutBinding {
-                                binding: 1,
-                                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::VERTEX,
-                                p_immutable_samplers: std::ptr::null(),
-                        },
-                ];
-
-                unsafe { dst_set_layout_cache.create_layout(bindings) }
-        }
-
         // TODO: check that T is compatible with the shader resource type.
         fn write_struct_resource<T: 'static>(
                 framei: usize,
@@ -802,7 +732,7 @@ impl VkRenderer {
         ) -> VkResult<()> {
                 //let mut last_material = MaterialID::MAX;
 
-                let object_matrices_offset = unsafe {
+                let object_matrices_offset = {
                         let model = model_matrix;
                         let mvp = world_matrices.vp * model;
                         let normal = model.inverse().transpose();

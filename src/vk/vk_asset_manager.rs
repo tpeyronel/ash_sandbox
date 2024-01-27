@@ -18,7 +18,7 @@ use slotmap::SecondaryMap;
 use crate::{
         asset_manager::{
                 AssetManager, AssetManagerEvent, CubemapId, CullMode, ImageFormat, ImageId, IndicesVec, MagFilter,
-                Material, MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule, ShaderResourceId,
+                MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule, ShaderResourceId,
                 ShaderResourceProvider, ShaderResourceType, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
@@ -40,7 +40,6 @@ use super::{
         vk_buffer::VkDynamicUniformBuffer,
         vk_context::VkContext,
         vk_descriptor_set_allocator::VkDescriptorSetAllocator,
-        vk_descriptor_set_layout_cache::VkDescriptorSetLayoutCache,
         vk_image::VkImageCubemapCreateInfo,
         vk_wrapper::{VkInstance, VkPipeline, VkPipelineLayout, VkShaderModule, VmaAllocator},
 };
@@ -144,8 +143,6 @@ impl VkAssetManager {
                 let dst_set_allocator = VkDescriptorSetAllocator::new(Rc::clone(&vk_context.device))?;
                 let cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
-                let material_dst_set_layout =
-                        Self::create_material_dst_set_layout(&mut vk_context.dst_set_layout_cache)?;
 
                 // trace!("Creating VkShaderResources...");
                 // let vk_shader_resources = Self::create_vk_shader_resources_from_shader_resources(
@@ -292,51 +289,6 @@ impl VkAssetManager {
 
                 unsafe { self.cmd_buffer.destroy() };
                 unsafe { self.dst_set_allocator.destroy() };
-        }
-
-        fn create_material_dst_set_layout(
-                dst_set_layout_cache: &mut VkDescriptorSetLayoutCache,
-        ) -> VkResult<vk::DescriptorSetLayout> {
-                let mat_data_binding = vk::DescriptorSetLayoutBinding {
-                        binding: 0,
-                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                        p_immutable_samplers: std::ptr::null(),
-                };
-
-                let diffuse_binding = vk::DescriptorSetLayoutBinding {
-                        binding: 1,
-                        descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                        p_immutable_samplers: std::ptr::null(),
-                };
-
-                let specular_binding = vk::DescriptorSetLayoutBinding {
-                        binding: 2,
-                        descriptor_type: vk::DescriptorType::SAMPLED_IMAGE,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                        p_immutable_samplers: std::ptr::null(),
-                };
-
-                let sampler_binding = vk::DescriptorSetLayoutBinding {
-                        binding: 3,
-                        descriptor_type: vk::DescriptorType::SAMPLER,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::FRAGMENT,
-                        p_immutable_samplers: std::ptr::null(),
-                };
-
-                unsafe {
-                        dst_set_layout_cache.create_layout(vec![
-                                mat_data_binding,
-                                diffuse_binding,
-                                specular_binding,
-                                sampler_binding,
-                        ])
-                }
         }
 
         fn create_graphics_pipeline_layout(
@@ -1217,65 +1169,6 @@ impl VkAssetManager {
                 let vk_material = VkMaterial { dst_sets, buffers };
 
                 Ok(Some(vk_material))
-        }
-
-        fn update_vk_material(
-                &self,
-                asset_manager: &AssetManager,
-                material: &Material,
-                material_dst_set: vk::DescriptorSet,
-        ) {
-                let base_color_texture = &asset_manager.texture(material.base_color_texture);
-                let metallic_roughness_texture = &asset_manager.texture(material.metallic_roughness_texture);
-                let diffuse_vk_image_view = &self.images[base_color_texture.image].image_view;
-                let specular_vk_image_view = &self.images[metallic_roughness_texture.image].image_view;
-                let color_vk_sampler = &self.samplers[base_color_texture.sampler];
-
-                let diffuse_image_info = vk::DescriptorImageInfo {
-                        image_view: **diffuse_vk_image_view,
-                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                        ..Default::default()
-                };
-                let diffuse_image_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                        .dst_set(material_dst_set)
-                        .dst_binding(1)
-                        .dst_array_element(0)
-                        .image_info(diffuse_image_info.ref_into_slice());
-
-                let specular_image_info = vk::DescriptorImageInfo {
-                        image_view: **specular_vk_image_view,
-                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                        ..Default::default()
-                };
-                let specular_image_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                        .dst_set(material_dst_set)
-                        .dst_binding(2)
-                        .dst_array_element(0)
-                        .image_info(specular_image_info.ref_into_slice());
-
-                let sampler_info = vk::DescriptorImageInfo {
-                        sampler: **color_vk_sampler,
-                        ..Default::default()
-                };
-                let sampler_write = vk::WriteDescriptorSet::builder()
-                        .descriptor_type(vk::DescriptorType::SAMPLER)
-                        .dst_set(material_dst_set)
-                        .dst_binding(3)
-                        .dst_array_element(0)
-                        .image_info(sampler_info.ref_into_slice());
-
-                unsafe {
-                        self.device.update_descriptor_sets(
-                                &[
-                                        diffuse_image_write.build(),
-                                        specular_image_write.build(),
-                                        sampler_write.build(),
-                                ],
-                                &[],
-                        )
-                };
         }
 
         fn create_graphics_pipeline_for_vk_shader(
