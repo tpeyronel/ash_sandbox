@@ -86,6 +86,22 @@ pub struct VkShader {
         pub graphics_pipeline: VkPipeline,
 }
 
+impl VkShader {
+        fn destroy(&self, device: &VkDevice) {
+                unsafe {
+                        self.graphics_pipeline.destroy();
+                        self.graphics_pipeline_layout.destroy();
+
+                        device.destroy_descriptor_set_layout(self.mesh_dst_set_layout, None);
+                        device.destroy_descriptor_set_layout(self.material_dst_set_layout, None);
+                        device.destroy_descriptor_set_layout(self.world_dst_set_layout, None);
+
+                        self.frag_module.destroy();
+                        self.vert_module.destroy();
+                }
+        }
+}
+
 pub struct VkShaderResourceBindingDescription {
         pub set: VkDescriptorSetIndex,
         pub binding: u32,
@@ -97,11 +113,6 @@ pub struct VkCubemap {
         pub image_view: VkImageView,
         pub sampler: VkSampler,
 }
-
-// pub struct VkShaderResource {
-//         pub dst_set_layout: VkDescriptorSetLayout,
-//         pub descriptor_sets: Vec<vk::DescriptorSet>,
-// }
 
 pub struct VkAssetManager {
         instance: Rc<VkInstance>,
@@ -120,9 +131,7 @@ pub struct VkAssetManager {
         pub images: SecondaryMap<ImageId, VkModelImage>,
         pub samplers: SecondaryMap<SamplerId, VkSampler>,
         pub materials: SecondaryMap<MaterialId, VkMaterial>,
-        // pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
         pub shaders: SecondaryMap<ShaderId, VkShader>,
-        // pub pipelines: SecondaryMap<ShaderId, VkPipeline>,
         pub cubemaps: SecondaryMap<CubemapId, VkCubemap>,
 
         pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
@@ -144,14 +153,6 @@ impl VkAssetManager {
                 let cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
 
-                // trace!("Creating VkShaderResources...");
-                // let vk_shader_resources = Self::create_vk_shader_resources_from_shader_resources(
-                //         &device,
-                //         dst_pool,
-                //         asset_manager.shader_resources(),
-                //         frames_in_flight,
-                // )?;
-
                 Ok(Self {
                         instance: Rc::clone(&vk_context.instance),
                         pdevice: Rc::clone(&vk_context.pdevice),
@@ -169,9 +170,7 @@ impl VkAssetManager {
                         images: SecondaryMap::new(),
                         samplers: SecondaryMap::new(),
                         materials: SecondaryMap::new(),
-                        // shader_resources: HashMap::new(),
                         shaders: SecondaryMap::new(),
-                        // pipelines: SecondaryMap::new(),
                         cubemaps: SecondaryMap::new(),
 
                         shader_resources: HashMap::new(),
@@ -251,24 +250,15 @@ impl VkAssetManager {
                         cubemap.sampler.destroy();
                 });
 
-                // self.pipelines.drain().for_each(|(_, pipeline)| unsafe {
-                //         pipeline.destroy();
-                // });
-
-                self.shaders.drain().for_each(|(_, shader)| unsafe {
-                        shader.vert_module.destroy();
-                        shader.frag_module.destroy();
-                });
+                self.shaders
+                        .drain()
+                        .for_each(|(_, shader)| shader.destroy(&self.device));
 
                 self.materials.drain().for_each(|(_, mut material)| {
                         material.buffers.drain().for_each(|(_, mut buffers)| {
                                 buffers.drain(..).for_each(|b| unsafe { b.destroy() });
                         });
                 });
-
-                // self.shader_resources.drain().for_each(|(_, shader_resource)| unsafe {
-                //         shader_resource.dst_set_layout.destroy()
-                // });
 
                 self.samplers.drain().for_each(|(_, sampler)| unsafe {
                         sampler.destroy();
@@ -560,7 +550,6 @@ impl VkAssetManager {
                 };
 
                 self.shaders.insert(shader_id, vk_shader);
-                // self.pipelines.insert(shader_id, vk_pipeline);
 
                 Ok(())
         }
@@ -1164,8 +1153,6 @@ impl VkAssetManager {
                         buffers.insert(resource_id.clone(), resource_buffers);
                 }
 
-                // self.update_vk_material(asset_manager, material, material_dst_set);
-
                 let vk_material = VkMaterial { dst_sets, buffers };
 
                 Ok(Some(vk_material))
@@ -1361,53 +1348,6 @@ impl VkAssetManager {
                         WrappingMode::Repeat => vk::SamplerAddressMode::REPEAT,
                 }
         }
-
-        // fn create_vk_shader_resources_from_shader_resources(
-        //         device: &Rc<VkDevice>,
-        //         dst_pool: vk::DescriptorPool,
-        //         shader_resources: &HashMap<ShaderResourceId, ShaderResource>,
-        //         frames_in_flight: usize,
-        // ) -> AnyResult<HashMap<ShaderResourceId, VkShaderResource>> {
-        //         let mut vk_shader_resources = HashMap::<ShaderResourceId, VkShaderResource>::new();
-
-        //         for (resource_id, shader_resource) in shader_resources {
-        //                 let bindings: Vec<vk::DescriptorSetLayoutBinding> = shader_resource
-        //                         .elements
-        //                         .iter()
-        //                         .enumerate()
-        //                         .map(|(i, e)| vk::DescriptorSetLayoutBinding {
-        //                                 binding: i as u32,
-        //                                 descriptor_type: vk::DescriptorType::from(e.element_type),
-        //                                 descriptor_count: 1,
-        //                                 stage_flags: e.shader_stage_flags,
-        //                                 p_immutable_samplers: std::ptr::null(),
-        //                         })
-        //                         .collect();
-
-        //                 let matrices_dst_set_layout_cinfo =
-        //                         vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings);
-
-        //                 let dst_set_layout =
-        //                         unsafe { VkDescriptorSetLayout::new(device, &matrices_dst_set_layout_cinfo)? };
-
-        //                 let dst_set_layouts = vec![*dst_set_layout; frames_in_flight];
-
-        //                 let dst_set_ainfo = vk::DescriptorSetAllocateInfo::builder()
-        //                         .descriptor_pool(dst_pool)
-        //                         .set_layouts(&dst_set_layouts);
-
-        //                 let descriptor_sets = unsafe { device.allocate_descriptor_sets(&dst_set_ainfo)? };
-
-        //                 let vk_shader_resource = VkShaderResource {
-        //                         dst_set_layout,
-        //                         descriptor_sets,
-        //                 };
-
-        //                 vk_shader_resources.insert(resource_id.clone(), vk_shader_resource);
-        //         }
-
-        //         Ok(vk_shader_resources)
-        // }
 }
 
 trait VkIndex {
