@@ -18,13 +18,13 @@ use slotmap::SecondaryMap;
 use crate::{
         asset_manager::{
                 AssetManager, AssetManagerEvent, CubemapId, CullMode, ImageFormat, ImageId, IndicesVec, MagFilter,
-                MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule, ShaderResourceId,
-                ShaderResourceProvider, ShaderResourceType, WrappingMode,
+                MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         hashmap::GetOrInsert,
         my_glm::{Vec2, Vec3},
         shader_preprocessor::{PreprocessedShaderStage, ShaderStageSourceBuilder},
+        shader_resource::{ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
         shader_resource_registry::ShaderResourceRegistry,
         util::RefIntoSlice,
         vk::{

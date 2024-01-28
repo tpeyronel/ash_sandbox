@@ -2,9 +2,9 @@ use lazy_regex::{lazy_regex, Lazy};
 use regex::Regex;
 
 use crate::{
-        asset_manager::{ShaderLoadError, ShaderResourceId, ShaderResourceType},
+        asset_manager::ShaderLoadError,
         hashmap::HashMap,
-        shader_resource::{ShaderStructDeclaration, ShaderStructFieldType},
+        shader_resource::{ShaderResourceId, ShaderResourceType, ShaderStructDeclaration, ShaderStructFieldType},
         shader_resource_registry::ShaderResourceRegistry,
 };
 

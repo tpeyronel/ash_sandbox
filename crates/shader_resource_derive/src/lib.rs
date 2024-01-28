@@ -82,7 +82,7 @@ fn shader_struct_field(field: &syn::Field) -> TokenStream {
         let ty = &field.ty;
 
         quote_spanned! {field.span()=>
-                ShaderStructField {
+                crate::shader_resource::ShaderStructField {
                         field_name: #field_name.to_string(),
                         field_type: <#ty as crate::shader_resource::ShaderStructFieldTypeProvider>::shader_struct_field_type(),
                 }

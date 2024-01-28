@@ -1,9 +1,8 @@
 use hashbrown::HashMap;
 use thiserror::Error;
 
-use crate::{
-        asset_manager::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
-        shader_resource::ShaderStruct,
+use crate::shader_resource::{
+        ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType, ShaderStruct,
 };
 
 #[derive(Error, Debug)]

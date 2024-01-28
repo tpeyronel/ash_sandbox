@@ -17,13 +17,13 @@ use super::{
 };
 use crate::{
         application::InterpGlobalTransform,
-        asset_manager::{AssetManager, AssetManagerEvent, MaterialMesh, ShaderResourceId},
+        asset_manager::{AssetManager, AssetManagerEvent, MaterialMesh},
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
         hashmap::HashMap,
         model_instance_manager::ModelInstance,
         my_glm::*,
         renderer::Renderer,
-        shader_resource::{ShaderStruct, ShaderStructDeclaration, ShaderStructField, ShaderStructFieldType},
+        shader_resource::ShaderResourceId,
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_OBJECT_MATRICES,
                 SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,

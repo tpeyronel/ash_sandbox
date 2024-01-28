@@ -1,3 +1,51 @@
+pub type ShaderResourceId = String;
+
+#[derive(Debug, Clone)]
+pub struct ShaderResource {
+        pub id: ShaderResourceId,
+        pub resource_type: ShaderResourceType,
+        pub provider: ShaderResourceProvider,
+}
+
+#[derive(Debug, Clone)]
+pub enum ShaderResourceType {
+        Struct(ShaderStructDeclaration),
+        Image2D,
+        ImageCube,
+}
+
+impl ShaderResourceType {
+        pub fn glsl_type_name<'a>(&'a self) -> &'a str {
+                match self {
+                        ShaderResourceType::Struct(ShaderStructDeclaration { type_name, .. }) => &type_name,
+                        ShaderResourceType::Image2D => "sampler2D",
+                        ShaderResourceType::ImageCube => "samplerCube",
+                }
+        }
+
+        pub fn glsl_complete_type(&self) -> String {
+                match self {
+                        ShaderResourceType::Struct(ShaderStructDeclaration { type_name, fields }) => {
+                                let body: String = fields
+                                        .iter()
+                                        .map(|f| format!("\t{} {};", f.field_type.glsl_type_name(), f.field_name))
+                                        .collect::<Vec<String>>()
+                                        .join("\n");
+
+                                format!("{} {{\n{}\n}}", type_name, body)
+                        },
+                        _ => self.glsl_type_name().to_owned(),
+                }
+        }
+}
+
+#[derive(Debug, Hash, Clone, Copy)]
+pub enum ShaderResourceProvider {
+        World,
+        Material,
+        Mesh,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShaderStructDeclaration {
         pub type_name: String,

@@ -25,7 +25,7 @@ use crate::{
         hashmap::HashMap,
         my_glm::*,
         shader_preprocessor::{PreprocessedShaderStage, ShaderPreprocessor},
-        shader_resource::{ShaderStruct, ShaderStructDeclaration},
+        shader_resource::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType, ShaderStruct},
         shader_resource_registry::ShaderResourceRegistry,
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_MATERIAL_DATA,
@@ -322,87 +322,6 @@ impl ShaderModule {
                 let bin = std::fs::read(&output_path)?;
 
                 Ok(Self { bin })
-        }
-}
-
-pub type ShaderResourceId = String;
-
-#[derive(Debug, Clone)]
-pub struct ShaderResource {
-        pub id: ShaderResourceId,
-        pub resource_type: ShaderResourceType,
-        pub provider: ShaderResourceProvider,
-}
-
-#[derive(Debug, Clone)]
-pub enum ShaderResourceType {
-        Struct(ShaderStructDeclaration),
-        Image2D,
-        ImageCube,
-}
-
-impl ShaderResourceType {
-        pub fn glsl_type_name<'a>(&'a self) -> &'a str {
-                match self {
-                        ShaderResourceType::Struct(ShaderStructDeclaration { type_name, .. }) => &type_name,
-                        ShaderResourceType::Image2D => "sampler2D",
-                        ShaderResourceType::ImageCube => "samplerCube",
-                }
-        }
-
-        pub fn glsl_complete_type(&self) -> String {
-                match self {
-                        ShaderResourceType::Struct(ShaderStructDeclaration { type_name, fields }) => {
-                                let body: String = fields
-                                        .iter()
-                                        .map(|f| format!("\t{} {};", f.field_type.glsl_type_name(), f.field_name))
-                                        .collect::<Vec<String>>()
-                                        .join("\n");
-
-                                format!("{} {{\n{}\n}}", type_name, body)
-                        },
-                        _ => self.glsl_type_name().to_owned(),
-                }
-        }
-}
-
-#[derive(Debug, Hash, Clone, Copy)]
-pub enum ShaderResourceProvider {
-        World,
-        Material,
-        Mesh,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ShaderResourceElement {
-        pub element_type: ShaderResourceElementType,
-        pub shader_stage_flags: ash::vk::ShaderStageFlags,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ShaderResourceElementType {
-        Sampler,
-        SampledImage,
-        UniformBuffer,
-        StorageBuffer,
-        UniformBufferDynamic,
-        StorageBufferDynamic,
-}
-
-impl From<ShaderResourceElementType> for ash::vk::DescriptorType {
-        fn from(t: ShaderResourceElementType) -> Self {
-                match t {
-                        ShaderResourceElementType::Sampler => ash::vk::DescriptorType::SAMPLER,
-                        ShaderResourceElementType::SampledImage => ash::vk::DescriptorType::SAMPLED_IMAGE,
-                        ShaderResourceElementType::UniformBuffer => ash::vk::DescriptorType::UNIFORM_BUFFER,
-                        ShaderResourceElementType::StorageBuffer => ash::vk::DescriptorType::STORAGE_BUFFER,
-                        ShaderResourceElementType::UniformBufferDynamic => {
-                                ash::vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC
-                        },
-                        ShaderResourceElementType::StorageBufferDynamic => {
-                                ash::vk::DescriptorType::STORAGE_BUFFER_DYNAMIC
-                        },
-                }
         }
 }
 
