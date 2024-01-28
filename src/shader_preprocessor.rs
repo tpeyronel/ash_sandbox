@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use lazy_regex::{lazy_regex, Lazy};
 use regex::Regex;
 
@@ -87,16 +89,16 @@ impl ShaderPreprocessor {
 
                                 let type_name = captures.get(1).unwrap().as_str().to_string();
                                 let variable_name = captures.get(2).unwrap().as_str().to_string();
-                                let resource_id = captures.get(3).unwrap().as_str().to_string();
+                                let resource_id = ShaderResourceId::new(captures.get(3).unwrap().as_str());
 
-                                let resource = shader_resources
-                                        .get(&resource_id)
-                                        .ok_or_else(|| ShaderLoadError::UnknownShaderResourceId(resource_id.clone()))?;
+                                let resource = shader_resources.get(&resource_id).ok_or_else(|| {
+                                        ShaderLoadError::UnknownShaderResourceId(resource_id.deref().to_owned())
+                                })?;
 
                                 assert_eq!(resource.resource_type.glsl_type_name(), type_name);
 
                                 ShaderDirective::Resource {
-                                        resource_id,
+                                        resource_id: resource.id.clone(), // Use resource.id.clone() to avoid having multiple strings
                                         variable_name,
                                 }
                         },

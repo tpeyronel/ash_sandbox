@@ -1,45 +1,36 @@
 use hashbrown::HashMap;
-use thiserror::Error;
 
-use crate::shader_resource::{
-        ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType, ShaderStruct,
+use crate::{
+        asset_manager::{AssetManagerEvent, Observable},
+        shader_resource::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType, ShaderStruct},
 };
-
-#[derive(Error, Debug)]
-pub enum ShaderResourceRegisterError {
-        #[error("another shader resource with the same resource id already exists: {0}")]
-        DuplicateShaderResourceId(String),
-}
 
 #[derive(Debug)]
 pub struct ShaderResourceRegistry {
-        registers: HashMap<ShaderResourceId, ShaderResource>,
+        registers: Observable<
+                ShaderResourceId,
+                ShaderResource,
+                AssetManagerEvent,
+                HashMap<ShaderResourceId, ShaderResource>,
+        >,
 }
 
 impl ShaderResourceRegistry {
-        pub fn new() -> Self {
+        pub fn new(event_tx: crossbeam_channel::Sender<AssetManagerEvent>) -> Self {
                 Self {
-                        registers: HashMap::new(),
+                        registers: Observable::new(HashMap::new(), event_tx),
                 }
         }
 
-        pub fn register(&mut self, shader_resource: ShaderResource) -> Result<(), ShaderResourceRegisterError> {
-                if self.registers.contains_key(&shader_resource.id) {
-                        return Err(ShaderResourceRegisterError::DuplicateShaderResourceId(
-                                shader_resource.id,
-                        ));
+        pub fn register(&mut self, shader_resource: ShaderResource) {
+                let old = self.registers.insert(shader_resource.id.clone(), shader_resource);
+
+                if let Some(old) = old {
+                        panic!("duplicate shader resource id {}", &old.id);
                 }
-
-                self.registers.insert(shader_resource.id.clone(), shader_resource);
-
-                Ok(())
         }
 
-        pub fn register_struct<T: ShaderStruct>(
-                &mut self,
-                id: ShaderResourceId,
-                provider: ShaderResourceProvider,
-        ) -> Result<(), ShaderResourceRegisterError> {
+        pub fn register_struct<T: ShaderStruct>(&mut self, id: ShaderResourceId, provider: ShaderResourceProvider) {
                 self.register(ShaderResource {
                         id,
                         resource_type: ShaderResourceType::Struct(T::shader_struct_declaration()),

@@ -195,7 +195,7 @@ impl Renderer for VkRenderer {
                 Self::write_struct_resource(
                         self.framei,
                         &self.vk_asset_manager,
-                        SHADER_RESOURCE_WORLD_MATRICES,
+                        &SHADER_RESOURCE_WORLD_MATRICES,
                         &world_matrices,
                 )?;
 
@@ -246,7 +246,7 @@ impl Renderer for VkRenderer {
                 Self::write_struct_resource(
                         self.framei,
                         &self.vk_asset_manager,
-                        SHADER_RESOURCE_WORLD_LIGHTS,
+                        &SHADER_RESOURCE_WORLD_LIGHTS,
                         &world_lights,
                 )?;
 
@@ -265,7 +265,7 @@ impl Renderer for VkRenderer {
                 Self::write_struct_resource(
                         self.framei,
                         &self.vk_asset_manager,
-                        SHADER_RESOURCE_BILLBOARD_DATA,
+                        &SHADER_RESOURCE_BILLBOARD_DATA,
                         &billboard_data,
                 )?;
 
@@ -540,7 +540,7 @@ impl VkRenderer {
         fn write_struct_resource<T: 'static>(
                 framei: usize,
                 vk_asset_manager: &VkAssetManager,
-                resource_id: &str,
+                resource_id: &ShaderResourceId,
                 data: &T,
         ) -> AnyResult<()> {
                 let vk_resource = vk_asset_manager.shader_resources.get(resource_id).unwrap();
@@ -561,7 +561,7 @@ impl VkRenderer {
 
         fn write_image_resource(
                 vk_asset_manager: &VkAssetManager,
-                resource_id: &str,
+                resource_id: &ShaderResourceId,
                 image_view: vk::ImageView,
                 sampler: vk::Sampler,
                 world_shader_resource_descriptors_data: &mut HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
@@ -574,7 +574,7 @@ impl VkRenderer {
                         VkShaderResourceType::CombinedImageSampler => {
                                 let data = ShaderResourceDescriptorData::Image2D { image_view, sampler };
 
-                                world_shader_resource_descriptors_data.insert(resource_id.to_string(), data);
+                                world_shader_resource_descriptors_data.insert(resource_id.clone(), data);
                         },
                 }
         }
@@ -737,7 +737,7 @@ impl VkRenderer {
 
                         let object_matrices_buffer = &vk_asset_manager
                                 .shader_resource_dynamic_buffers
-                                .get(SHADER_RESOURCE_OBJECT_MATRICES)
+                                .get(&SHADER_RESOURCE_OBJECT_MATRICES)
                                 .unwrap()[framei];
 
                         let object_matrices = ObjectMatrices { model, mvp, normal };
@@ -817,7 +817,7 @@ impl VkRenderer {
                         );
 
                         // TODO: update all materials beforehand, to avoid updating the same material if its shared by multiple meshes.
-                        if let Some(material_buffers) = vk_material.buffers.get(SHADER_RESOURCE_MATERIAL_DATA) {
+                        if let Some(material_buffers) = vk_material.buffers.get(&SHADER_RESOURCE_MATERIAL_DATA) {
                                 material_buffers[framei].write(&MaterialData {
                                         ambient_color: material.base_color_factor,
                                         diffuse_color: material.base_color_factor,
@@ -904,7 +904,7 @@ impl VkRenderer {
         ) {
                 Self::write_image_resource(
                         vk_asset_manager,
-                        SHADER_RESOURCE_SKYBOX,
+                        &SHADER_RESOURCE_SKYBOX,
                         *skybox.image_view,
                         *skybox.sampler,
                         world_shader_resource_descriptors_data,

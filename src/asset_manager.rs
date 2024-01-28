@@ -1,5 +1,7 @@
 use std::{
         ffi::OsString,
+        hash::Hash,
+        marker::PhantomData,
         ops::{Index, IndexMut},
         path::{Path, PathBuf},
         process::Command,
@@ -25,7 +27,7 @@ use crate::{
         hashmap::HashMap,
         my_glm::*,
         shader_preprocessor::{PreprocessedShaderStage, ShaderPreprocessor},
-        shader_resource::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType, ShaderStruct},
+        shader_resource::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
         shader_resource_registry::ShaderResourceRegistry,
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_MATERIAL_DATA,
@@ -771,6 +773,8 @@ pub struct AssetStorage {
         cubemaps: ObservableSlotMap<CubemapId, Cubemap, AssetManagerEvent>,
 
         named_models: HashMap<String, ModelId>,
+
+        shader_resources: ShaderResourceRegistry,
 }
 
 impl AssetStorage {
@@ -786,9 +790,10 @@ impl AssetStorage {
                                 meshes: ObservableSlotMap::new(event_tx.clone()),
                                 models: ObservableSlotMap::new(event_tx.clone()),
                                 shaders: ObservableSlotMap::new(event_tx.clone()),
-                                cubemaps: ObservableSlotMap::new(event_tx),
+                                cubemaps: ObservableSlotMap::new(event_tx.clone()),
 
                                 named_models: HashMap::new(),
+                                shader_resources: ShaderResourceRegistry::new(event_tx),
                         },
                         event_rx,
                 )
@@ -873,7 +878,6 @@ impl AssetStorage {
 pub struct AssetManager {
         pub assets: AssetStorage,
 
-        shader_resources: ShaderResourceRegistry,
         shader_names: HashMap<String, ShaderId>,
 
         pub skybox_model: ModelId,
@@ -886,118 +890,49 @@ pub struct AssetManager {
 impl AssetManager {
         pub fn new() -> AnyResult<(Self, Receiver<AssetManagerEvent>)> {
                 let (mut assets, event_rx) = AssetStorage::new();
-                let mut shader_resources = ShaderResourceRegistry::new();
 
-                shader_resources
-                        .register(ShaderResource {
-                                id: SHADER_RESOURCE_WORLD_MATRICES.to_string(),
-                                resource_type: ShaderResourceType::Struct(WorldMatrices::shader_struct_declaration()),
-                                provider: ShaderResourceProvider::World,
-                        })
-                        .unwrap();
-                assets.images
-                        .event_tx
-                        .send(AssetManagerEvent::ShaderResourceInserted(
-                                SHADER_RESOURCE_WORLD_MATRICES.to_string(),
-                        ))
-                        .unwrap();
+                assets.shader_resources.register_struct::<WorldMatrices>(
+                        SHADER_RESOURCE_WORLD_MATRICES.clone(),
+                        ShaderResourceProvider::World,
+                );
 
-                shader_resources
-                        .register_struct::<WorldLights>(
-                                SHADER_RESOURCE_WORLD_LIGHTS.to_string(),
-                                ShaderResourceProvider::World,
-                        )
-                        .unwrap();
-                assets.images
-                        .event_tx
-                        .send(AssetManagerEvent::ShaderResourceInserted(
-                                SHADER_RESOURCE_WORLD_LIGHTS.to_string(),
-                        ))
-                        .unwrap();
+                assets.shader_resources.register_struct::<WorldLights>(
+                        SHADER_RESOURCE_WORLD_LIGHTS.clone(),
+                        ShaderResourceProvider::World,
+                );
 
-                shader_resources
-                        .register(ShaderResource {
-                                id: SHADER_RESOURCE_BILLBOARD_DATA.to_string(),
-                                resource_type: ShaderResourceType::Struct(BillboardData::shader_struct_declaration()),
-                                provider: ShaderResourceProvider::World, // TODO: should be per mesh
-                        })
-                        .unwrap();
-                assets.images
-                        .event_tx
-                        .send(AssetManagerEvent::ShaderResourceInserted(
-                                SHADER_RESOURCE_BILLBOARD_DATA.to_string(),
-                        ))
-                        .unwrap();
+                assets.shader_resources.register_struct::<BillboardData>(
+                        SHADER_RESOURCE_BILLBOARD_DATA.clone(),
+                        ShaderResourceProvider::World, // TODO: should be per mesh
+                );
 
-                shader_resources
-                        .register(ShaderResource {
-                                id: SHADER_RESOURCE_OBJECT_MATRICES.to_string(),
-                                resource_type: ShaderResourceType::Struct(ObjectMatrices::shader_struct_declaration()),
-                                provider: ShaderResourceProvider::Mesh,
-                        })
-                        .unwrap();
-                assets.images
-                        .event_tx
-                        .send(AssetManagerEvent::ShaderResourceInserted(
-                                SHADER_RESOURCE_OBJECT_MATRICES.to_string(),
-                        ))
-                        .unwrap();
+                assets.shader_resources.register_struct::<ObjectMatrices>(
+                        SHADER_RESOURCE_OBJECT_MATRICES.clone(),
+                        ShaderResourceProvider::Mesh,
+                );
 
-                shader_resources
-                        .register(ShaderResource {
-                                id: SHADER_RESOURCE_MATERIAL_DATA.to_string(),
-                                resource_type: ShaderResourceType::Struct(MaterialData::shader_struct_declaration()),
-                                provider: ShaderResourceProvider::Material,
-                        })
-                        .unwrap();
-                assets.images
-                        .event_tx
-                        .send(AssetManagerEvent::ShaderResourceInserted(
-                                SHADER_RESOURCE_MATERIAL_DATA.to_string(),
-                        ))
-                        .unwrap();
+                assets.shader_resources.register_struct::<MaterialData>(
+                        SHADER_RESOURCE_MATERIAL_DATA.clone(),
+                        ShaderResourceProvider::Material,
+                );
 
-                shader_resources
-                        .register(ShaderResource {
-                                id: SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE.to_string(),
-                                resource_type: ShaderResourceType::Image2D,
-                                provider: ShaderResourceProvider::Material,
-                        })
-                        .unwrap();
-                assets.images
-                        .event_tx
-                        .send(AssetManagerEvent::ShaderResourceInserted(
-                                SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE.to_string(),
-                        ))
-                        .unwrap();
+                assets.shader_resources.register(ShaderResource {
+                        id: SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE.clone(),
+                        resource_type: ShaderResourceType::Image2D,
+                        provider: ShaderResourceProvider::Material,
+                });
 
-                shader_resources
-                        .register(ShaderResource {
-                                id: SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE.to_string(),
-                                resource_type: ShaderResourceType::Image2D,
-                                provider: ShaderResourceProvider::Material,
-                        })
-                        .unwrap();
-                assets.images
-                        .event_tx
-                        .send(AssetManagerEvent::ShaderResourceInserted(
-                                SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE.to_string(),
-                        ))
-                        .unwrap();
+                assets.shader_resources.register(ShaderResource {
+                        id: SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE.clone(),
+                        resource_type: ShaderResourceType::Image2D,
+                        provider: ShaderResourceProvider::Material,
+                });
 
-                shader_resources
-                        .register(ShaderResource {
-                                id: SHADER_RESOURCE_SKYBOX.to_string(),
-                                resource_type: ShaderResourceType::ImageCube,
-                                provider: ShaderResourceProvider::World,
-                        })
-                        .unwrap();
-                assets.images
-                        .event_tx
-                        .send(AssetManagerEvent::ShaderResourceInserted(
-                                SHADER_RESOURCE_SKYBOX.to_string(),
-                        ))
-                        .unwrap();
+                assets.shader_resources.register(ShaderResource {
+                        id: SHADER_RESOURCE_SKYBOX.clone(),
+                        resource_type: ShaderResourceType::ImageCube,
+                        provider: ShaderResourceProvider::World,
+                });
 
                 let default_sampler = assets.samplers.insert(Sampler {
                         name: Some("default-sampler".into()),
@@ -1034,7 +969,7 @@ impl AssetManager {
                 });
 
                 let default_shader = assets.shaders.insert(Shader::from_yaml(
-                        &shader_resources,
+                        &assets.shader_resources,
                         Path::new("res/shader/basic_shader/basic_shader.yaml"),
                 )?);
 
@@ -1057,7 +992,7 @@ impl AssetManager {
                 });
 
                 let skybox_shader = Shader::from_yaml(
-                        &shader_resources,
+                        &assets.shader_resources,
                         Path::new("res/shader/skybox_shader/skybox_shader.yaml"),
                 )?;
                 let skybox_shader = assets.shaders.insert(skybox_shader);
@@ -1087,7 +1022,6 @@ impl AssetManager {
                         Self {
                                 assets,
 
-                                shader_resources,
                                 shader_names: HashMap::new(),
 
                                 skybox_model,
@@ -1101,18 +1035,11 @@ impl AssetManager {
         }
 
         pub fn register_shader_resource(&mut self, shader_resource: ShaderResource) {
-                assert!(self.shader_resources.get(&shader_resource.id).is_none());
-
-                self.assets
-                        .images
-                        .event_tx
-                        .send(AssetManagerEvent::ShaderResourceInserted(shader_resource.id.clone()))
-                        .unwrap();
-                self.shader_resources.register(shader_resource).unwrap();
+                self.assets.shader_resources.register(shader_resource);
         }
 
         pub fn load_shader_from_yaml(&mut self, path: &Path) -> Result<ShaderId, ShaderLoadError> {
-                let shader = Shader::from_yaml(&self.shader_resources, path)?;
+                let shader = Shader::from_yaml(&self.assets.shader_resources, path)?;
                 if self.shader_names.contains_key(&shader.name) {
                         return Err(ShaderLoadError::ShaderNameAlreadyRegistered(shader.name));
                 }
@@ -1254,7 +1181,7 @@ impl AssetManager {
 
         #[allow(dead_code)]
         pub fn shader_resources(&self) -> &ShaderResourceRegistry {
-                &self.shader_resources
+                &self.assets.shader_resources
         }
 
         #[allow(dead_code)]
@@ -1544,6 +1471,98 @@ impl From<SlotMapEvent<CubemapId>> for AssetManagerEvent {
                         SlotMapEvent::Inserted(id) => AssetManagerEvent::CubemapInserted(id),
                         SlotMapEvent::Changed(id) => AssetManagerEvent::CubemapChanged(id),
                         SlotMapEvent::Removed(id) => AssetManagerEvent::CubemapRemoved(id),
+                }
+        }
+}
+
+pub enum ObservableEvent<K> {
+        Inserted(K),
+        Updated(K),
+        Removed(K),
+}
+
+pub trait ObservableMap<K, V> {
+        fn insert(&mut self, key: K, value: V) -> Option<V>;
+        fn remove(&mut self, key: &K) -> Option<V>;
+        fn get(&self, key: &K) -> Option<&V>;
+        // fn get_mut(&mut self, key: K) -> Option<&mut V>;
+}
+
+#[derive(Debug, Clone)]
+pub struct Observable<K: Clone, V, E: From<ObservableEvent<K>>, T: ObservableMap<K, V>> {
+        inner: T,
+        event_tx: crossbeam_channel::Sender<E>,
+        key_type: PhantomData<K>,
+        value_type: PhantomData<V>,
+}
+
+impl<K: Clone, V, E: From<ObservableEvent<K>>, T: ObservableMap<K, V>> Observable<K, V, E, T> {
+        pub fn new(map: T, tx: crossbeam_channel::Sender<E>) -> Self {
+                Self {
+                        inner: map,
+                        event_tx: tx,
+                        key_type: PhantomData,
+                        value_type: PhantomData,
+                }
+        }
+
+        #[allow(dead_code)]
+        pub fn insert(&mut self, k: K, v: V) -> Option<V> {
+                let u = self.inner.insert(k.clone(), v);
+
+                let e = if u.is_none() {
+                        ObservableEvent::Inserted(k)
+                } else {
+                        ObservableEvent::Updated(k)
+                };
+                self.event_tx.send(e.into()).unwrap();
+
+                u
+        }
+
+        #[allow(dead_code)]
+        pub fn remove(&mut self, k: &K) -> Option<V> {
+                let v = self.inner.remove(k);
+                self.event_tx.send(ObservableEvent::Removed(k.clone()).into()).unwrap();
+                v
+        }
+
+        #[allow(dead_code)]
+        pub fn get(&self, k: &K) -> Option<&V> {
+                self.inner.get(k)
+        }
+
+        // #[allow(dead_code)]
+        // pub fn get_mut(&mut self, k: K) -> Option<&mut V> {
+        //         self.event_tx.send(ObservableEvent::Updated(k).into()).unwrap();
+        //         self.inner.get_mut(k)
+        // }
+}
+
+impl<K: Eq + Hash, V> ObservableMap<K, V> for HashMap<K, V> {
+        fn insert(&mut self, k: K, v: V) -> Option<V> {
+                HashMap::insert(self, k, v)
+        }
+
+        fn remove(&mut self, k: &K) -> Option<V> {
+                HashMap::remove(self, k)
+        }
+
+        fn get(&self, k: &K) -> Option<&V> {
+                HashMap::get(self, k)
+        }
+
+        // fn get_mut(&mut self, key: K) -> Option<&mut V> {
+        //         todo!()
+        // }
+}
+
+impl From<ObservableEvent<ShaderResourceId>> for AssetManagerEvent {
+        fn from(e: ObservableEvent<ShaderResourceId>) -> Self {
+                match e {
+                        ObservableEvent::Inserted(id) => AssetManagerEvent::ShaderResourceInserted(id),
+                        ObservableEvent::Updated(id) => AssetManagerEvent::ShaderResourceChanged(id),
+                        ObservableEvent::Removed(id) => AssetManagerEvent::ShaderResourceRemoved(id),
                 }
         }
 }

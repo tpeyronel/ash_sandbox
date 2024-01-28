@@ -757,7 +757,7 @@ impl VkAssetManager {
                                 VkShaderResourceType::UniformBuffer => {
                                         let buffers = shader_resource_buffers.get(resource_id).expect(&format!(
                                                 "no backing buffers for shader resource {}",
-                                                resource_id
+                                                &resource_id
                                         ));
 
                                         assert_eq!(dst_sets.len(), buffers.len());

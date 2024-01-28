@@ -1,4 +1,33 @@
-pub type ShaderResourceId = String;
+use std::{fmt::Display, ops::Deref, sync::Arc};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ShaderResourceId(Arc<str>);
+
+impl ShaderResourceId {
+        pub fn new(id: &str) -> Self {
+                Self(Arc::from(id))
+        }
+}
+
+impl From<&str> for ShaderResourceId {
+        fn from(value: &str) -> Self {
+                Self::new(value)
+        }
+}
+
+impl Deref for ShaderResourceId {
+        type Target = str;
+
+        fn deref(&self) -> &Self::Target {
+                &self.0
+        }
+}
+
+impl Display for ShaderResourceId {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                Display::fmt(&self.0, f)
+        }
+}
 
 #[derive(Debug, Clone)]
 pub struct ShaderResource {

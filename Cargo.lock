@@ -133,6 +133,7 @@ dependencies = [
  "imgui-rs-vulkan-renderer",
  "imgui-winit-support",
  "lazy-regex",
+ "lazy_static",
  "log",
  "memoffset",
  "regex",
