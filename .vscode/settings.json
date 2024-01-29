@@ -9,5 +9,8 @@
     "rust-analyzer.linkedProjects": [
         ".\\Cargo.toml",
         ".\\crates\\shader_resource_derive\\Cargo.toml"
-    ]
+    ],
+    "files.readonlyInclude": {
+        "res/shader/*/out/**": true
+    }
 }
