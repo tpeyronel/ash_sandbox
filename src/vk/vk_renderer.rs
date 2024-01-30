@@ -101,12 +101,8 @@ impl VkRenderer {
                         .map(|_| VkFrameData::new(&mut vk_context))
                         .collect::<AnyResult<Vec<VkFrameData>>>()?;
 
-                let vk_asset_manager = VkAssetManager::new(
-                        &mut vk_context,
-                        swapchain.samples,
-                        *render_pass,
-                        swapchain.img_count as usize,
-                )?;
+                let vk_asset_manager =
+                        VkAssetManager::new(&mut vk_context, swapchain.samples, *render_pass, max_concurrent_frames)?;
                 trace!("Created VkAssetManager");
 
                 let imgui_renderer_options = imgui_rs_vulkan_renderer::Options {
@@ -596,6 +592,13 @@ impl VkRenderer {
                 self.recreate_swapchain_maybe()?;
                 let frame_data = &mut self.frames_data[self.framei];
 
+                self.vk_context
+                        .device
+                        .wait_for_fences(&[*frame_data.draw_cmd_buffer.fence], true, u64::MAX)?;
+                self.vk_context
+                        .device
+                        .reset_fences(&[*frame_data.draw_cmd_buffer.fence])?;
+
                 let imagei = {
                         let result = self.swapchain.acquire_next_image(
                                 u64::MAX,
@@ -638,13 +641,6 @@ impl VkRenderer {
                         },
                 ];
 
-                self.vk_context
-                        .device
-                        .wait_for_fences(&[*frame_data.draw_cmd_buffer.fence], true, u64::MAX)?;
-                self.vk_context
-                        .device
-                        .reset_fences(&[*frame_data.draw_cmd_buffer.fence])?;
-
                 self.vk_context.device.reset_command_buffer(
                         *frame_data.draw_cmd_buffer,
                         vk::CommandBufferResetFlags::RELEASE_RESOURCES,
@@ -680,11 +676,10 @@ impl VkRenderer {
 
                 let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
                 let submit_info = vk::SubmitInfo::builder()
-                        // .command_buffers(&cmd_buffers)
                         .command_buffers(frame_data.draw_cmd_buffer.deref_into_slice())
                         .wait_semaphores(frame_data.img_available_semaphore.deref_into_slice())
                         .wait_dst_stage_mask(&wait_stages)
-                        .signal_semaphores(frame_data.present_complete_semaphore.deref_into_slice());
+                        .signal_semaphores(frame_data.render_finished_semaphore.deref_into_slice());
 
                 self.vk_context.device.queue_submit(
                         self.vk_context.queues.graphics,
@@ -695,7 +690,7 @@ impl VkRenderer {
                 match self.swapchain.queue_present(
                         self.vk_context.queues.present,
                         &vk::PresentInfoKHR::builder()
-                                .wait_semaphores(&[*frame_data.present_complete_semaphore])
+                                .wait_semaphores(&[*frame_data.render_finished_semaphore])
                                 .swapchains(&[*self.swapchain])
                                 .image_indices(&[imagei]),
                 ) {
@@ -915,8 +910,8 @@ impl VkRenderer {
 struct VkFrameData {
         // Signaled when a swapchain image has become available for presentation. vkAcquireImage may return an image that is not immediately available.
         img_available_semaphore: VkSemaphore,
-        // Signaled when a swapchain image presentation has completed
-        present_complete_semaphore: VkSemaphore,
+        // Signaled when all the rendering commands for a frame have finished executing, which means that the rendered image is now ready for presentation.
+        render_finished_semaphore: VkSemaphore,
         // Command buffer used for submitting draw operations of one frame.
         draw_cmd_buffer: VkReusableCommandBuffer,
         // world_dst_set: vk::DescriptorSet,
@@ -937,7 +932,7 @@ impl VkFrameData {
         ) -> AnyResult<Self> {
                 let semaphore_cinfo = vk::SemaphoreCreateInfo::builder().build();
                 let img_available_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
-                let present_complete_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
+                let render_finished_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
 
                 let draw_cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
@@ -1049,7 +1044,7 @@ impl VkFrameData {
 
                 Ok(Self {
                         img_available_semaphore,
-                        present_complete_semaphore,
+                        render_finished_semaphore,
                         draw_cmd_buffer,
                         // world_dst_set,
                         // object_dst_set,
@@ -1065,7 +1060,7 @@ impl VkFrameData {
 impl Drop for VkFrameData {
         fn drop(&mut self) {
                 unsafe {
-                        self.present_complete_semaphore.destroy();
+                        self.render_finished_semaphore.destroy();
                         self.img_available_semaphore.destroy();
                         // self.billboard_data_buffer.destroy();
                         // self.object_matrices_buffer.destroy();
