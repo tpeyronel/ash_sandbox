@@ -1118,7 +1118,7 @@ dependencies = [
 [[package]]
 name = "imgui-rs-vulkan-renderer"
 version = "1.1.2"
-source = "git+https://github.com/TorvalHG/imgui-rs-vulkan-renderer#f668595750df7e573c882bab25bf29cc92e9f7a8"
+source = "git+https://github.com/tpeyronel/imgui-rs-vulkan-renderer#1efe0745825e3de2b9a0efe68b1dbf776d7e9baf"
 dependencies = [
  "ash",
  "imgui",
@@ -1142,6 +1142,7 @@ dependencies = [
 [[package]]
 name = "imgui-winit-support"
 version = "0.11.0"
+source = "git+https://github.com/tpeyronel/imgui-winit-support#9723f8e55f418ada04cff2e6612b2883f62e7695"
 dependencies = [
  "imgui",
  "winit",
@@ -2097,7 +2098,7 @@ dependencies = [
 [[package]]
 name = "tps-counter"
 version = "0.1.0"
-source = "git+https://github.com/TorvalHG/tps-counter#ab7a832a36af93b125543e46b2052bae011fdf99"
+source = "git+https://github.com/tpeyronel/tps-counter#ab7a832a36af93b125543e46b2052bae011fdf99"
 
 [[package]]
 name = "tracing"
@@ -2176,6 +2177,7 @@ checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
 [[package]]
 name = "vk-mem"
 version = "0.3.0"
+source = "git+https://github.com/tpeyronel/vma-rs#a29ea8ad4b57c40c0abfa39f2ad2b4cfd2944952"
 dependencies = [
  "ash",
  "bitflags 1.3.2",

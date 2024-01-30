@@ -9,12 +9,10 @@ version = "0.1.0"
 [dependencies]
 ash = "0.37.3"
 ash-window = "0.12.0"
-# vk-mem = { git = "https://github.com/gwihlidal/vk-mem-rs" }
-vk-mem = { path = "../rust/vk-mem-rs"}
+vk-mem = { git = "https://github.com/tpeyronel/vma-rs" }
 imgui = "0.11.0"
-# imgui-winit-support = { git = "https://github.com/imgui-rs/imgui-rs" }
-imgui-winit-support = { path = "../rust/imgui-winit-support"}
-imgui-rs-vulkan-renderer = { git = "https://github.com/TorvalHG/imgui-rs-vulkan-renderer" }
+imgui-winit-support = { git = "https://github.com/tpeyronel/imgui-winit-support" }
+imgui-rs-vulkan-renderer = { git = "https://github.com/tpeyronel/imgui-rs-vulkan-renderer" }
 winit = { version = "0.29.3", features = ["rwh_05"], default-features = false }
 raw-window-handle = "0.5"
 
@@ -44,7 +42,7 @@ shader_resource_derive = { path = "./crates/shader_resource_derive" }
 slotmap = "1.0.2"
 stb_image = "0.2.3"
 thiserror = "1.0.30"
-tps-counter = { git = "https://github.com/TorvalHG/tps-counter" }
+tps-counter = { git = "https://github.com/tpeyronel/tps-counter" }
 
 [profile.dev.package."*"]
 opt-level = 3
