@@ -1363,7 +1363,7 @@ impl<K: Key, V, E: From<SlotMapEvent<K>>> Index<K> for ObservableSlotMap<K, V, E
 
 impl<K: Key, V, E: From<SlotMapEvent<K>>> IndexMut<K> for ObservableSlotMap<K, V, E> {
         fn index_mut(&mut self, index: K) -> &mut Self::Output {
-                self.event_tx.send(SlotMapEvent::Changed(index).into());
+                self.event_tx.send(SlotMapEvent::Changed(index).into()).unwrap();
                 &mut self.inner[index]
         }
 }
