@@ -13,6 +13,7 @@ use std::rc::Rc;
 use ash::{extensions::khr::Swapchain, prelude::VkResult, vk};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
+use raw_window_handle::HasRawDisplayHandle;
 use winit::window::Window;
 
 use super::{
@@ -67,7 +68,7 @@ impl VkContext {
 
                 let entry = Rc::new(unsafe { ash::Entry::load()? });
 
-                let vulkan_api_version = vk::make_api_version(0, 1, 2, 0);
+                let vulkan_api_version = vk::make_api_version(0, 1, 3, 0);
                 let instance = Self::create_instance(&window, &entry, vulkan_api_version)?;
                 trace!("Created VkInstance");
 
@@ -101,7 +102,7 @@ impl VkContext {
                 let (device, queues) = Self::create_device(&instance, **pdevice, &qfamilyi)?;
                 trace!("Created VkDevice");
 
-                let allocator = Self::create_allocator(&instance, **pdevice, &device, vulkan_api_version)?;
+                let allocator = Self::create_allocator(&instance, **pdevice, &device)?;
                 trace!("Created VmaAllocator");
 
                 let cmd_pool = Self::create_command_pool(&device, &qfamilyi)?;
@@ -164,12 +165,12 @@ impl VkContext {
                                 req_layers.push(cstring!("VK_LAYER_KHRONOS_validation"));
                         }
 
-                        let mut req_extensions: Vec<CString> = ash_window::enumerate_required_extensions(window)?
-                                .iter()
-                                .map(|ext| CString::from(*ext))
-                                .collect();
+                        let mut req_extensions: Vec<CString> =
+                                ash_window::enumerate_required_extensions(window.raw_display_handle())?
+                                        .iter()
+                                        .map(|&ext| CStr::from_ptr(ext).to_owned())
+                                        .collect();
                         req_extensions.push(cstring!("VK_EXT_debug_utils"));
-                        req_extensions.push(cstring!("VK_KHR_get_physical_device_properties2"));
 
                         let req_layers_raw: Vec<*const c_char> =
                                 req_layers.iter().map(|layer| layer.as_ptr()).collect();
@@ -227,13 +228,10 @@ impl VkContext {
                 q_family_i: &VkQueueFamilyIndices,
         ) -> AnyResult<(Rc<VkDevice>, VkQueues)> {
                 let memory_budget_ext = CStr::from_bytes_with_nul(b"VK_EXT_memory_budget\0").unwrap();
-                let shader_non_semantic_info_ext =
-                        CStr::from_bytes_with_nul(b"VK_KHR_shader_non_semantic_info\0").unwrap();
 
                 let req_device_extensions_raw = vec![
                         Swapchain::name().as_ptr(),
                         memory_budget_ext.as_ptr(),
-                        shader_non_semantic_info_ext.as_ptr(),
                 ];
                 let req_device_features = vk::PhysicalDeviceFeatures::builder()
                         .sampler_anisotropy(true)
@@ -282,21 +280,10 @@ impl VkContext {
                 instance: &ash::Instance,
                 physical_device: vk::PhysicalDevice,
                 device: &ash::Device,
-                vulkan_api_version: u32,
         ) -> VkResult<Rc<VmaAllocator>> {
-                let allocator_cinfo = vma::AllocatorCreateInfo {
-                        physical_device,
-                        device: device.clone(),
-                        instance: instance.clone(),
-                        flags: vma::AllocatorCreateFlags::NONE,
-                        preferred_large_heap_block_size: 0,
-                        frame_in_use_count: 0,
-                        heap_size_limits: None,
-                        allocation_callbacks: None,
-                        vulkan_api_version,
-                };
-
-                Ok(Rc::new(unsafe { VmaAllocator::new(&allocator_cinfo)? }))
+                Ok(Rc::new(unsafe {
+                        VmaAllocator::new(instance, device, physical_device)?
+                }))
         }
 
         fn create_command_pool(

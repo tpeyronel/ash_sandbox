@@ -3,6 +3,7 @@ use std::{cell::Cell, ops::Deref, rc::Rc};
 use ash::{prelude::VkResult, vk};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
+use vk_mem::Alloc;
 
 use crate::AnyResult;
 
@@ -74,7 +75,6 @@ pub struct VkImage {
 
         handle: vk::Image,
         alloc: vma::Allocation,
-        ainfo: vma::AllocationInfo,
 
         destroyed: Cell<bool>,
 
@@ -83,7 +83,7 @@ pub struct VkImage {
 
 impl VkImage {
         pub unsafe fn new(allocator: Rc<VmaAllocator>, create_info: &VkImageCreateInfo) -> VkResult<Self> {
-                let (handle, alloc, ainfo) = {
+                let (handle, alloc) = {
                         let mut vk_img_cinfo = vk::ImageCreateInfo {
                                 flags: create_info.flags,
                                 image_type: create_info.image_type,
@@ -119,9 +119,8 @@ impl VkImage {
                                 required_flags: create_info.required_flags,
                                 preferred_flags: create_info.preferred_flags,
                                 memory_type_bits: 0,
-                                pool: None,
-                                user_data: None,
                                 priority: 0.0,
+                                ..Default::default()
                         };
 
                         allocator.create_image(&vk_img_cinfo, &alloc_cinfo)?
@@ -131,7 +130,6 @@ impl VkImage {
                         allocator,
                         handle,
                         alloc,
-                        ainfo,
                         destroyed: Cell::new(false),
                         mip_levels: create_info.mip_levels,
                 })

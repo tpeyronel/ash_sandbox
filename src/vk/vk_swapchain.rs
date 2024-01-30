@@ -468,7 +468,7 @@ impl VkSwapchain {
                                 initial_layout: vk::ImageLayout::UNDEFINED,
 
                                 mem_usage: vma::MemoryUsage::GpuOnly,
-                                alloc_cflags: vma::AllocationCreateFlags::NONE,
+                                alloc_cflags: vma::AllocationCreateFlags::empty(),
                                 required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
                                 preferred_flags: Default::default(),
                         };
@@ -524,7 +524,7 @@ impl VkSwapchain {
                                 initial_layout: vk::ImageLayout::UNDEFINED,
 
                                 mem_usage: vma::MemoryUsage::GpuOnly,
-                                alloc_cflags: vma::AllocationCreateFlags::NONE,
+                                alloc_cflags: vma::AllocationCreateFlags::empty(),
                                 required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
                                 preferred_flags: Default::default(),
                         };

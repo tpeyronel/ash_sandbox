@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use winit::{
         monitor::VideoMode,
-        window::{Fullscreen, Window},
+        window::{CursorGrabMode, Fullscreen, Window},
 };
 
 use crate::application::{CursorState, WindowMode};
@@ -73,7 +73,13 @@ impl WindowManager {
 
         fn set_cursor_state_inner(window: &Window, cursor_state: CursorState) {
                 window.set_cursor_visible(cursor_state != CursorState::Hidden);
-                window.set_cursor_grab(cursor_state == CursorState::Hidden).unwrap();
+
+                let cursor_grab = match cursor_state {
+                        CursorState::Normal => CursorGrabMode::None,
+                        CursorState::Hidden => CursorGrabMode::Confined,
+                };
+
+                window.set_cursor_grab(cursor_grab).unwrap();
         }
 
         fn set_window_mode_inner(window: &Window, fullscreen_video_mode: &VideoMode, window_mode: WindowMode) {

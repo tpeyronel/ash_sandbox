@@ -15,8 +15,8 @@ use crate::{
                 ActiveCamera, ActiveCameraControlEnabled, AngularVelocity, Billboard, Children, ClearWorldTrackers,
                 DirectionalLight, Force, GlobalTransform, ImguiWantCaptureKeyboard, ImguiWantCaptureMouse,
                 InterpScalar, Mass, OrbitalVelocity, Parent, Player, PointLight, PreviousGlobalTransform,
-                ProjectionCamera, Spotlight, TickTime, Transform, UpdateBegin, UpdateTime, UpdateTimeAccumulator,
-                Velocity,
+                ProjectionCamera, ShouldQuit, Spotlight, TickTime, Transform, UpdateBegin, UpdateTime,
+                UpdateTimeAccumulator, Velocity,
         },
         constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
@@ -72,7 +72,7 @@ impl Application {
         pub fn new() -> AnyResult<Self> {
                 let config = ApplicationConfig::from_file(Path::new("config.json"))?;
 
-                let event_loop = EventLoop::new();
+                let event_loop = EventLoop::new()?;
                 let fullscreen_video_mode = event_loop.primary_monitor().unwrap().video_modes().next().unwrap();
                 let window = Rc::new(WindowBuilder::new()
                         .with_fullscreen(match config.window_mode {
@@ -81,7 +81,6 @@ impl Application {
                                 WindowMode::Fullscreen => Some(Fullscreen::Exclusive(fullscreen_video_mode.clone())),
                         })
                         .with_visible(false)
-                        .with_always_on_top(false)
                         .with_min_inner_size(winit::dpi::PhysicalSize::<u32> {
                                 width: 144,
                                 height: 144,
@@ -92,9 +91,9 @@ impl Application {
                 let mut imgui_manager = ImguiManager::new(&window);
 
                 imgui_manager.add_callback(move |ui, world| {
-                        imgui::Window::new("Hello world")
+                        ui.window("Hello world")
                                 .size([300.0, 100.0], imgui::Condition::FirstUseEver)
-                                .build(ui, || {
+                                .build(|| {
                                         let tps_counter = world.get_resource::<TPSCounter>().unwrap();
 
                                         let mouse_pos = ui.io().mouse_pos;
@@ -119,7 +118,7 @@ impl Application {
                                                 world.entity_mut(world.get_resource::<ActiveCamera>().unwrap().0);
                                         imgui_util::euler_angles_mut(ui, &mut camera.get_mut::<EulerAngles>().unwrap());
 
-                                        imgui::TreeNode::new("directional light").build(ui, || {
+                                        if let Some(_) = ui.tree_node("directional light") {
                                                 let mut dir_light = world
                                                         .query::<&mut DirectionalLight>()
                                                         .iter_mut(world)
@@ -127,9 +126,9 @@ impl Application {
                                                         .unwrap();
 
                                                 imgui_util::dir_light_mut(ui, &mut dir_light);
-                                        });
+                                        };
 
-                                        imgui::TreeNode::new("point light").build(ui, || {
+                                        if let Some(_) = ui.tree_node("point light") {
                                                 let (mut point_light_transform, mut point_light) = world
                                                         .query::<(&mut Transform, &mut PointLight)>()
                                                         .iter_mut(world)
@@ -138,18 +137,18 @@ impl Application {
 
                                                 imgui_util::transform_mut(ui, &mut point_light_transform);
                                                 imgui_util::point_light_mut(ui, &mut point_light);
-                                        });
+                                        };
 
-                                        imgui::TreeNode::new("spotlight").build(ui, || {
+                                        if let Some(_) = ui.tree_node("spotlight") {
                                                 let mut spotlight =
                                                         world.query::<&mut Spotlight>().iter_mut(world).next().unwrap();
 
                                                 imgui_util::spotlight_mut(ui, &mut spotlight);
-                                        });
+                                        };
 
                                         let mut asset_manager = world.get_resource_mut::<AssetManager>().unwrap();
 
-                                        imgui::TreeNode::new("materials").build(ui, || {
+                                        if let Some(_) = ui.tree_node("materials") {
                                                 let mut changed_materials = Vec::new();
 
                                                 for (material_id, material) in &asset_manager.assets.materials {
@@ -159,17 +158,17 @@ impl Application {
                                                                 material.name.as_deref().unwrap_or("unknown")
                                                         );
 
-                                                        imgui::TreeNode::new(material_name).build(ui, || {
+                                                        if let Some(_) = ui.tree_node(material_name) {
                                                                 let mut material = material.clone();
                                                                 imgui_util::material_mut(ui, &mut material);
                                                                 changed_materials.push((material_id, material));
-                                                        });
+                                                        };
                                                 }
 
                                                 for (material_id, material) in changed_materials {
                                                         asset_manager.assets.materials[material_id] = material;
                                                 }
-                                        });
+                                        };
                                 });
 
                         ui.show_demo_window(&mut false);
@@ -203,7 +202,7 @@ impl Application {
                 world.insert_resource(Skybox(skybox));
 
                 world.insert_resource(asset_manager);
-                world.insert_resource(ControlFlow::Poll);
+                world.insert_resource(ShouldQuit(false));
 
                 let cursor_state = CursorState::Normal;
                 let window_mode = WindowMode::Windowed;
@@ -233,19 +232,19 @@ impl Application {
                 let mut input_map = InputBindingMap::new();
 
                 input_map.bind_key(EXIT, KeyCode::Escape, KeyBindingType::Simple(KeyState::Released));
-                input_map.bind_key(TOGGLE_CURSOR, KeyCode::T, KeyBindingType::Simple(KeyState::Released));
+                input_map.bind_key(TOGGLE_CURSOR, KeyCode::KeyT, KeyBindingType::Simple(KeyState::Released));
                 input_map.bind_key(
                         CYCLE_WINDOW_MODE,
                         KeyCode::F11,
                         KeyBindingType::Simple(KeyState::Released),
                 );
 
-                input_map.bind_key(MOVE_FORWARD, KeyCode::W, KeyBindingType::Continuous);
-                input_map.bind_key(MOVE_BACKWARD, KeyCode::S, KeyBindingType::Continuous);
-                input_map.bind_key(MOVE_RIGHTWARD, KeyCode::D, KeyBindingType::Continuous);
-                input_map.bind_key(MOVE_LEFTWARD, KeyCode::A, KeyBindingType::Continuous);
+                input_map.bind_key(MOVE_FORWARD, KeyCode::KeyW, KeyBindingType::Continuous);
+                input_map.bind_key(MOVE_BACKWARD, KeyCode::KeyS, KeyBindingType::Continuous);
+                input_map.bind_key(MOVE_RIGHTWARD, KeyCode::KeyD, KeyBindingType::Continuous);
+                input_map.bind_key(MOVE_LEFTWARD, KeyCode::KeyA, KeyBindingType::Continuous);
                 input_map.bind_key(MOVE_UPWARD, KeyCode::Space, KeyBindingType::Continuous);
-                input_map.bind_key(MOVE_DOWNARD, KeyCode::LShift, KeyBindingType::Continuous);
+                input_map.bind_key(MOVE_DOWNARD, KeyCode::ShiftLeft, KeyBindingType::Continuous);
 
                 input_map.bind_key(YAW_NEGATIVE, KeyCode::Numpad6, KeyBindingType::Continuous);
                 input_map.bind_key(YAW_POSITIVE, KeyCode::Numpad4, KeyBindingType::Continuous);
@@ -280,16 +279,24 @@ impl Application {
                 })
         }
 
-        pub fn run(mut self) -> ! {
+        pub fn run(mut self) -> AnyResult<()> {
                 self.window.set_visible(true);
                 self.world.insert_resource(UpdateBegin(Instant::now()));
 
-                self.event_loop.take().unwrap().run(move |event, _, control_flow| {
-                        *control_flow = ControlFlow::Poll;
+                let event_loop = self.event_loop.take().unwrap();
+                event_loop.set_control_flow(ControlFlow::Poll);
+                event_loop.run(move |event, target| {
+                        let mut quit = false;
 
-                        self.on_winit_event(event, control_flow)
+                        self.on_winit_event(event, &mut quit)
                                 .expect("Error ocurred in render loop");
-                });
+
+                        if quit {
+                                target.exit();
+                        }
+                })?;
+
+                Ok(())
         }
 
         fn init_asset_manager() -> AnyResult<(AssetManager, Receiver<AssetManagerEvent>)> {
@@ -446,11 +453,7 @@ impl Application {
                         .with_stage_after(CoreStage::Render, CoreStage::Cleanup, cleanup_stage)
         }
 
-        fn on_winit_event(
-                &mut self,
-                event: winit::event::Event<'_, ()>,
-                control_flow: &mut ControlFlow,
-        ) -> AnyResult<()> {
+        fn on_winit_event(&mut self, event: winit::event::Event<()>, quit: &mut bool) -> AnyResult<()> {
                 self.world
                         .get_non_send_resource_mut::<ImguiManager>()
                         .unwrap()
@@ -461,17 +464,17 @@ impl Application {
                                 self.input_manager.on_device_event(&event);
                         },
                         Event::WindowEvent { window_id, event } if self.window.id() == window_id => {
-                                self.on_window_event(event, control_flow);
+                                self.on_window_event(event, quit);
                         },
-                        Event::MainEventsCleared => self.update(control_flow)?,
-                        Event::LoopDestroyed => self.on_quit(),
+                        Event::AboutToWait => self.update(quit)?, // TODO: is this event OK?
+                        Event::LoopExiting => self.on_quit(),
                         _ => (),
                 }
 
                 Ok(())
         }
 
-        fn on_window_event(&mut self, window_event: WindowEvent, control_flow: &mut ControlFlow) {
+        fn on_window_event(&mut self, window_event: WindowEvent, quit: &mut bool) {
                 match window_event {
                         /* WindowEvent::ModifiersChanged(modifiers_state) => {
                                 self.input_manager.on_modifiers_changed(modifiers_state)
@@ -486,23 +489,23 @@ impl Application {
                                 self.renderer.on_window_resize(new_size.width, new_size.height);
                         },
                         WindowEvent::CloseRequested => {
-                                *control_flow = ControlFlow::Exit;
+                                *quit = true;
                         },
                         _ => {},
                 };
         }
 
-        fn update(&mut self, control_flow: &mut ControlFlow) -> AnyResult<()> {
+        fn update(&mut self, quit: &mut bool) -> AnyResult<()> {
                 self.dispatch_actions_to_world();
 
                 self.schedule.run(&mut self.world);
 
                 let mut imgui_manager = self.world.remove_non_send::<ImguiManager>().unwrap();
-                let ui = imgui_manager.build_imgui_ui(&self.window, &mut self.world)?;
-                self.renderer.draw_world(&mut self.world, ui.render())?;
+                imgui_manager.build_imgui_ui(&self.window, &mut self.world)?;
+                self.renderer.draw_world(&mut self.world, imgui_manager.render())?;
                 self.world.insert_non_send(imgui_manager);
 
-                *control_flow = *self.world.get_resource::<ControlFlow>().unwrap();
+                *quit = self.world.get_resource::<ShouldQuit>().unwrap().0;
 
                 if let Some(_) = self.world.remove_resource::<ClearWorldTrackers>() {
                         self.world.clear_trackers();
@@ -722,7 +725,7 @@ fn process_actions(
         player: Res<Player>,
         camera: Res<ActiveCamera>,
         mut actions: ActionReader,
-        mut control_flow: ResMut<ControlFlow>,
+        mut should_quit: ResMut<ShouldQuit>,
         mut cursor_state: ResMut<CursorState>,
         mut window_mode: ResMut<WindowMode>,
         global_transform_query: Query<&GlobalTransform>,
@@ -739,7 +742,7 @@ fn process_actions(
                         MOVE_UPWARD => desired_dir.y += strength.0,
                         MOVE_DOWNARD => desired_dir.y -= strength.0,
                         EXIT => {
-                                *control_flow = ControlFlow::Exit;
+                                should_quit.0 = true;
                         },
                         TOGGLE_CURSOR => {
                                 *cursor_state = match *cursor_state {
@@ -1057,7 +1060,7 @@ fn should_perform_cleanup_system(clear_world_trackers: Option<Res<ClearWorldTrac
 pub struct ImguiManager {
         imgui_context: imgui::Context,
         imgui_platform: imgui_winit_support::WinitPlatform,
-        callbacks: Vec<Box<dyn FnMut(&mut imgui::Ui<'_>, &mut World)>>,
+        callbacks: Vec<Box<dyn FnMut(&mut imgui::Ui, &mut World)>>,
 }
 
 impl ImguiManager {
@@ -1095,11 +1098,11 @@ impl ImguiManager {
                 }
         }
 
-        fn add_callback<T: FnMut(&mut imgui::Ui<'_>, &mut World) + 'static>(&mut self, f: T) {
+        fn add_callback<T: FnMut(&mut imgui::Ui, &mut World) + 'static>(&mut self, f: T) {
                 self.callbacks.push(Box::new(f));
         }
 
-        fn handle_winit_event(&mut self, window: &Window, event: &winit::event::Event<'_, ()>) {
+        fn handle_winit_event(&mut self, window: &Window, event: &winit::event::Event<()>) {
                 self.imgui_platform
                         .handle_event(self.imgui_context.io_mut(), window, event);
         }
@@ -1108,18 +1111,22 @@ impl ImguiManager {
                 self.imgui_context.io_mut().update_delta_time(delta_time);
         }
 
-        fn build_imgui_ui<'a>(
-                &'a mut self,
+        fn build_imgui_ui(
+                &mut self,
                 window: &winit::window::Window,
                 world: &mut World,
-        ) -> Result<imgui::Ui<'a>, winit::error::ExternalError> {
+        ) -> Result<(), winit::error::ExternalError> {
                 self.imgui_platform.prepare_frame(self.imgui_context.io_mut(), window)?;
 
-                let mut ui = self.imgui_context.frame();
+                let ui = self.imgui_context.new_frame();
 
-                self.callbacks.iter_mut().for_each(|c| c(&mut ui, world));
+                self.callbacks.iter_mut().for_each(|c| c(ui, world));
 
-                Ok(ui)
+                Ok(())
+        }
+
+        fn render(&mut self) -> &imgui::DrawData {
+                self.imgui_context.render()
         }
 }
 

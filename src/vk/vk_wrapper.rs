@@ -3,6 +3,7 @@ use std::{cell::Cell, ops::Deref, rc::Rc};
 use ash::{extensions::ext::DebugUtils, prelude::VkResult, vk};
 #[allow(unused_imports)]
 use log::trace;
+use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use thiserror::Error;
 
 macro_rules! impl_destroyable_deref {
@@ -104,7 +105,13 @@ pub struct VmaAllocator {
 }
 
 impl VmaAllocator {
-        pub unsafe fn new(create_info: &vma::AllocatorCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(
+                instance: &ash::Instance,
+                device: &ash::Device,
+                physical_device: ash::vk::PhysicalDevice,
+        ) -> VkResult<Self> {
+                let create_info = vma::AllocatorCreateInfo::new(instance, device, physical_device);
+
                 Ok(Self {
                         handle: vma::Allocator::new(create_info)?,
                         destroyed: Cell::new(false),
@@ -112,7 +119,7 @@ impl VmaAllocator {
         }
 }
 
-impl_destroyable!(VmaAllocator, vma::Allocator, destroy_allocator);
+impl_destroyable_expr!(VmaAllocator, vma::Allocator, |s: &VmaAllocator| s.handle.destroy());
 
 pub struct VkPhysicalDevice {
         handle: vk::PhysicalDevice,
@@ -336,8 +343,14 @@ impl VkSurface {
                 entry: Rc<ash::Entry>,
                 instance: Rc<VkInstance>,
         ) -> VkResult<Self> {
-                let loader = ash::extensions::khr::Surface::new(entry.deref(), &**instance);
-                let handle = ash_window::create_surface(entry.deref(), &**instance, &*window, None)?;
+                let loader = ash::extensions::khr::Surface::new(&entry, &instance);
+                let handle = ash_window::create_surface(
+                        &entry,
+                        &instance,
+                        window.raw_display_handle(),
+                        window.raw_window_handle(),
+                        None,
+                )?;
 
                 Ok(Self {
                         _window: window,

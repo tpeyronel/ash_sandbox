@@ -4,6 +4,8 @@ use bevy_ecs::prelude::*;
 
 use crate::my_glm::*;
 
+pub struct ShouldQuit(pub bool);
+
 pub struct Player(pub Entity);
 
 pub struct ActiveCameraControlEnabled(pub bool);

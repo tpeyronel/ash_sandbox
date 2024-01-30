@@ -58,5 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         let app = Application::new()?;
 
-        app.run();
+        app.run()?;
+
+        Ok(())
 }

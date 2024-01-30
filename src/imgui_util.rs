@@ -7,16 +7,16 @@ use crate::{
         my_glm::*,
 };
 
-pub fn imgui_vec3<T: AsRef<str>>(ui: &imgui::Ui<'_>, label: T, min: f32, max: f32, vec: Vec3) -> Option<Vec3> {
+pub fn imgui_vec3<T: AsRef<str>>(ui: &imgui::Ui, label: T, min: f32, max: f32, vec: Vec3) -> Option<Vec3> {
         let mut v: [f32; 3] = vec.into();
-        if imgui::Slider::new(label, min, max).build_array(ui, &mut v) {
+        if ui.slider_config(label, min, max).build_array(&mut v) {
                 Some(Vec3::from_slice(&v))
         } else {
                 None
         }
 }
 
-pub fn transform(ui: &imgui::Ui<'_>, mut transform: Transform) -> Option<Transform> {
+pub fn transform(ui: &imgui::Ui, mut transform: Transform) -> Option<Transform> {
         let mut changed = false;
 
         let mut translation: [f32; 3] = transform.translation.into();
@@ -61,7 +61,7 @@ pub fn transform(ui: &imgui::Ui<'_>, mut transform: Transform) -> Option<Transfo
         }
 }
 
-pub fn transform_mut<T>(ui: &imgui::Ui<'_>, transform: &mut T)
+pub fn transform_mut<T>(ui: &imgui::Ui, transform: &mut T)
 where
         T: Deref<Target = Transform> + DerefMut,
 {
@@ -70,7 +70,7 @@ where
         }
 }
 
-pub fn euler_angles_mut<T>(ui: &imgui::Ui<'_>, euler_angles: &mut T)
+pub fn euler_angles_mut<T>(ui: &imgui::Ui, euler_angles: &mut T)
 where
         T: Deref<Target = EulerAngles> + DerefMut,
 {
@@ -99,7 +99,7 @@ where
         }
 }
 
-pub fn dir_light_mut<T>(ui: &imgui::Ui<'_>, dir_light: &mut T)
+pub fn dir_light_mut<T>(ui: &imgui::Ui, dir_light: &mut T)
 where
         T: Deref<Target = DirectionalLight> + DerefMut,
 {
@@ -108,17 +108,17 @@ where
         }
 
         let mut direction: [f32; 3] = dir_light.direction.into();
-        if imgui::Slider::new("direction", -1.0, 1.0f32).build_array(ui, &mut direction) {
+        if ui.slider_config("direction", -1.0, 1.0f32).build_array(&mut direction) {
                 dir_light.direction = Vec3::from_slice(&direction);
         }
 
         let mut color: [f32; 3] = dir_light.color.into();
-        if imgui::ColorEdit::new("color", &mut color).build(ui) {
+        if ui.color_edit3("color", &mut color) {
                 dir_light.color = Vec3::from_slice(&color);
         }
 }
 
-pub fn point_light_mut<T>(ui: &imgui::Ui<'_>, point_light: &mut T)
+pub fn point_light_mut<T>(ui: &imgui::Ui, point_light: &mut T)
 where
         T: Deref<Target = PointLight> + DerefMut,
 {
@@ -127,30 +127,30 @@ where
         }
 
         let mut color: [f32; 3] = point_light.color.into();
-        if imgui::ColorEdit::new("color", &mut color).build(ui) {
+        if ui.color_edit3("color", &mut color) {
                 point_light.color = Vec3::from_slice(&color);
         }
 
         let mut kc = point_light.kc;
-        if imgui::Slider::new("constant", 0.0, 1.0).build(ui, &mut kc) {
+        if ui.slider("constant", 0.0, 1.0, &mut kc) {
                 point_light.kc = kc;
         }
 
         let mut kl = point_light.kl;
-        if imgui::Slider::new("linear", 0.0, 1.0).build(ui, &mut kl) {
+        if ui.slider("linear", 0.0, 1.0, &mut kl) {
                 point_light.kl = kl;
         }
 
         let mut kq = point_light.kq;
-        if imgui::Slider::new("quadratic", 0.0, 1.0)
+        if ui.slider_config("quadratic", 0.0, 1.0)
                 .flags(imgui::SliderFlags::LOGARITHMIC)
-                .build(ui, &mut kq)
+                .build(&mut kq)
         {
                 point_light.kq = kq;
         }
 }
 
-pub fn spotlight_mut<T>(ui: &imgui::Ui<'_>, spotlight: &mut T)
+pub fn spotlight_mut<T>(ui: &imgui::Ui, spotlight: &mut T)
 where
         T: Deref<Target = Spotlight> + DerefMut,
 {
@@ -159,7 +159,7 @@ where
         }
 
         let mut color: [f32; 3] = spotlight.color.into();
-        if imgui::ColorEdit::new("color", &mut color).build(ui) {
+        if ui.color_edit3("color", &mut color) {
                 spotlight.color = Vec3::from_slice(&color);
         }
 
@@ -172,32 +172,32 @@ where
         }
 
         let mut inner_circle = spotlight.inner_radius_percentage;
-        if imgui::Slider::new("inner circle", 0.0, 1.0).build(ui, &mut inner_circle) {
+        if ui.slider("inner circle", 0.0, 1.0, &mut inner_circle) {
                 spotlight.inner_radius_percentage = inner_circle;
         }
 
         let mut kc = spotlight.kc;
-        if imgui::Slider::new("constant", 0.0, 1.0).build(ui, &mut kc) {
+        if ui.slider("constant", 0.0, 1.0, &mut kc) {
                 spotlight.kc = kc;
         }
 
         let mut kl = spotlight.kl;
-        if imgui::Slider::new("linear", 0.0, 1.0).build(ui, &mut kl) {
+        if ui.slider("linear", 0.0, 1.0, &mut kl) {
                 spotlight.kl = kl;
         }
 
         let mut kq = spotlight.kq;
-        if imgui::Slider::new("quadratic", 0.0, 1.0)
+        if ui.slider_config("quadratic", 0.0, 1.0)
                 .flags(imgui::SliderFlags::LOGARITHMIC)
-                .build(ui, &mut kq)
+                .build(&mut kq)
         {
                 spotlight.kq = kq;
         }
 }
 
-pub fn material_mut(ui: &imgui::Ui<'_>, material: &mut Material) {
-        imgui::Slider::new("shininess", 0.0f32, 256.0).build(ui, &mut material.shininess);
-        imgui::Slider::new("ambient strength", 0.0f32, 1.0).build(ui, &mut material.ambient_strength);
-        imgui::Slider::new("specular strength", 0.0f32, 1.0).build(ui, &mut material.specular_strength);
-        imgui::Slider::new("diffuse strength", 0.0f32, 1.0).build(ui, &mut material.diffuse_strength);
+pub fn material_mut(ui: &imgui::Ui, material: &mut Material) {
+        ui.slider("shininess", 0.0f32, 256.0, &mut material.shininess);
+        ui.slider("ambient strength", 0.0f32, 1.0, &mut material.ambient_strength);
+        ui.slider("specular strength", 0.0f32, 1.0, &mut material.specular_strength);
+        ui.slider("diffuse strength", 0.0f32, 1.0, &mut material.diffuse_strength);
 }

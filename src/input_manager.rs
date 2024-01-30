@@ -8,9 +8,12 @@ use crate::{
 use enum_map::EnumMap;
 #[allow(unused_imports)]
 use log::{error, info};
-use winit::event::{DeviceEvent, KeyboardInput};
+use winit::{
+        event::{DeviceEvent, RawKeyEvent},
+        keyboard::PhysicalKey,
+};
 
-pub type KeyCode = winit::event::VirtualKeyCode;
+pub type KeyCode = winit::keyboard::KeyCode;
 pub type KeyState = winit::event::ElementState;
 
 #[derive(Debug, Clone)]
@@ -126,13 +129,13 @@ impl KeyboardState {
                 self.key_states
                         .iter()
                         .enumerate()
-                        .map(|(kc, ks)| (unsafe { std::mem::transmute::<u32, KeyCode>(kc as u32) }, *ks))
+                        .map(|(kc, ks)| (unsafe { std::mem::transmute::<u8, KeyCode>(kc as u8) }, *ks))
         }
 
         #[allow(unused)]
         fn pressed_keys(&self) -> impl Iterator<Item = KeyCode> + '_ {
                 self.key_states.iter().enumerate().filter_map(|(kc, ks)| match ks {
-                        KeyState::Pressed => Some(unsafe { std::mem::transmute::<u32, KeyCode>(kc as u32) }),
+                        KeyState::Pressed => Some(unsafe { std::mem::transmute::<u8, KeyCode>(kc as u8) }),
                         KeyState::Released => None,
                 })
         }
@@ -162,7 +165,7 @@ impl<'a> IntoIterator for &'a KeyboardState {
 
         fn into_iter(self) -> Self::IntoIter {
                 fn f((kc, ks): (usize, &KeyState)) -> (KeyCode, KeyState) {
-                        (unsafe { std::mem::transmute::<u32, KeyCode>(kc as u32) }, *ks)
+                        (unsafe { std::mem::transmute::<u8, KeyCode>(kc as u8) }, *ks)
                 }
 
                 self.key_states
@@ -277,10 +280,10 @@ impl KeyboardInputProcessor {
                 }
         }
 
-        fn process_keyboard_input(&mut self, input: &KeyboardInput, action_events: &mut Vec<ActionEvent>) {
-                let key_code = match input.virtual_keycode {
-                        Some(kc) => kc,
-                        None => return,
+        fn process_keyboard_input(&mut self, input: &RawKeyEvent, action_events: &mut Vec<ActionEvent>) {
+                let key_code = match input.physical_key {
+                        PhysicalKey::Code(kc) => kc,
+                        PhysicalKey::Unidentified(_) => return,
                 };
 
                 // Key repeat, ignore

@@ -3,6 +3,7 @@ use std::{cell::Cell, ops::Deref, rc::Rc};
 use ash::{prelude::VkResult, vk};
 #[allow(unused_imports)]
 use log::trace;
+use vk_mem::Alloc;
 
 use crate::AnyResult;
 
@@ -53,9 +54,9 @@ pub struct VkBuffer {
 
         handle: vk::Buffer,
         alloc: vma::Allocation,
-        ainfo: vma::AllocationInfo,
         destroyed: Cell<bool>,
 
+        size_in_bytes: vk::DeviceSize,
         memory: Cell<*mut u8>,
 }
 
@@ -80,20 +81,18 @@ impl VkBuffer {
                         required_flags: create_info.req_mem_flags,
                         preferred_flags: create_info.pref_mem_flags,
                         memory_type_bits: create_info.mem_type_bits,
-                        pool: None,
-                        user_data: None,
                         priority: 0.0,
+                        ..Default::default()
                 };
 
-                let (handle, alloc, ainfo) =
-                        unsafe { create_info.allocator.create_buffer(&handle_cinfo, &alloc_cinfo)? };
+                let (handle, alloc) = unsafe { create_info.allocator.create_buffer(&handle_cinfo, &alloc_cinfo)? };
 
                 Ok(Self {
                         allocator: create_info.allocator,
                         handle,
                         alloc,
-                        ainfo,
                         destroyed: Cell::new(false),
+                        size_in_bytes: create_info.buffer_size,
                         memory: Cell::new(std::ptr::null_mut()),
                 })
         }
@@ -117,7 +116,7 @@ impl VkBuffer {
                         buffer_size,
                         buffer_usage: vk::BufferUsageFlags::TRANSFER_SRC,
                         mem_usage: vma::MemoryUsage::CpuOnly,
-                        alloc_flags: vma::AllocationCreateFlags::NONE,
+                        alloc_flags: vma::AllocationCreateFlags::empty(),
                         req_mem_flags: vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
                         pref_mem_flags: Default::default(),
                         mem_type_bits: 0,
@@ -135,7 +134,7 @@ impl VkBuffer {
                         buffer_size,
                         buffer_usage: vk::BufferUsageFlags::TRANSFER_DST | create_info.buffer_usage,
                         mem_usage: vma::MemoryUsage::GpuOnly,
-                        alloc_flags: vma::AllocationCreateFlags::NONE,
+                        alloc_flags: vma::AllocationCreateFlags::empty(),
                         req_mem_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
                         pref_mem_flags: Default::default(),
                         mem_type_bits: 0,
@@ -180,7 +179,7 @@ impl VkBuffer {
                         buffer_size,
                         buffer_usage: vk::BufferUsageFlags::UNIFORM_BUFFER,
                         mem_usage: vma::MemoryUsage::CpuToGpu,
-                        alloc_flags: vma::AllocationCreateFlags::NONE,
+                        alloc_flags: vma::AllocationCreateFlags::empty(),
                         req_mem_flags: vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
                         pref_mem_flags: Default::default(),
                         mem_type_bits: 0,
@@ -202,7 +201,7 @@ impl VkBuffer {
                                 buffer_size,
                                 buffer_usage: vk::BufferUsageFlags::TRANSFER_SRC,
                                 mem_usage: vma::MemoryUsage::CpuOnly,
-                                alloc_flags: vma::AllocationCreateFlags::NONE,
+                                alloc_flags: vma::AllocationCreateFlags::empty(),
                                 req_mem_flags: vk::MemoryPropertyFlags::HOST_VISIBLE
                                         | vk::MemoryPropertyFlags::HOST_COHERENT,
                                 pref_mem_flags: Default::default(),
@@ -252,12 +251,12 @@ impl VkBuffer {
         #[allow(dead_code)]
         pub fn write_bytes_offsetted(&self, bytes: &[u8], offset: usize) -> VkResult<()> {
                 assert!(
-                        offset + bytes.len() <= self.ainfo.size(),
+                        offset + bytes.len() <= self.size_in_bytes as usize,
                         "Tried to write {} bytes with offset {} (total: {}) into buffer of size {}!",
                         bytes.len(),
                         offset,
                         offset + bytes.len(),
-                        self.ainfo.size()
+                        self.size_in_bytes
                 );
 
                 let map = self.map_memory()?;
@@ -286,7 +285,7 @@ impl VkBuffer {
 
         #[allow(dead_code)]
         pub fn flush_all_memory(&self) -> VkResult<()> {
-                unsafe { self.allocator.flush_allocation(self.alloc, 0, self.ainfo.size()) }
+                unsafe { self.allocator.flush_allocation(self.alloc, 0, self.size_in_bytes as usize) }
         }
 }
 
