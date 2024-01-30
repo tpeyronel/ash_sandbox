@@ -108,7 +108,7 @@ struct KeyboardState {
 }
 
 impl KeyboardState {
-        const MAX_KEY_CODE: usize = KeyCode::Cut as usize;
+        const MAX_KEY_CODE: usize = KeyCode::F35 as usize;
 
         fn new() -> Self {
                 Self {
