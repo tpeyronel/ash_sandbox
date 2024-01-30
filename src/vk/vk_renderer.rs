@@ -914,14 +914,6 @@ struct VkFrameData {
         render_finished_semaphore: VkSemaphore,
         // Command buffer used for submitting draw operations of one frame.
         draw_cmd_buffer: VkReusableCommandBuffer,
-        // world_dst_set: vk::DescriptorSet,
-        // object_dst_set: vk::DescriptorSet,
-
-        // world_matrices_buffer: VkBuffer,
-        // world_lights_buffer: VkBuffer,
-        // material_data_buffer: VkBuffer,
-        // object_matrices_buffer: VkTypedDynamicUniformBuffer<ObjectMatrices>,
-        // billboard_data_buffer: VkBuffer, // Should be VkDynamicUniformBuffer
 }
 
 impl VkFrameData {
@@ -937,122 +929,10 @@ impl VkFrameData {
                 let draw_cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
 
-                // let [world_dst_set, object_dst_set] = unsafe {
-                //         vk_context
-                //                 .dst_set_allocator
-                //                 .allocate_descriptor_sets(&[world_dst_set_layout, object_dst_set_layout])?
-                // };
-
-                // let world_matrices_buffer_size = std::mem::size_of::<WorldMatrices>() as vk::DeviceSize;
-                // let world_matrices_buffer = VkBuffer::new_uniform_buffer(
-                //         &vk_context.device,
-                //         Rc::clone(&vk_context.allocator),
-                //         world_matrices_buffer_size,
-                // )?;
-
-                // let world_lights_buffer_size = std::mem::size_of::<WorldLights>() as vk::DeviceSize;
-                // let world_lights_buffer = VkBuffer::new_uniform_buffer(
-                //         &vk_context.device,
-                //         Rc::clone(&vk_context.allocator),
-                //         world_lights_buffer_size,
-                // )?;
-
-                // let material_data_buffer_size = std::mem::size_of::<MaterialData>() as vk::DeviceSize;
-                // let material_data_buffer = VkBuffer::new_uniform_buffer(
-                //         &vk_context.device,
-                //         Rc::clone(&vk_context.allocator),
-                //         material_data_buffer_size,
-                // )?;
-
-                // let object_matrices_buffer = VkTypedDynamicUniformBuffer::new(
-                //         &vk_context.pdevice,
-                //         &vk_context.device,
-                //         Rc::clone(&vk_context.allocator),
-                //         MAX_OBJECT_MATRICES,
-                // )?;
-
-                // let world_matrices_buffer_info = vk::DescriptorBufferInfo {
-                //         buffer: *world_matrices_buffer,
-                //         offset: 0,
-                //         range: world_matrices_buffer_size,
-                // };
-
-                // let world_matrices_dst_write = vk::WriteDescriptorSet::builder()
-                //         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                //         .dst_set(world_dst_set)
-                //         .dst_binding(0)
-                //         .dst_array_element(0)
-                //         .buffer_info(std::slice::from_ref(&world_matrices_buffer_info))
-                //         .build();
-
-                // let world_lights_buffer_info = vk::DescriptorBufferInfo {
-                //         buffer: *world_lights_buffer,
-                //         offset: 0,
-                //         range: world_lights_buffer_size,
-                // };
-
-                // let world_lights_dst_write = vk::WriteDescriptorSet::builder()
-                //         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                //         .dst_set(world_dst_set)
-                //         .dst_binding(1)
-                //         .dst_array_element(0)
-                //         .buffer_info(std::slice::from_ref(&world_lights_buffer_info))
-                //         .build();
-
-                // let object_matrices_buffer_info = vk::DescriptorBufferInfo {
-                //         buffer: *object_matrices_buffer,
-                //         offset: 0,
-                //         range: object_matrices_buffer.element_padded_size() as vk::DeviceSize,
-                // };
-
-                // let object_matrices_dst_write = vk::WriteDescriptorSet::builder()
-                //         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-                //         .dst_set(object_dst_set)
-                //         .dst_binding(0)
-                //         .dst_array_element(0)
-                //         .buffer_info(std::slice::from_ref(&object_matrices_buffer_info))
-                //         .build();
-
-                // let billboard_data_buffer_size = std::mem::size_of::<BillboardData>() as vk::DeviceSize;
-                // let billboard_data_buffer = VkBuffer::new_uniform_buffer(
-                //         &vk_context.device,
-                //         Rc::clone(&vk_context.allocator),
-                //         billboard_data_buffer_size,
-                // )?;
-
-                // let billboard_data_buffer_info = vk::DescriptorBufferInfo {
-                //         buffer: *billboard_data_buffer,
-                //         offset: 0,
-                //         range: billboard_data_buffer_size,
-                // };
-
-                // let billboard_data_dst_write = vk::WriteDescriptorSet::builder()
-                //         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                //         .dst_set(object_dst_set)
-                //         .dst_binding(1)
-                //         .dst_array_element(0)
-                //         .buffer_info(std::slice::from_ref(&billboard_data_buffer_info))
-                //         .build();
-
-                // let writes = [
-                //         world_matrices_dst_write,
-                //         world_lights_dst_write,
-                //         object_matrices_dst_write,
-                //         billboard_data_dst_write,
-                // ];
-                // unsafe { vk_context.device.update_descriptor_sets(&writes, &[]) };
-
                 Ok(Self {
                         img_available_semaphore,
                         render_finished_semaphore,
                         draw_cmd_buffer,
-                        // world_dst_set,
-                        // object_dst_set,
-                        // world_matrices_buffer,
-                        // world_lights_buffer,
-                        // material_data_buffer,
-                        // object_matrices_buffer,
-                        // billboard_data_buffer,
                 })
         }
 }
@@ -1060,14 +940,9 @@ impl VkFrameData {
 impl Drop for VkFrameData {
         fn drop(&mut self) {
                 unsafe {
+                        self.draw_cmd_buffer.destroy();
                         self.render_finished_semaphore.destroy();
                         self.img_available_semaphore.destroy();
-                        // self.billboard_data_buffer.destroy();
-                        // self.object_matrices_buffer.destroy();
-                        // self.material_data_buffer.destroy();
-                        // self.world_lights_buffer.destroy();
-                        // self.world_matrices_buffer.destroy();
-                        self.draw_cmd_buffer.destroy();
                 }
         }
 }
