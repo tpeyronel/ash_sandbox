@@ -457,7 +457,7 @@ impl VkRenderer {
                                 format: swch_color_format,
                                 samples: swch_samples,
                                 load_op: vk::AttachmentLoadOp::CLEAR,
-                                store_op: vk::AttachmentStoreOp::STORE,
+                                store_op: vk::AttachmentStoreOp::DONT_CARE,
                                 stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
                                 stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
                                 initial_layout: vk::ImageLayout::UNDEFINED,
@@ -468,7 +468,7 @@ impl VkRenderer {
                                 format: swch_depth_format,
                                 samples: swch_samples,
                                 load_op: vk::AttachmentLoadOp::CLEAR,
-                                store_op: vk::AttachmentStoreOp::STORE,
+                                store_op: vk::AttachmentStoreOp::DONT_CARE,
                                 stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
                                 stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
                                 initial_layout: vk::ImageLayout::UNDEFINED,
@@ -504,25 +504,68 @@ impl VkRenderer {
 
                 let subpass_descriptions = [vk::SubpassDescription::builder()
                         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-                        .color_attachments(slice::from_ref(&color_attachment_ref))
-                        .depth_stencil_attachment(&depth_attachment_ref)
-                        .resolve_attachments(slice::from_ref(&resolve_attachment_ref))
                         //.input_attachments(&[])
+                        .color_attachments(color_attachment_ref.ref_into_slice())
+                        .depth_stencil_attachment(&depth_attachment_ref)
+                        .resolve_attachments(resolve_attachment_ref.ref_into_slice())
                         //.preserve_attachments(&[])
                         .build()];
 
-                let subpass_dependencies = [vk::SubpassDependency {
-                        src_subpass: vk::SUBPASS_EXTERNAL,
-                        dst_subpass: 0,
-                        src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-                        dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-                        src_access_mask: vk::AccessFlags::empty(),
-                        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE
-                                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                        dependency_flags: vk::DependencyFlags::empty(),
-                }];
+                // Alternative that also works:
+                // let subpass_dependencies = [
+                //         vk::SubpassDependency {
+                //                 src_subpass: vk::SUBPASS_EXTERNAL,
+                //                 dst_subpass: 0,
+                //                 src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                //                         | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                //                 dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                //                         | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                //                 src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                //                         | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                //                 dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                //                         | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                //                 dependency_flags: vk::DependencyFlags::empty(),
+                //         },
+                // ];
+
+                let subpass_dependencies = [
+                        vk::SubpassDependency {
+                                src_subpass: vk::SUBPASS_EXTERNAL,
+                                dst_subpass: 0,
+                                src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                src_access_mask: vk::AccessFlags::NONE,
+                                dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                                dependency_flags: vk::DependencyFlags::empty(),
+                        },
+                        vk::SubpassDependency {
+                                src_subpass: 0,
+                                dst_subpass: vk::SUBPASS_EXTERNAL,
+                                src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                                dst_access_mask: vk::AccessFlags::NONE,
+                                dependency_flags: vk::DependencyFlags::empty(),
+                        },
+                        vk::SubpassDependency {
+                                src_subpass: vk::SUBPASS_EXTERNAL,
+                                dst_subpass: 0,
+                                src_stage_mask:vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                                dst_stage_mask: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                                src_access_mask: vk::AccessFlags::NONE,
+                                dst_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                                dependency_flags: vk::DependencyFlags::empty(),
+                        },
+                        vk::SubpassDependency {
+                                src_subpass: 0,
+                                dst_subpass: vk::SUBPASS_EXTERNAL,
+                                src_stage_mask: vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                                dst_stage_mask: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                                src_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                                dst_access_mask: vk::AccessFlags::NONE,
+                                dependency_flags: vk::DependencyFlags::empty(),
+                        },
+                ];
 
                 let render_pass_cinfo = vk::RenderPassCreateInfo::builder()
                         .attachments(&attachments)
