@@ -47,8 +47,6 @@ pub struct VkRenderer {
         swapchain: VkSwapchain,
         swapchain_outdated_causes: VkSwapchainOutdatedCauseFlags,
 
-        render_pass: VkRenderPass,
-
         setup_cmd_buffer: VkReusableCommandBuffer,
 
         max_concurrent_frames: usize,
@@ -81,17 +79,6 @@ impl VkRenderer {
                 )?;
                 trace!("Created VkSwapchain");
 
-                let render_pass = Self::create_render_pass(
-                        &vk_context.device,
-                        swapchain.samples,
-                        swapchain.color_format.format,
-                        swapchain.depth_format,
-                )?;
-                trace!("Created VkRenderPass");
-
-                swapchain.create_framebuffers(*render_pass)?;
-                trace!("Created VkFramebuffers");
-
                 let setup_cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
                 trace!("Allocated VkCommandBuffers");
@@ -101,8 +88,7 @@ impl VkRenderer {
                         .map(|_| VkFrameData::new(&mut vk_context))
                         .collect::<AnyResult<Vec<VkFrameData>>>()?;
 
-                let vk_asset_manager =
-                        VkAssetManager::new(&mut vk_context, swapchain.samples, *render_pass, max_concurrent_frames)?;
+                let vk_asset_manager = VkAssetManager::new(&mut vk_context, swapchain.samples, max_concurrent_frames)?;
                 trace!("Created VkAssetManager");
 
                 let imgui_renderer_options = imgui_rs_vulkan_renderer::Options {
@@ -118,7 +104,7 @@ impl VkRenderer {
                         (**vk_context.device).clone(),
                         vk_context.queues.graphics,
                         **vk_context.cmd_pool,
-                        *render_pass,
+                        vk::RenderPass::null(),
                         imguic,
                         Some(imgui_renderer_options),
                 )?);
@@ -132,8 +118,6 @@ impl VkRenderer {
 
                         swapchain,
                         swapchain_outdated_causes: VkSwapchainOutdatedCauseFlags::NONE,
-
-                        render_pass,
 
                         setup_cmd_buffer,
                         max_concurrent_frames,
@@ -341,10 +325,10 @@ impl Renderer for VkRenderer {
 
                         world.insert_resource(asset_manager);
 
-                        self.imgui_renderer
-                                .as_mut()
-                                .unwrap()
-                                .cmd_draw(*frame_data.draw_cmd_buffer, imgui_draw_data)?;
+                        // self.imgui_renderer
+                        //         .as_mut()
+                        //         .unwrap()
+                        //         .cmd_draw(*frame_data.draw_cmd_buffer, imgui_draw_data)?;
 
                         self.end_frame(imagei)?;
                 }
@@ -363,7 +347,6 @@ impl Renderer for VkRenderer {
                         drop(self.imgui_renderer.take().unwrap());
                         self.frames_data.clear();
                         self.setup_cmd_buffer.destroy();
-                        self.render_pass.destroy();
                         self.swapchain.destroy();
                         self.vk_asset_manager.destroy();
                         self.vk_context.destroy();
@@ -408,22 +391,13 @@ impl VkRenderer {
                 if recreate_render_pass {
                         trace!("Recreating VkRenderPass...");
 
-                        self.render_pass = Self::create_render_pass(
-                                &self.vk_context.device,
-                                self.swapchain.samples,
-                                self.swapchain.color_format.format,
-                                self.swapchain.depth_format,
-                        )?;
-
-                        self.imgui_renderer
-                                .as_mut()
-                                .unwrap()
-                                .set_render_pass(*self.render_pass)?;
+                        // self.imgui_renderer
+                        //         .as_mut()
+                        //         .unwrap()
+                        //         .set_render_pass(*self.render_pass)?;
 
                         recreate_pipeline = true;
                 }
-
-                self.swapchain.create_framebuffers(*self.render_pass)?;
 
                 if recreate_pipeline {
                         trace!("Recreating VkGraphicsPipeline...");
@@ -550,7 +524,7 @@ impl VkRenderer {
                         vk::SubpassDependency {
                                 src_subpass: vk::SUBPASS_EXTERNAL,
                                 dst_subpass: 0,
-                                src_stage_mask:vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                                src_stage_mask: vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
                                 dst_stage_mask: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
                                 src_access_mask: vk::AccessFlags::NONE,
                                 dst_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
@@ -668,8 +642,6 @@ impl VkRenderer {
                         }
                 };
 
-                let frame_framebuffer = &self.swapchain.framebuffers[imagei as usize];
-
                 let time = self.creation_instant.elapsed().as_secs_f32();
                 let intensity = (((time.sin() + 1.0) / 2.0) * 0.05) + 0.05;
 
@@ -696,17 +668,126 @@ impl VkRenderer {
                         .device
                         .begin_command_buffer(*frame_data.draw_cmd_buffer, &cmd_buffer_binfo)?;
 
-                let render_pass_binfo = vk::RenderPassBeginInfo::builder()
-                        .render_pass(*self.render_pass)
-                        .framebuffer(**frame_framebuffer)
-                        .render_area(self.swapchain.scissor)
-                        .clear_values(&clear_values);
 
-                self.vk_context.device.cmd_begin_render_pass(
+                let barrier = vk::ImageMemoryBarrier::builder()
+                        .src_access_mask(vk::AccessFlags::NONE)
+                        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .image(*self.swapchain.color_img)
+                        .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: vk::REMAINING_MIP_LEVELS,
+                                base_array_layer: 0,
+                                layer_count: vk::REMAINING_ARRAY_LAYERS,
+                        })
+                        .build();
+
+                self.vk_context.device.cmd_pipeline_barrier(
                         *frame_data.draw_cmd_buffer,
-                        &render_pass_binfo,
-                        vk::SubpassContents::INLINE,
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[barrier],
                 );
+
+                let barrier = vk::ImageMemoryBarrier::builder()
+                        .src_access_mask(vk::AccessFlags::NONE)
+                        .dst_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .image(*self.swapchain.depth_img)
+                        .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::DEPTH,
+                                base_mip_level: 0,
+                                level_count: vk::REMAINING_MIP_LEVELS,
+                                base_array_layer: 0,
+                                layer_count: vk::REMAINING_ARRAY_LAYERS,
+                        })
+                        .build();
+
+                self.vk_context.device.cmd_pipeline_barrier(
+                        *frame_data.draw_cmd_buffer,
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[barrier],
+                );
+
+
+                let barrier = vk::ImageMemoryBarrier::builder()
+                        .src_access_mask(vk::AccessFlags::NONE)
+                        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .image(self.swapchain.resolve_imgs[imagei as usize])
+                        .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: vk::REMAINING_MIP_LEVELS,
+                                base_array_layer: 0,
+                                layer_count: vk::REMAINING_ARRAY_LAYERS,
+                        })
+                        .build();
+
+                self.vk_context.device.cmd_pipeline_barrier(
+                        *frame_data.draw_cmd_buffer,
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[barrier],
+                );
+
+
+                let color_attachment = vk::RenderingAttachmentInfo::builder()
+                        .image_view(*self.swapchain.color_img_view)
+                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .resolve_mode(vk::ResolveModeFlags::AVERAGE)
+                        .resolve_image_view(*self.swapchain.resolve_img_views[imagei as usize])
+                        .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                        .store_op(vk::AttachmentStoreOp::STORE)
+                        .clear_value(clear_values[0]);
+
+                let depth_attachment = vk::RenderingAttachmentInfo::builder()
+                        .image_view(*self.swapchain.depth_img_view)
+                        .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                        .resolve_mode(vk::ResolveModeFlags::NONE)
+                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                        .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                        .clear_value(clear_values[1])
+                        .build();
+
+                let color_attachments = [color_attachment.build()];
+                let rendering_info = vk::RenderingInfo::builder()
+                        .render_area(self.swapchain.scissor)
+                        .layer_count(1)
+                        .view_mask(0)
+                        .color_attachments(&color_attachments)
+                        .depth_attachment(&depth_attachment);
+
+                self.vk_context
+                        .device
+                        .cmd_begin_rendering(*frame_data.draw_cmd_buffer, &rendering_info.build());
+
+                // self.vk_context.device.cmd_begin_render_pass(
+                //         *frame_data.draw_cmd_buffer,
+                //         &render_pass_binfo,
+                //         vk::SubpassContents::INLINE,
+                // );
 
                 Ok(BeginFrameResult::Draw { imagei })
         }
@@ -714,7 +795,36 @@ impl VkRenderer {
         unsafe fn end_frame(&mut self, imagei: u32) -> AnyResult<()> {
                 let frame_data = &mut self.frames_data[self.framei];
 
-                self.vk_context.device.cmd_end_render_pass(*frame_data.draw_cmd_buffer);
+                // self.vk_context.device.cmd_end_render_pass(*frame_data.draw_cmd_buffer);
+                self.vk_context.device.cmd_end_rendering(*frame_data.draw_cmd_buffer);
+
+                let barrier = vk::ImageMemoryBarrier::builder()
+                        .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                        .dst_access_mask(vk::AccessFlags::NONE)
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .image(self.swapchain.resolve_imgs[imagei as usize])
+                        .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: vk::REMAINING_MIP_LEVELS,
+                                base_array_layer: 0,
+                                layer_count: vk::REMAINING_ARRAY_LAYERS,
+                        })
+                        .build();
+
+                self.vk_context.device.cmd_pipeline_barrier(
+                        *frame_data.draw_cmd_buffer,
+                        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                        vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[barrier],
+                );
+
                 self.vk_context.device.end_command_buffer(*frame_data.draw_cmd_buffer)?;
 
                 let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];

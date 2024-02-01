@@ -125,7 +125,6 @@ pub struct VkAssetManager {
         concurrent_frames: usize,
 
         swapchain_samples: vk::SampleCountFlags,
-        render_pass: vk::RenderPass,
 
         pub meshes: SecondaryMap<MeshId, VkMesh>,
         pub images: SecondaryMap<ImageId, VkModelImage>,
@@ -144,7 +143,6 @@ impl VkAssetManager {
         pub fn new(
                 vk_context: &mut VkContext,
                 swapchain_samples: vk::SampleCountFlags,
-                render_pass: vk::RenderPass,
                 concurrent_frames: usize,
         ) -> AnyResult<Self> {
                 assert!(concurrent_frames > 0, "Frames in flight must be greater to zero");
@@ -164,7 +162,6 @@ impl VkAssetManager {
                         concurrent_frames,
 
                         swapchain_samples,
-                        render_pass,
 
                         meshes: SecondaryMap::new(),
                         images: SecondaryMap::new(),
@@ -521,7 +518,6 @@ impl VkAssetManager {
                 let graphics_pipeline = Self::create_graphics_pipeline_for_vk_shader(
                         &self.device,
                         self.swapchain_samples,
-                        self.render_pass,
                         *graphics_pipeline_layout,
                         !shader.disable_depth_test,
                         shader.cull_mode.into(),
@@ -1161,7 +1157,6 @@ impl VkAssetManager {
         fn create_graphics_pipeline_for_vk_shader(
                 device: &Rc<VkDevice>,
                 swapchain_samples: vk::SampleCountFlags,
-                render_pass: vk::RenderPass,
                 pipeline_layout: vk::PipelineLayout,
                 enable_depth_test: bool,
                 cull_mode: vk::CullModeFlags,
@@ -1247,6 +1242,14 @@ impl VkAssetManager {
                 let pipeline_dyn_state_cinfo =
                         vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dyn_states);
 
+                let color_attachment_formats = [vk::Format::B8G8R8A8_UNORM];
+
+                let mut pipeline_rendering_cinfo = vk::PipelineRenderingCreateInfo::builder()
+                        .view_mask(0)
+                        .color_attachment_formats(&color_attachment_formats)
+                        .depth_attachment_format(vk::Format::D32_SFLOAT)
+                        .build();
+
                 let graphics_pipeline_cinfo = vk::GraphicsPipelineCreateInfo::builder()
                         .stages(&shader_stages)
                         .vertex_input_state(&vert_input_cinfo)
@@ -1258,8 +1261,7 @@ impl VkAssetManager {
                         .color_blend_state(&color_blend_state_cinfo)
                         .dynamic_state(&pipeline_dyn_state_cinfo)
                         .layout(pipeline_layout)
-                        .render_pass(render_pass)
-                        .subpass(0);
+                        .push_next(&mut pipeline_rendering_cinfo);
 
                 unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo.build()) }
         }

@@ -46,7 +46,6 @@ pub struct VkSwapchain {
         pub resolve_imgs: Vec<vk::Image>,
         pub resolve_img_views: Vec<VkImageView>,
         pub img_count: u32,
-        pub framebuffers: Vec<VkFramebuffer>,
 }
 
 impl VkSwapchain {
@@ -157,14 +156,10 @@ impl VkSwapchain {
                         resolve_imgs,
                         resolve_img_views,
                         img_count,
-
-                        framebuffers: vec![],
                 })
         }
 
         pub fn recreate(&mut self) -> VkResult<VkSwapchainRecreationInfo> {
-                self.framebuffers.drain(..).for_each(|fb| unsafe { fb.destroy() });
-
                 let mut recreation_info = VkSwapchainRecreationInfo {
                         color_format_changed: false,
                         extent_changed: false,
@@ -280,29 +275,6 @@ impl VkSwapchain {
                 }
 
                 Ok(recreation_info)
-        }
-
-        pub fn create_framebuffers(&mut self, render_pass: vk::RenderPass) -> VkResult<()> {
-                assert!(self.framebuffers.is_empty());
-
-                self.framebuffers = self
-                        .resolve_img_views
-                        .iter()
-                        .map(|resolve_img_view| {
-                                let attachments = [*self.color_img_view, *self.depth_img_view, **resolve_img_view];
-
-                                let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
-                                        .render_pass(render_pass)
-                                        .attachments(&attachments)
-                                        .width(self.extent.width)
-                                        .height(self.extent.height)
-                                        .layers(1);
-
-                                unsafe { VkFramebuffer::new(&self.device, &framebuffer_cinfo) }
-                        })
-                        .collect::<VkResult<Vec<VkFramebuffer>>>()?;
-
-                Ok(())
         }
 
         pub unsafe fn acquire_next_image(
@@ -585,7 +557,6 @@ impl VkSwapchain {
 
 impl_destroyable_expr!(VkSwapchain, vk::SwapchainKHR, |s: &VkSwapchain| {
         s.resolve_img_views.iter().for_each(|iv| iv.destroy());
-        s.framebuffers.iter().for_each(|fb| fb.destroy());
         s.depth_img_view.destroy();
         s.depth_img.destroy();
         s.color_img_view.destroy();
