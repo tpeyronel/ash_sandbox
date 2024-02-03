@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{ops::Deref, path::PathBuf};
 
 use lazy_regex::{lazy_regex, Lazy};
 use regex::Regex;
@@ -19,8 +19,10 @@ pub struct ShaderPreprocessor {}
 impl ShaderPreprocessor {
         pub fn preprocess_glsl_source(
                 shader_resources: &ShaderResourceRegistry,
-                source_code: &str,
+                source_code_path: PathBuf,
         ) -> Result<PreprocessedShaderStage, ShaderLoadError> {
+                let source_code = std::fs::read_to_string(&source_code_path)?;
+
                 let mut parts = vec![String::new()];
                 let mut resources = vec![];
                 let mut declared_structs: HashMap<String, ShaderStructDeclaration> = HashMap::new();
@@ -67,7 +69,11 @@ impl ShaderPreprocessor {
                 }
 
                 let parts = ShaderStageParts(parts);
-                let preprocessed_shader = PreprocessedShaderStage { parts, resources };
+                let preprocessed_shader = PreprocessedShaderStage {
+                        path: source_code_path,
+                        parts,
+                        resources,
+                };
 
                 Ok(preprocessed_shader)
         }
@@ -149,6 +155,7 @@ pub struct ShaderResourceRequirement {
 
 #[derive(Debug, Clone)]
 pub struct PreprocessedShaderStage {
+        pub path: PathBuf,
         pub parts: ShaderStageParts,
         pub resources: Vec<ShaderResourceRequirement>,
 }

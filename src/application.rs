@@ -334,6 +334,8 @@ impl Application {
                 //         },
                 // );
 
+                let _shadow_map_shader = asset_manager.load_shader_from_yaml(Path::new("res/shader/shadow_map/shadow_map.yaml"))?;
+
                 let _basic_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/basic_shader/basic_shader.yaml"))?;
                 let color_shader =

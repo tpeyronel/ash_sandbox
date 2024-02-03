@@ -1,0 +1,6 @@
+---
+name: "shadow-map"
+vertex-shader: "shadow_map.vert"
+vertex-inputs:
+  - "positions"
+uniforms: []

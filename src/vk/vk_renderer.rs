@@ -13,13 +13,15 @@ use super::{
         vk_asset_manager::{VkAssetManager, VkCubemap, VkDescriptorSetIndex, VkShader, VkShaderResourceType},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
+        vk_image::{VkImage, VkImageCreateInfo},
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
-        vk_wrapper::{VkDevice, VkRenderPass, VkSemaphore},
+        vk_wrapper::{VkDevice, VkFramebuffer, VkImageView, VkRenderPass, VkSemaphore, VmaAllocator},
 };
 use crate::{
         application::InterpGlobalTransform,
         asset_manager::{AssetManager, AssetManagerEvent, CubemapId, MaterialId, MaterialMesh, MeshId, ShaderId},
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
+        constants::{SHADOW_MAP_HEIGHT, SHADOW_MAP_WIDTH},
         hashmap::HashMap,
         model_instance_manager::ModelInstance,
         my_glm::*,
@@ -48,7 +50,12 @@ pub struct VkRenderer {
         swapchain: VkSwapchain,
         swapchain_outdated_causes: VkSwapchainOutdatedCauseFlags,
 
+        shadow_map_render_pass: VkRenderPass,
         render_pass: VkRenderPass,
+
+        shadow_map_img: VkImage,
+        shadow_map_img_view: VkImageView,
+        shadow_map_framebuffer: VkFramebuffer,
 
         setup_cmd_buffer: VkReusableCommandBuffer,
 
@@ -90,8 +97,24 @@ impl VkRenderer {
                 )?;
                 trace!("Created VkRenderPass");
 
+                let shadow_map_render_pass =
+                        Self::create_shadow_map_render_pass(&vk_context.device, swapchain.depth_format)?;
+                trace!("Created shadow map VkRenderPass");
+
                 swapchain.create_framebuffers(*render_pass)?;
                 trace!("Created VkFramebuffers");
+
+                let (shadow_map_img, shadow_map_img_view) = Self::create_shadow_map_img_and_view(
+                        Rc::clone(&vk_context.device),
+                        Rc::clone(&vk_context.allocator),
+                        swapchain.depth_format,
+                )?;
+
+                let shadow_map_framebuffer = Self::create_shadow_map_framebuffer(
+                        &vk_context.device,
+                        *shadow_map_render_pass,
+                        *shadow_map_img_view,
+                )?;
 
                 let setup_cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
@@ -134,7 +157,12 @@ impl VkRenderer {
                         swapchain,
                         swapchain_outdated_causes: VkSwapchainOutdatedCauseFlags::NONE,
 
+                        shadow_map_render_pass,
                         render_pass,
+
+                        shadow_map_img,
+                        shadow_map_img_view,
+                        shadow_map_framebuffer,
 
                         setup_cmd_buffer,
                         max_concurrent_frames,
@@ -313,6 +341,32 @@ impl Renderer for VkRenderer {
                 )?;
 
                 unsafe {
+                        let time = self.creation_instant.elapsed().as_secs_f32();
+                        let intensity = (((time.sin() + 1.0) / 2.0) * 0.05) + 0.05;
+
+                        let clear_values = [
+                                vk::ClearValue {
+                                        color: vk::ClearColorValue {
+                                                float32: [intensity, intensity, intensity, 1.0],
+                                        },
+                                },
+                                vk::ClearValue {
+                                        depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+                                },
+                        ];
+
+                        let render_pass_binfo = vk::RenderPassBeginInfo::builder()
+                                .render_pass(*self.render_pass)
+                                .framebuffer(*self.swapchain.framebuffers[imagei as usize])
+                                .render_area(self.swapchain.scissor)
+                                .clear_values(&clear_values);
+
+                        self.vk_context.device.cmd_begin_render_pass(
+                                *frame_data.draw_cmd_buffer,
+                                &render_pass_binfo,
+                                vk::SubpassContents::INLINE,
+                        );
+
                         self.vk_context.device.cmd_set_viewport(
                                 *frame_data.draw_cmd_buffer,
                                 0,
@@ -350,6 +404,10 @@ impl Renderer for VkRenderer {
                         drop(self.imgui_renderer.take().unwrap());
                         self.frames_data.clear();
                         self.setup_cmd_buffer.destroy();
+                        self.shadow_map_framebuffer.destroy();
+                        self.shadow_map_img_view.destroy();
+                        self.shadow_map_img.destroy();
+                        self.shadow_map_render_pass.destroy();
                         self.render_pass.destroy();
                         self.swapchain.destroy();
                         self.vk_asset_manager.destroy();
@@ -562,6 +620,133 @@ impl VkRenderer {
                 unsafe { VkRenderPass::new(device, &render_pass_cinfo) }
         }
 
+        fn create_shadow_map_render_pass(device: &Rc<VkDevice>, depth_format: vk::Format) -> VkResult<VkRenderPass> {
+                let attachments = [vk::AttachmentDescription {
+                        flags: vk::AttachmentDescriptionFlags::empty(),
+                        format: depth_format,
+                        samples: vk::SampleCountFlags::TYPE_1,
+                        load_op: vk::AttachmentLoadOp::CLEAR,
+                        store_op: vk::AttachmentStoreOp::STORE,
+                        stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+                        stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+                        initial_layout: vk::ImageLayout::UNDEFINED,
+                        final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                }];
+
+                let depth_attachment_ref = vk::AttachmentReference {
+                        attachment: 0,
+                        layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                };
+
+                let subpass_descriptions = [vk::SubpassDescription::builder()
+                        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+                        //.input_attachments(&[])
+                        // .color_attachments(&[])
+                        .depth_stencil_attachment(&depth_attachment_ref)
+                        // .resolve_attachments(&[])
+                        //.preserve_attachments(&[])
+                        .build()];
+
+                let subpass_dependencies = [
+                        vk::SubpassDependency {
+                                src_subpass: vk::SUBPASS_EXTERNAL,
+                                dst_subpass: 0,
+                                src_stage_mask: vk::PipelineStageFlags::LATE_FRAGMENT_TESTS, // Because we skip fragment shader, this can be early_.. instead of late_.. i think
+                                dst_stage_mask: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                                src_access_mask: vk::AccessFlags::NONE,
+                                dst_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                                dependency_flags: vk::DependencyFlags::empty(),
+                        },
+                        vk::SubpassDependency {
+                                src_subpass: 0,
+                                dst_subpass: vk::SUBPASS_EXTERNAL,
+                                src_stage_mask: vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                                dst_stage_mask: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                                src_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                                dst_access_mask: vk::AccessFlags::NONE,
+                                dependency_flags: vk::DependencyFlags::empty(),
+                        },
+                ];
+
+                let render_pass_cinfo = vk::RenderPassCreateInfo::builder()
+                        .attachments(&attachments)
+                        .subpasses(&subpass_descriptions)
+                        .dependencies(&subpass_dependencies);
+
+                unsafe { VkRenderPass::new(device, &render_pass_cinfo) }
+        }
+
+        fn create_shadow_map_img_and_view(
+                device: Rc<VkDevice>,
+                allocator: Rc<VmaAllocator>,
+                depth_format: vk::Format,
+        ) -> VkResult<(VkImage, VkImageView)> {
+                let img = unsafe {
+                        let img_cinfo = VkImageCreateInfo {
+                                flags: Default::default(),
+                                image_type: vk::ImageType::TYPE_2D,
+                                format: depth_format,
+                                extent: vk::Extent3D {
+                                        width: SHADOW_MAP_WIDTH,
+                                        height: SHADOW_MAP_HEIGHT,
+                                        depth: 1,
+                                },
+                                mip_levels: 1,
+                                array_layers: 1,
+                                samples: vk::SampleCountFlags::TYPE_1,
+                                tiling: vk::ImageTiling::OPTIMAL,
+                                usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                                queue_family_indices: None,
+                                initial_layout: vk::ImageLayout::UNDEFINED,
+
+                                mem_usage: vma::MemoryUsage::GpuOnly,
+                                alloc_cflags: vma::AllocationCreateFlags::empty(),
+                                required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                                preferred_flags: Default::default(),
+                        };
+
+                        VkImage::new(allocator, &img_cinfo)?
+                };
+
+                let img_view = unsafe {
+                        let img_view_cinfo = vk::ImageViewCreateInfo {
+                                image: *img,
+                                view_type: vk::ImageViewType::TYPE_2D,
+                                format: depth_format,
+                                components: vk::ComponentMapping::default(),
+                                subresource_range: vk::ImageSubresourceRange {
+                                        aspect_mask: vk::ImageAspectFlags::DEPTH,
+                                        base_mip_level: 0,
+                                        level_count: 1,
+                                        base_array_layer: 0,
+                                        layer_count: 1,
+                                },
+                                ..vk::ImageViewCreateInfo::default()
+                        };
+
+                        VkImageView::new(device, &img_view_cinfo)?
+                };
+
+                Ok((img, img_view))
+        }
+
+        fn create_shadow_map_framebuffer(
+                device: &Rc<VkDevice>,
+                shadow_map_render_pass: vk::RenderPass,
+                shadow_map_img_view: vk::ImageView,
+        ) -> VkResult<VkFramebuffer> {
+                let attachments = [shadow_map_img_view];
+
+                let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
+                        .render_pass(shadow_map_render_pass)
+                        .attachments(&attachments)
+                        .width(SHADOW_MAP_WIDTH)
+                        .height(SHADOW_MAP_HEIGHT)
+                        .layers(1);
+
+                unsafe { VkFramebuffer::new(device, &framebuffer_cinfo) }
+        }
+
         // TODO: check that T is compatible with the shader resource type.
         fn write_struct_resource<T: 'static>(
                 framei: usize,
@@ -655,22 +840,6 @@ impl VkRenderer {
                         }
                 };
 
-                let frame_framebuffer = &self.swapchain.framebuffers[imagei as usize];
-
-                let time = self.creation_instant.elapsed().as_secs_f32();
-                let intensity = (((time.sin() + 1.0) / 2.0) * 0.05) + 0.05;
-
-                let clear_values = [
-                        vk::ClearValue {
-                                color: vk::ClearColorValue {
-                                        float32: [intensity, intensity, intensity, 1.0],
-                                },
-                        },
-                        vk::ClearValue {
-                                depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
-                        },
-                ];
-
                 self.vk_context.device.reset_command_buffer(
                         *frame_data.draw_cmd_buffer,
                         vk::CommandBufferResetFlags::RELEASE_RESOURCES,
@@ -682,18 +851,6 @@ impl VkRenderer {
                 self.vk_context
                         .device
                         .begin_command_buffer(*frame_data.draw_cmd_buffer, &cmd_buffer_binfo)?;
-
-                let render_pass_binfo = vk::RenderPassBeginInfo::builder()
-                        .render_pass(*self.render_pass)
-                        .framebuffer(**frame_framebuffer)
-                        .render_area(self.swapchain.scissor)
-                        .clear_values(&clear_values);
-
-                self.vk_context.device.cmd_begin_render_pass(
-                        *frame_data.draw_cmd_buffer,
-                        &render_pass_binfo,
-                        vk::SubpassContents::INLINE,
-                );
 
                 Ok(BeginFrameResult::Draw { imagei })
         }

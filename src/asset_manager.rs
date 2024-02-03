@@ -240,7 +240,7 @@ pub struct ShaderDeclaration {
         pub vert_shader: PathBuf,
 
         #[serde(rename = "fragment-shader")]
-        pub frag_shader: PathBuf,
+        pub frag_shader: Option<PathBuf>,
 
         // default is false
         #[serde(rename = "disable-depth-test", default)]
@@ -260,10 +260,8 @@ slotmap::new_key_type! { pub struct ShaderId; }
 #[derive(Debug, Clone)]
 pub struct Shader {
         pub name: String,
-        pub vert_shader_path: PathBuf,
         pub vert_shader: PreprocessedShaderStage,
-        pub frag_shader_path: PathBuf,
-        pub frag_shader: PreprocessedShaderStage,
+        pub frag_shader: Option<PreprocessedShaderStage>,
         pub disable_depth_test: bool,
         pub cull_mode: CullMode,
         pub vertex_inputs: Vec<String>,
@@ -280,16 +278,17 @@ impl Shader {
 
                 Ok(Self {
                         name: declaration.name.clone(),
-                        vert_shader_path: directory.join(&declaration.vert_shader),
                         vert_shader: ShaderPreprocessor::preprocess_glsl_source(
                                 shader_resources,
-                                &std::fs::read_to_string(directory.join(&declaration.vert_shader))?,
+                                directory.join(&declaration.vert_shader),
                         )?,
-                        frag_shader_path: directory.join(&declaration.frag_shader),
-                        frag_shader: ShaderPreprocessor::preprocess_glsl_source(
-                                shader_resources,
-                                &std::fs::read_to_string(directory.join(&declaration.frag_shader))?,
-                        )?,
+                        frag_shader: declaration
+                                .frag_shader
+                                .as_ref()
+                                .map(|p| {
+                                        ShaderPreprocessor::preprocess_glsl_source(shader_resources, directory.join(p))
+                                })
+                                .transpose()?,
                         disable_depth_test: declaration.disable_depth_test,
                         cull_mode: declaration.cull_mode,
                         vertex_inputs: declaration.vertex_inputs,

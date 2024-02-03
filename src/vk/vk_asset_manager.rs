@@ -70,7 +70,7 @@ pub struct VkMaterial {
 
 pub struct VkShader {
         pub vert_module: VkShaderModule,
-        pub frag_module: VkShaderModule,
+        pub frag_module: Option<VkShaderModule>,
         pub vertex_input_bindings: Vec<vk::VertexInputBindingDescription>,
         pub vertex_input_attributes: Vec<vk::VertexInputAttributeDescription>,
         pub shader_resource_bindings: HashMap<ShaderResourceId, VkShaderResourceBindingDescription>,
@@ -96,7 +96,7 @@ impl VkShader {
                         device.destroy_descriptor_set_layout(self.material_dst_set_layout, None);
                         device.destroy_descriptor_set_layout(self.world_dst_set_layout, None);
 
-                        self.frag_module.destroy();
+                        self.frag_module.as_ref().map(|x| x.destroy());
                         self.vert_module.destroy();
                 }
         }
@@ -436,19 +436,24 @@ impl VkAssetManager {
                         &shader_resource_bindings,
                         &shader.vert_shader,
                 );
-                let frag_shader_source = Self::complete_shader_stage_source(
-                        asset_manager.shader_resources(),
-                        &shader_resource_bindings,
-                        &shader.frag_shader,
-                );
+                let frag_shader_source = shader.frag_shader.as_ref().map(|fs| {
+                        Self::complete_shader_stage_source(
+                                asset_manager.shader_resources(),
+                                &shader_resource_bindings,
+                                fs,
+                        )
+                });
 
                 let vert_shader_path =
-                        Self::write_generated_source_to_file(&shader.vert_shader_path, &vert_shader_source);
-                let frag_shader_path =
-                        Self::write_generated_source_to_file(&shader.frag_shader_path, &frag_shader_source);
+                        Self::write_generated_source_to_file(&shader.vert_shader.path, &vert_shader_source);
+                let frag_shader_path = frag_shader_source.as_ref().map(|fss| {
+                        Self::write_generated_source_to_file(&shader.frag_shader.as_ref().unwrap().path, fss)
+                });
 
                 let vert_shader_module = ShaderModule::from_glsl_file(vert_shader_path)?;
-                let frag_shader_module = ShaderModule::from_glsl_file(frag_shader_path)?;
+                let frag_shader_module = frag_shader_path
+                        .map(|fsp| ShaderModule::from_glsl_file(fsp))
+                        .transpose()?;
 
                 let dst_set_layouts =
                         Self::create_descriptor_set_layouts_from_bindings(&self.device, &shader_resource_bindings)?;
@@ -478,7 +483,10 @@ impl VkAssetManager {
                 )?;
 
                 let vert_module = VkShaderModule::from_code(&self.device, &vert_shader_module.bin)?;
-                let frag_module = VkShaderModule::from_code(&self.device, &frag_shader_module.bin)?;
+                let frag_module = frag_shader_module
+                        .as_ref()
+                        .map(|fsm| VkShaderModule::from_code(&self.device, &fsm.bin))
+                        .transpose()?;
 
                 let mut vertex_input_bindings = Vec::new();
                 let mut vertex_input_attributes = Vec::new();
@@ -526,7 +534,7 @@ impl VkAssetManager {
                         !shader.disable_depth_test,
                         shader.cull_mode.into(),
                         *vert_module,
-                        *frag_module,
+                        frag_module.as_ref().map(|fm| **fm),
                         &vertex_input_bindings,
                         &vertex_input_attributes,
                 )?;
@@ -569,13 +577,15 @@ impl VkAssetManager {
                         &mut next_bindings,
                         &mut bindings,
                 );
-                Self::map_shader_stage_resources(
-                        shader_resources,
-                        vk_shader_resources,
-                        &shader.frag_shader,
-                        &mut next_bindings,
-                        &mut bindings,
-                );
+                if let Some(frag_shader) = shader.frag_shader.as_ref() {
+                        Self::map_shader_stage_resources(
+                                shader_resources,
+                                vk_shader_resources,
+                                frag_shader,
+                                &mut next_bindings,
+                                &mut bindings,
+                        )
+                };
 
                 return bindings;
         }
@@ -1166,24 +1176,27 @@ impl VkAssetManager {
                 enable_depth_test: bool,
                 cull_mode: vk::CullModeFlags,
                 vert_module: vk::ShaderModule,
-                frag_module: vk::ShaderModule,
+                frag_module: Option<vk::ShaderModule>,
                 vertex_input_bindings: &[vk::VertexInputBindingDescription],
                 vertex_input_attributes: &[vk::VertexInputAttributeDescription],
         ) -> VkResult<VkPipeline> {
                 let entry_point = CString::new("main").unwrap();
 
-                let shader_stages = [
-                        vk::PipelineShaderStageCreateInfo::builder()
-                                .stage(vk::ShaderStageFlags::VERTEX)
-                                .module(vert_module)
-                                .name(&entry_point)
-                                .build(),
-                        vk::PipelineShaderStageCreateInfo::builder()
+                let mut shader_stages = vec![];
+
+                shader_stages.push(vk::PipelineShaderStageCreateInfo::builder()
+                        .stage(vk::ShaderStageFlags::VERTEX)
+                        .module(vert_module)
+                        .name(&entry_point)
+                        .build());
+
+                if let Some(frag_module) = frag_module {
+                        shader_stages.push(vk::PipelineShaderStageCreateInfo::builder()
                                 .stage(vk::ShaderStageFlags::FRAGMENT)
                                 .module(frag_module)
                                 .name(&entry_point)
-                                .build(),
-                ];
+                                .build());
+                }
 
                 let vert_input_cinfo = vk::PipelineVertexInputStateCreateInfo::builder()
                         .vertex_binding_descriptions(&vertex_input_bindings)
