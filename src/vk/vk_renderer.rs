@@ -1,4 +1,5 @@
 use ash::{prelude::VkResult, vk};
+use slotmap::SecondaryMap;
 use std::{rc::Rc, slice, time::Instant};
 
 use bevy_ecs::prelude::World;
@@ -17,7 +18,7 @@ use super::{
 };
 use crate::{
         application::InterpGlobalTransform,
-        asset_manager::{AssetManager, AssetManagerEvent, MaterialMesh},
+        asset_manager::{AssetManager, AssetManagerEvent, CubemapId, MaterialId, MaterialMesh, MeshId, ShaderId},
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
         hashmap::HashMap,
         model_instance_manager::ModelInstance,
@@ -166,7 +167,7 @@ impl Renderer for VkRenderer {
                         BeginFrameResult::Skip => return Ok(()),
                 };
 
-                let frame_data = &mut self.frames_data[self.framei];
+                let frame_data = &self.frames_data[self.framei];
 
                 let PhysicalSize { width, height } = self.window.inner_size();
                 let aspect_ratio = width as f32 / height as f32;
@@ -246,8 +247,6 @@ impl Renderer for VkRenderer {
                         &world_lights,
                 )?;
 
-                let mut buffer_transform_idx = 0;
-
                 let camera_right = Vec4::from((camera_orien * Vec3::RIGHT, 0.0));
                 let camera_up = Vec4::from((camera_orien * Vec3::UP, 0.0));
 
@@ -265,6 +264,54 @@ impl Renderer for VkRenderer {
                         &billboard_data,
                 )?;
 
+                let asset_manager = world.remove_resource::<AssetManager>().unwrap();
+
+                let mut vk_render_scene = VkRenderScene {
+                        skybox_object_matrices_offset: None,
+                        mesh_instances: SecondaryMap::new(),
+                };
+
+                let mut buffer_transform_idx = 0;
+
+                if let Some(skybox) = world.get_resource::<Skybox>() {
+                        let vk_skybox = &self.vk_asset_manager.cubemaps[skybox.0];
+                        Self::update_skybox(
+                                &self.vk_asset_manager,
+                                &mut self.world_shader_resource_descriptors_data,
+                                vk_skybox,
+                        );
+
+                        let object_matrices_dynamic_offset = {
+                                let model = Mat4::IDENTITY;
+                                let mvp = proj_mat * Mat4::from_mat3(Mat3::from_mat4(view_mat)) * model;
+                                let normal = model.inverse().transpose();
+
+                                let object_matrices = ObjectMatrices { model, mvp, normal };
+
+                                let object_matrices_buffer = &self
+                                        .vk_asset_manager
+                                        .shader_resource_dynamic_buffers
+                                        .get(&SHADER_RESOURCE_OBJECT_MATRICES)
+                                        .unwrap()[self.framei];
+
+                                object_matrices_buffer.write(&object_matrices, buffer_transform_idx)?
+                        };
+
+                        vk_render_scene.skybox_object_matrices_offset = Some(object_matrices_dynamic_offset);
+
+                        buffer_transform_idx += 1;
+                }
+
+                Self::process_world_model_instances(
+                        world,
+                        &asset_manager,
+                        &self.vk_asset_manager,
+                        self.framei,
+                        &world_matrices,
+                        &mut buffer_transform_idx,
+                        &mut vk_render_scene,
+                )?;
+
                 unsafe {
                         self.vk_context.device.cmd_set_viewport(
                                 *frame_data.draw_cmd_buffer,
@@ -277,69 +324,7 @@ impl Renderer for VkRenderer {
                                 slice::from_ref(&self.swapchain.scissor),
                         );
 
-                        // let graphics_pipeline_layout = *self.vk_asset_manager.graphics_pipeline_layout;
-                        // self.vk_context.device.cmd_bind_descriptor_sets(
-                        //         *frame_data.draw_cmd_buffer,
-                        //         vk::PipelineBindPoint::GRAPHICS,
-                        //         graphics_pipeline_layout,
-                        //         0,
-                        //         &[frame_data.world_dst_set],
-                        //         &[],
-                        // );
-
-                        let asset_manager = world.remove_resource::<AssetManager>().unwrap();
-
-                        if let Some(skybox) = world.get_resource::<Skybox>() {
-                                let vk_skybox = &self.vk_asset_manager.cubemaps[skybox.0];
-                                Self::update_skybox(
-                                        &self.vk_asset_manager,
-                                        &mut self.world_shader_resource_descriptors_data,
-                                        vk_skybox,
-                                );
-
-                                Self::draw_model_instance(
-                                        &self.vk_context.device,
-                                        *frame_data.draw_cmd_buffer,
-                                        &asset_manager,
-                                        &self.vk_asset_manager,
-                                        &self.world_shader_resource_descriptors_data,
-                                        self.framei,
-                                        &WorldMatrices {
-                                                view_pos: Vec4::from((camera_pos, 1.0)),
-                                                view: Mat4::from_mat3(Mat3::from_mat4(view_mat)),
-                                                proj: proj_mat,
-                                                vp: proj_mat * Mat4::from_mat3(Mat3::from_mat4(view_mat)),
-                                        },
-                                        &ModelInstance {
-                                                model: asset_manager.skybox_model,
-                                        },
-                                        Mat4::IDENTITY,
-                                        buffer_transform_idx,
-                                )?;
-
-                                buffer_transform_idx += 1;
-                        }
-
-                        for (minstance, transform) in
-                                world.query::<(&ModelInstance, &InterpGlobalTransform)>().iter(world)
-                        {
-                                Self::draw_model_instance(
-                                        &self.vk_context.device,
-                                        *frame_data.draw_cmd_buffer,
-                                        &asset_manager,
-                                        &self.vk_asset_manager,
-                                        &self.world_shader_resource_descriptors_data,
-                                        self.framei,
-                                        &world_matrices,
-                                        minstance,
-                                        transform.0.as_matrix(),
-                                        buffer_transform_idx,
-                                )?;
-
-                                buffer_transform_idx += 1;
-                        }
-
-                        world.insert_resource(asset_manager);
+                        self.draw_scene(*frame_data.draw_cmd_buffer, &asset_manager, vk_render_scene)?;
 
                         self.imgui_renderer
                                 .as_mut()
@@ -348,6 +333,8 @@ impl Renderer for VkRenderer {
 
                         self.end_frame(imagei)?;
                 }
+
+                world.insert_resource(asset_manager);
 
                 Ok(())
         }
@@ -550,7 +537,7 @@ impl VkRenderer {
                         vk::SubpassDependency {
                                 src_subpass: vk::SUBPASS_EXTERNAL,
                                 dst_subpass: 0,
-                                src_stage_mask:vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                                src_stage_mask: vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
                                 dst_stage_mask: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
                                 src_access_mask: vk::AccessFlags::NONE,
                                 dst_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
@@ -711,6 +698,150 @@ impl VkRenderer {
                 Ok(BeginFrameResult::Draw { imagei })
         }
 
+        unsafe fn draw_scene(
+                &self,
+                cmd_buffer: vk::CommandBuffer,
+                asset_manager: &AssetManager,
+                scene: VkRenderScene,
+        ) -> VkResult<()> {
+                if let Some(skybox_offset) = scene.skybox_object_matrices_offset {
+                        let skybox_model = asset_manager.model(asset_manager.skybox_model);
+                        let skybox_material_mesh = skybox_model.meshes.first().unwrap();
+                        let skybox_material = asset_manager.material(skybox_material_mesh.material);
+
+                        let mut shader_group = SecondaryMap::new();
+                        shader_group.insert(
+                                skybox_material_mesh.material,
+                                vec![VkMeshInstance {
+                                        mesh: skybox_material_mesh.mesh,
+                                        object_matrices_dynamic_offset: skybox_offset,
+                                }],
+                        );
+
+                        self.draw_shader_group(asset_manager, cmd_buffer, skybox_material.shader, &shader_group)?;
+                }
+
+                for (shader_id, shader_group) in scene.mesh_instances {
+                        self.draw_shader_group(asset_manager, cmd_buffer, shader_id, &shader_group)?;
+                }
+
+                Ok(())
+        }
+
+        unsafe fn draw_shader_group(
+                &self,
+                asset_manager: &AssetManager,
+                cmd_buffer: vk::CommandBuffer,
+                shader_id: ShaderId,
+                shader_group: &SecondaryMap<MaterialId, Vec<VkMeshInstance>>,
+        ) -> VkResult<()> {
+                let device = &*self.vk_context.device;
+                let framei = self.framei;
+                let vk_shader = &self.vk_asset_manager.shaders[shader_id];
+
+                device.cmd_bind_pipeline(
+                        cmd_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        *vk_shader.graphics_pipeline,
+                );
+
+                Self::update_world_descriptors(device, &self.world_shader_resource_descriptors_data, framei, vk_shader);
+
+                device.cmd_bind_descriptor_sets(
+                        cmd_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        *vk_shader.graphics_pipeline_layout,
+                        VkDescriptorSetIndex::World.value(),
+                        &[vk_shader.world_dst_set[framei]],
+                        &[],
+                );
+
+                for (material_id, material_group) in shader_group {
+                        self.draw_material_group(asset_manager, cmd_buffer, vk_shader, material_id, material_group)?;
+                }
+
+                Ok(())
+        }
+
+        unsafe fn draw_material_group(
+                &self,
+                asset_manager: &AssetManager,
+                cmd_buffer: vk::CommandBuffer,
+                vk_shader: &VkShader,
+                material_id: MaterialId,
+                material_group: &Vec<VkMeshInstance>,
+        ) -> VkResult<()> {
+                let device = &*self.vk_context.device;
+                let framei = self.framei;
+                let material = &asset_manager.material(material_id);
+                let vk_material = &self.vk_asset_manager.materials[material_id];
+
+                // TODO: update all materials beforehand, to avoid updating the same material if its shared by multiple meshes.
+                if let Some(material_buffers) = vk_material.buffers.get(&SHADER_RESOURCE_MATERIAL_DATA) {
+                        material_buffers[framei].write(&MaterialData {
+                                ambient_color: material.base_color_factor,
+                                diffuse_color: material.base_color_factor,
+                                specular_color: material.base_color_factor,
+                                shininess_and_ambient_strength: Vec2::new(
+                                        material.shininess,
+                                        material.ambient_strength,
+                                ),
+                                specular_strength_and_diffuse_strength: Vec2::new(
+                                        material.specular_strength,
+                                        material.diffuse_strength,
+                                ),
+                        })?;
+                }
+
+                device.cmd_bind_descriptor_sets(
+                        cmd_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        *vk_shader.graphics_pipeline_layout,
+                        VkDescriptorSetIndex::Material.value(),
+                        &[vk_material.dst_sets[framei]],
+                        &[],
+                );
+
+                for vk_mesh_instance in material_group {
+                        self.draw_mesh_instance(cmd_buffer, vk_shader, vk_mesh_instance);
+                }
+
+                Ok(())
+        }
+
+        unsafe fn draw_mesh_instance(
+                &self,
+                cmd_buffer: vk::CommandBuffer,
+                vk_shader: &VkShader,
+                vk_mesh_instance: &VkMeshInstance,
+        ) {
+                let device = &*self.vk_context.device;
+                let framei = self.framei;
+                let vk_mesh = &self.vk_asset_manager.meshes[vk_mesh_instance.mesh];
+
+                let mesh_dst_set = vk_shader.mesh_dst_set[framei];
+                let dynamic_offset = vk_mesh_instance.object_matrices_dynamic_offset;
+
+                device.cmd_bind_descriptor_sets(
+                        cmd_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        *vk_shader.graphics_pipeline_layout,
+                        VkDescriptorSetIndex::Mesh.value(),
+                        &[mesh_dst_set],
+                        &[dynamic_offset as u32],
+                );
+
+                device.cmd_bind_vertex_buffers(
+                        cmd_buffer,
+                        0,
+                        &[*vk_mesh.positions, *vk_mesh.normals, *vk_mesh.tex_coords],
+                        &[0, 0, 0],
+                );
+                device.cmd_bind_index_buffer(cmd_buffer, *vk_mesh.indices.buffer, 0, vk_mesh.indices.index_type);
+
+                device.cmd_draw_indexed(cmd_buffer, vk_mesh.indices.index_count, 1, 0, 0, 0);
+        }
+
         unsafe fn end_frame(&mut self, imagei: u32) -> AnyResult<()> {
                 let frame_data = &mut self.frames_data[self.framei];
 
@@ -754,31 +885,56 @@ impl VkRenderer {
                 Ok(())
         }
 
-        fn draw_model_instance(
-                device: &VkDevice,
-                draw_cmd_buffer: vk::CommandBuffer,
+        fn process_world_model_instances(
+                world: &mut World,
                 asset_manager: &AssetManager,
                 vk_asset_manager: &VkAssetManager,
-                world_shader_resource_descriptors_data: &HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
+                framei: usize,
+                world_matrices: &WorldMatrices,
+                buffer_transform_idx: &mut usize,
+                scene: &mut VkRenderScene,
+        ) -> VkResult<()> {
+                // TODO: actually handle dynamic uniform buffer bindings correctly
+
+                for (minstance, transform) in world.query::<(&ModelInstance, &InterpGlobalTransform)>().iter(world) {
+                        Self::process_model_instance(
+                                asset_manager,
+                                vk_asset_manager,
+                                framei,
+                                world_matrices,
+                                minstance,
+                                transform.0.as_matrix(),
+                                *buffer_transform_idx,
+                                scene,
+                        )?;
+
+                        *buffer_transform_idx += 1;
+                }
+
+                Ok(())
+        }
+
+        fn process_model_instance(
+                asset_manager: &AssetManager,
+                vk_asset_manager: &VkAssetManager,
                 framei: usize,
                 world_matrices: &WorldMatrices,
                 minstance: &ModelInstance,
                 model_matrix: Mat4,
                 buffer_transform_idx: usize,
+                scene: &mut VkRenderScene,
         ) -> VkResult<()> {
-                //let mut last_material = MaterialID::MAX;
-
                 let object_matrices_offset = {
                         let model = model_matrix;
                         let mvp = world_matrices.vp * model;
                         let normal = model.inverse().transpose();
 
+                        let object_matrices = ObjectMatrices { model, mvp, normal };
+
                         let object_matrices_buffer = &vk_asset_manager
                                 .shader_resource_dynamic_buffers
                                 .get(&SHADER_RESOURCE_OBJECT_MATRICES)
                                 .unwrap()[framei];
-
-                        let object_matrices = ObjectMatrices { model, mvp, normal };
 
                         object_matrices_buffer.write(&object_matrices, buffer_transform_idx)?
                 };
@@ -786,116 +942,35 @@ impl VkRenderer {
                 let model = asset_manager.model(minstance.model);
 
                 for material_mesh in &model.meshes {
-                        Self::draw_mesh_instance(
-                                device,
-                                draw_cmd_buffer,
-                                asset_manager,
-                                vk_asset_manager,
-                                world_shader_resource_descriptors_data,
-                                framei,
-                                material_mesh,
-                                object_matrices_offset,
-                        )?;
+                        Self::process_mesh_instance(asset_manager, material_mesh, object_matrices_offset, scene);
                 }
 
                 Ok(())
         }
 
-        fn draw_mesh_instance(
-                device: &VkDevice,
-                draw_cmd_buffer: vk::CommandBuffer,
+        fn process_mesh_instance(
                 asset_manager: &AssetManager,
-                vk_asset_manager: &VkAssetManager,
-                world_shader_resource_descriptors_data: &HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
-                framei: usize,
                 material_mesh: &MaterialMesh,
-                object_matrices_offset: usize,
-        ) -> VkResult<()> {
+                object_matrices_dynamic_offset: usize,
+                scene: &mut VkRenderScene,
+        ) {
                 let material = asset_manager.material(material_mesh.material);
-                let vk_shader = &vk_asset_manager.shaders[material.shader];
 
-                let vk_mesh = &vk_asset_manager.meshes[material_mesh.mesh];
-                let vk_material = &vk_asset_manager.materials[material_mesh.material];
+                let material_mesh_instances = scene
+                        .mesh_instances
+                        .entry(material.shader)
+                        .unwrap()
+                        .or_insert_with(|| SecondaryMap::new());
 
-                /* if mesh.material != last_material {
-                        last_material = mesh.material;
-                } */
+                let mesh_instances = material_mesh_instances
+                        .entry(material_mesh.material)
+                        .unwrap()
+                        .or_insert_with(|| vec![]);
 
-                unsafe {
-                        device.cmd_bind_pipeline(
-                                draw_cmd_buffer,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                *vk_shader.graphics_pipeline,
-                        );
-
-                        Self::update_world_descriptors(
-                                device,
-                                world_shader_resource_descriptors_data,
-                                framei,
-                                vk_shader,
-                        );
-
-                        // TODO: actually handle dynamic uniform buffer bindings correctly
-                        device.cmd_bind_descriptor_sets(
-                                draw_cmd_buffer,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                *vk_shader.graphics_pipeline_layout,
-                                VkDescriptorSetIndex::Mesh.value(),
-                                &[vk_shader.mesh_dst_set[framei]],
-                                &[object_matrices_offset as u32],
-                        );
-
-                        device.cmd_bind_descriptor_sets(
-                                draw_cmd_buffer,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                *vk_shader.graphics_pipeline_layout,
-                                VkDescriptorSetIndex::World.value(),
-                                &[vk_shader.world_dst_set[framei]],
-                                &[],
-                        );
-
-                        // TODO: update all materials beforehand, to avoid updating the same material if its shared by multiple meshes.
-                        if let Some(material_buffers) = vk_material.buffers.get(&SHADER_RESOURCE_MATERIAL_DATA) {
-                                material_buffers[framei].write(&MaterialData {
-                                        ambient_color: material.base_color_factor,
-                                        diffuse_color: material.base_color_factor,
-                                        specular_color: material.base_color_factor,
-                                        shininess_and_ambient_strength: Vec2::new(
-                                                material.shininess,
-                                                material.ambient_strength,
-                                        ),
-                                        specular_strength_and_diffuse_strength: Vec2::new(
-                                                material.specular_strength,
-                                                material.diffuse_strength,
-                                        ),
-                                })?;
-                        }
-
-                        device.cmd_bind_descriptor_sets(
-                                draw_cmd_buffer,
-                                vk::PipelineBindPoint::GRAPHICS,
-                                *vk_shader.graphics_pipeline_layout,
-                                VkDescriptorSetIndex::Material.value(),
-                                &[vk_material.dst_sets[framei]],
-                                &[],
-                        );
-                        device.cmd_bind_vertex_buffers(
-                                draw_cmd_buffer,
-                                0,
-                                &[*vk_mesh.positions, *vk_mesh.normals, *vk_mesh.tex_coords],
-                                &[0, 0, 0],
-                        );
-                        device.cmd_bind_index_buffer(
-                                draw_cmd_buffer,
-                                *vk_mesh.indices.buffer,
-                                0,
-                                vk_mesh.indices.index_type,
-                        );
-
-                        device.cmd_draw_indexed(draw_cmd_buffer, vk_mesh.indices.index_count, 1, 0, 0, 0);
-                }
-
-                Ok(())
+                mesh_instances.push(VkMeshInstance {
+                        mesh: material_mesh.mesh,
+                        object_matrices_dynamic_offset,
+                });
         }
 
         fn update_world_descriptors(
@@ -1091,4 +1166,14 @@ enum ShaderResourceDescriptorData {
                 image_view: vk::ImageView,
                 sampler: vk::Sampler,
         },
+}
+
+struct VkRenderScene {
+        skybox_object_matrices_offset: Option<usize>,
+        mesh_instances: SecondaryMap<ShaderId, SecondaryMap<MaterialId, Vec<VkMeshInstance>>>,
+}
+
+struct VkMeshInstance {
+        mesh: MeshId,
+        object_matrices_dynamic_offset: usize,
 }
