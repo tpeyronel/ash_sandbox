@@ -251,7 +251,11 @@ impl Renderer for VkRenderer {
 
                 let sun_dir = dir_light_component.direction.normalize_or_zero();
                 let sun_pos = camera_pos - sun_dir * 100.0;
-                let sun_view = Mat4::look_at_rh(sun_pos, camera_pos, Vec3::Y);
+
+                let sun_orien = Quat::from_rotation_arc(Vec3::FORWARD, sun_dir);
+                let inverted_sun_view = Mat4::from_rotation_translation(sun_orien, sun_pos);
+                let sun_view = inverted_sun_view.inverse();
+
                 let sun_proj = Mat4::orthographic_rh(-10.0, 10.0, -10.0, 10.0, 0.0, 200.0);
                 let sun_vp = sun_proj * sun_view;
 
