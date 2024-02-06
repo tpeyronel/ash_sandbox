@@ -18,7 +18,8 @@ use slotmap::SecondaryMap;
 use crate::{
         asset_manager::{
                 AssetManager, AssetManagerEvent, CubemapId, CullMode, ImageFormat, ImageId, IndicesVec, MagFilter,
-                MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule, WrappingMode,
+                MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule, ShaderRenderStage,
+                WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         hashmap::GetOrInsert,
@@ -529,19 +530,21 @@ impl VkAssetManager {
                         &[world_dst_set_layout, material_dst_set_layout, mesh_dst_set_layout],
                 )?;
 
+                let samples = match shader.render_stage {
+                        ShaderRenderStage::Drawing => self.swapchain_samples,
+                        _ => vk::SampleCountFlags::TYPE_1,
+                };
+
+                let render_pass = match shader.render_stage {
+                        ShaderRenderStage::PointShadowMapping => todo!(),
+                        ShaderRenderStage::DirectionalShadowMapping => self.shadow_map_render_pass,
+                        ShaderRenderStage::Drawing => self.render_pass,
+                };
+
                 let graphics_pipeline = Self::create_graphics_pipeline_for_vk_shader(
                         &self.device,
-                        if shader.disable_multisampling {
-                                vk::SampleCountFlags::TYPE_1
-                        } else {
-                                self.swapchain_samples
-                        },
-                        // TODO: clean up. Maybe make shader belong to a specific rendering stage?
-                        if shader.disable_multisampling {
-                                self.shadow_map_render_pass
-                        } else {
-                                self.render_pass
-                        },
+                        samples,
+                        render_pass,
                         *graphics_pipeline_layout,
                         !shader.disable_depth_test,
                         shader.cull_mode.into(),

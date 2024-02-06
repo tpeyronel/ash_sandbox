@@ -14,7 +14,7 @@ use gltf::{
 };
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use slotmap::{Key, SecondaryMap, SlotMap};
 use thiserror::Error;
 
@@ -254,8 +254,8 @@ pub struct ShaderDeclaration {
         #[serde(rename = "vertex-inputs")]
         pub vertex_inputs: Vec<String>,
 
-        #[serde(rename = "disable-multisampling", default)]
-        pub disable_multisampling: bool,
+        #[serde(rename = "render-stage", default)]
+        pub render_stage: ShaderRenderStage,
 }
 
 slotmap::new_key_type! { pub struct ShaderId; }
@@ -268,7 +268,7 @@ pub struct Shader {
         pub disable_depth_test: bool,
         pub cull_mode: CullMode,
         pub vertex_inputs: Vec<String>,
-        pub disable_multisampling: bool,
+        pub render_stage: ShaderRenderStage,
 }
 
 impl Shader {
@@ -296,7 +296,7 @@ impl Shader {
                         disable_depth_test: declaration.disable_depth_test,
                         cull_mode: declaration.cull_mode,
                         vertex_inputs: declaration.vertex_inputs,
-                        disable_multisampling: declaration.disable_multisampling,
+                        render_stage: declaration.render_stage,
                 })
         }
 }
@@ -328,6 +328,20 @@ impl ShaderModule {
                 let bin = std::fs::read(&output_path)?;
 
                 Ok(Self { bin })
+        }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShaderRenderStage {
+        PointShadowMapping,
+        DirectionalShadowMapping,
+        Drawing,
+}
+
+impl Default for ShaderRenderStage {
+        fn default() -> Self {
+                Self::Drawing
         }
 }
 

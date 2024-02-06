@@ -4,5 +4,5 @@ vertex-shader: "shadow_map.vert"
 vertex-inputs:
   - "positions"
 uniforms: []
-disable-multisampling: true
+render-stage: "directional-shadow-mapping"
 cull-mode: "front"
