@@ -32,8 +32,8 @@ use crate::{
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_MATERIAL_DATA,
                 SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE, SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE,
-                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS,
-                SHADER_RESOURCE_WORLD_MATRICES,
+                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX,
+                SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
         },
         util::default,
         vk::vk_renderer::{BillboardData, MaterialData, ObjectMatrices, WorldLights, WorldMatrices},
@@ -253,6 +253,9 @@ pub struct ShaderDeclaration {
 
         #[serde(rename = "vertex-inputs")]
         pub vertex_inputs: Vec<String>,
+
+        #[serde(rename = "disable-multisampling", default)]
+        pub disable_multisampling: bool,
 }
 
 slotmap::new_key_type! { pub struct ShaderId; }
@@ -265,6 +268,7 @@ pub struct Shader {
         pub disable_depth_test: bool,
         pub cull_mode: CullMode,
         pub vertex_inputs: Vec<String>,
+        pub disable_multisampling: bool,
 }
 
 impl Shader {
@@ -292,6 +296,7 @@ impl Shader {
                         disable_depth_test: declaration.disable_depth_test,
                         cull_mode: declaration.cull_mode,
                         vertex_inputs: declaration.vertex_inputs,
+                        disable_multisampling: declaration.disable_multisampling,
                 })
         }
 }
@@ -930,6 +935,12 @@ impl AssetManager {
                 assets.shader_resources.register(ShaderResource {
                         id: SHADER_RESOURCE_SKYBOX.clone(),
                         resource_type: ShaderResourceType::ImageCube,
+                        provider: ShaderResourceProvider::World,
+                });
+
+                assets.shader_resources.register(ShaderResource {
+                        id: SHADER_RESOURCE_SHADOW_MAP.clone(),
+                        resource_type: ShaderResourceType::Image2D,
                         provider: ShaderResourceProvider::World,
                 });
 

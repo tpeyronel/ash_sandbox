@@ -126,6 +126,7 @@ pub struct VkAssetManager {
 
         swapchain_samples: vk::SampleCountFlags,
         render_pass: vk::RenderPass,
+        shadow_map_render_pass: vk::RenderPass,
 
         pub meshes: SecondaryMap<MeshId, VkMesh>,
         pub images: SecondaryMap<ImageId, VkModelImage>,
@@ -145,6 +146,7 @@ impl VkAssetManager {
                 vk_context: &mut VkContext,
                 swapchain_samples: vk::SampleCountFlags,
                 render_pass: vk::RenderPass,
+                shadow_map_render_pass: vk::RenderPass,
                 concurrent_frames: usize,
         ) -> AnyResult<Self> {
                 assert!(concurrent_frames > 0, "Frames in flight must be greater to zero");
@@ -165,6 +167,7 @@ impl VkAssetManager {
 
                         swapchain_samples,
                         render_pass,
+                        shadow_map_render_pass,
 
                         meshes: SecondaryMap::new(),
                         images: SecondaryMap::new(),
@@ -528,8 +531,17 @@ impl VkAssetManager {
 
                 let graphics_pipeline = Self::create_graphics_pipeline_for_vk_shader(
                         &self.device,
-                        self.swapchain_samples,
-                        self.render_pass,
+                        if shader.disable_multisampling {
+                                vk::SampleCountFlags::TYPE_1
+                        } else {
+                                self.swapchain_samples
+                        },
+                        // TODO: clean up. Maybe make shader belong to a specific rendering stage?
+                        if shader.disable_multisampling {
+                                self.shadow_map_render_pass
+                        } else {
+                                self.render_pass
+                        },
                         *graphics_pipeline_layout,
                         !shader.disable_depth_test,
                         shader.cull_mode.into(),

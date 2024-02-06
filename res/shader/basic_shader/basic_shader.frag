@@ -1,6 +1,7 @@
 #version 450
 #extension GL_EXT_debug_printf : enable
 
+#resource sampler2D u_shadow_map : SHADOW_MAP;
 #resource WorldMatrices u_world_matrices : WORLD_MATRICES;
 #resource WorldLights u_lights : WORLD_LIGHTS;
 #resource MaterialData u_material : MATERIAL_DATA;
@@ -10,6 +11,7 @@
 layout (location = 0) in vec3 i_frag_pos;
 layout (location = 1) in vec3 i_normal;
 layout (location = 2) in vec2 i_tex_coord;
+layout (location = 3) in vec4 i_frag_pos_sun_space;
 
 layout (location = 0) out vec4 o_output;
 
@@ -31,6 +33,22 @@ float calc_attenuation(vec3 kc_kl_kq, float distance) {
         return 1.0 / (kc_kl_kq.x + kc_kl_kq.y * distance + kc_kl_kq.z * distance * distance);
 }
 
+float calc_not_in_shadow() {
+        // Note: we only need to normalize xy and not z, because depth is already in [0, 1] range
+
+        vec3 proj_coords = i_frag_pos_sun_space.xyz;
+        vec2 uv = i_frag_pos_sun_space.xy * 0.5 + 0.5; // from [-1, 1] to [0, 1]
+        uv.y = 1.0 - uv.y;
+
+        float stored_depth = texture(u_shadow_map, uv).r;
+        float current_depth = min(proj_coords.z, 1.0);
+        float depth_bias = 0.00001;
+
+        float not_in_shadow = float(current_depth <= stored_depth + depth_bias);
+
+        return not_in_shadow;
+}
+
 vec3 calc_dir_light(
         WorldDirectionalLight dir_light,
         float ambient_strength,
@@ -49,7 +67,9 @@ vec3 calc_dir_light(
         vec3 diffuse = diffuse_texel * calc_diffuse(diffuse_strength, normal, dir_light_dir, dir_light_color);
         vec3 specular = specular_texel * calc_specular(camera_rdir, specular_strength, normal, dir_light_dir, dir_light_color, shininess);
 
-        return ambient + diffuse + specular;
+        float shadow = calc_not_in_shadow();
+
+        return ambient + (shadow * (diffuse + specular));
 }
 
 vec3 calc_point_light(

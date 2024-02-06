@@ -334,7 +334,8 @@ impl Application {
                 //         },
                 // );
 
-                let _shadow_map_shader = asset_manager.load_shader_from_yaml(Path::new("res/shader/shadow_map/shadow_map.yaml"))?;
+                let _shadow_map_shader =
+                        asset_manager.load_shader_from_yaml(Path::new("res/shader/shadow_map/shadow_map.yaml"))?;
 
                 let _basic_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/basic_shader/basic_shader.yaml"))?;
@@ -631,30 +632,32 @@ fn spawn_entities(mut commands: Commands) {
 
         commands.add(CmdAddModelInstanceByName::from_str(backpack, "backpack"));
 
-        let billboard = commands
-                .spawn()
-                .insert(Transform {
-                        translation: Vec3::new(0.0, 0.25, 0.0),
-                        scale: Vec3::splat(0.5) * Vec3::new(1.0, 0.25, 1.0),
-                        ..Transform::identity()
-                })
-                .insert(Billboard)
-                .insert(Parent(backpack))
-                .id();
+        // TODO: make only some models (or materials?) cast shadow.
 
-        commands.add(CmdAddModelInstanceByName::from_str(billboard, "health-bar"));
+        // let billboard = commands
+        //         .spawn()
+        //         .insert(Transform {
+        //                 translation: Vec3::new(0.0, 0.25, 0.0),
+        //                 scale: Vec3::splat(0.5) * Vec3::new(1.0, 0.25, 1.0),
+        //                 ..Transform::identity()
+        //         })
+        //         .insert(Billboard)
+        //         .insert(Parent(backpack))
+        //         .id();
 
-        let static_billboard = commands
-                .spawn()
-                .insert(Transform {
-                        translation: Vec3::new(0.0, 1.5, 0.0),
-                        scale: Vec3::splat(2.5) * Vec3::new(1.0, 0.5, 1.0),
-                        ..Transform::identity()
-                })
-                .insert(Billboard)
-                .id();
+        // commands.add(CmdAddModelInstanceByName::from_str(billboard, "health-bar"));
 
-        commands.add(CmdAddModelInstanceByName::from_str(static_billboard, "health-bar"));
+        // let static_billboard = commands
+        //         .spawn()
+        //         .insert(Transform {
+        //                 translation: Vec3::new(0.0, 1.5, 0.0),
+        //                 scale: Vec3::splat(2.5) * Vec3::new(1.0, 0.5, 1.0),
+        //                 ..Transform::identity()
+        //         })
+        //         .insert(Billboard)
+        //         .id();
+
+        // commands.add(CmdAddModelInstanceByName::from_str(static_billboard, "health-bar"));
 
         let grass_plane = commands
                 .spawn()

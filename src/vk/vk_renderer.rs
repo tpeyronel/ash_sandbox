@@ -15,13 +15,13 @@ use super::{
         vk_context::VkContext,
         vk_image::{VkImage, VkImageCreateInfo},
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
-        vk_wrapper::{VkDevice, VkFramebuffer, VkImageView, VkRenderPass, VkSemaphore, VmaAllocator},
+        vk_wrapper::{VkDevice, VkFramebuffer, VkImageView, VkRenderPass, VkSampler, VkSemaphore, VmaAllocator},
 };
 use crate::{
         application::InterpGlobalTransform,
-        asset_manager::{AssetManager, AssetManagerEvent, CubemapId, MaterialId, MaterialMesh, MeshId, ShaderId},
+        asset_manager::{AssetManager, AssetManagerEvent, MaterialId, MaterialMesh, MeshId, ShaderId},
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
-        constants::{SHADOW_MAP_HEIGHT, SHADOW_MAP_WIDTH},
+        constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE, SHADOW_MAP_HEIGHT, SHADOW_MAP_WIDTH},
         hashmap::HashMap,
         model_instance_manager::ModelInstance,
         my_glm::*,
@@ -29,7 +29,8 @@ use crate::{
         shader_resource::ShaderResourceId,
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_OBJECT_MATRICES,
-                SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
+                SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS,
+                SHADER_RESOURCE_WORLD_MATRICES,
         },
         skybox::Skybox,
         util::RefIntoSlice,
@@ -56,6 +57,7 @@ pub struct VkRenderer {
         shadow_map_img: VkImage,
         shadow_map_img_view: VkImageView,
         shadow_map_framebuffer: VkFramebuffer,
+        shadow_map_sampler: VkSampler,
 
         setup_cmd_buffer: VkReusableCommandBuffer,
 
@@ -116,6 +118,8 @@ impl VkRenderer {
                         *shadow_map_img_view,
                 )?;
 
+                let shadow_map_sampler = Self::create_shadow_map_sampler(&vk_context.device)?;
+
                 let setup_cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
                 trace!("Allocated VkCommandBuffers");
@@ -125,8 +129,13 @@ impl VkRenderer {
                         .map(|_| VkFrameData::new(&mut vk_context))
                         .collect::<AnyResult<Vec<VkFrameData>>>()?;
 
-                let vk_asset_manager =
-                        VkAssetManager::new(&mut vk_context, swapchain.samples, *render_pass, max_concurrent_frames)?;
+                let vk_asset_manager = VkAssetManager::new(
+                        &mut vk_context,
+                        swapchain.samples,
+                        *render_pass,
+                        *shadow_map_render_pass,
+                        max_concurrent_frames,
+                )?;
                 trace!("Created VkAssetManager");
 
                 let imgui_renderer_options = imgui_rs_vulkan_renderer::Options {
@@ -163,6 +172,7 @@ impl VkRenderer {
                         shadow_map_img,
                         shadow_map_img_view,
                         shadow_map_framebuffer,
+                        shadow_map_sampler,
 
                         setup_cmd_buffer,
                         max_concurrent_frames,
@@ -209,6 +219,7 @@ impl Renderer for VkRenderer {
                 let view_mat = inverted_view_mat.inverse();
 
                 let proj_mat = camera_projection.calc_proj_matrix(aspect_ratio);
+                // let proj_mat = Mat4::orthographic_rh(-10.0, 10.0, -10.0, 10.0, 0.0, 20.0);
 
                 let world_matrices = WorldMatrices {
                         view_pos: Vec4::from((camera_pos, 1.0)),
@@ -236,11 +247,18 @@ impl Renderer for VkRenderer {
                         kc_kl_kq: Vec4::new(point_light.kc, point_light.kl, point_light.kq, 0.0),
                 };
 
-                let dir_light = world.query::<&DirectionalLight>().iter(world).next().unwrap();
+                let dir_light_component = world.query::<&DirectionalLight>().iter(world).next().unwrap();
+
+                let sun_dir = dir_light_component.direction.normalize_or_zero();
+                let sun_pos = camera_pos - sun_dir * 100.0;
+                let sun_view = Mat4::look_at_rh(sun_pos, camera_pos, Vec3::Y);
+                let sun_proj = Mat4::orthographic_rh(-10.0, 10.0, -10.0, 10.0, 0.0, 200.0);
+                let sun_vp = sun_proj * sun_view;
 
                 let dir_light = WorldDirectionalLight {
-                        direction: Vec4::from((dir_light.direction, 0.0)),
-                        color: Vec4::from((dir_light.color, 1.0)),
+                        vp: sun_vp,
+                        direction: Vec4::from((dir_light_component.direction, 0.0)),
+                        color: Vec4::from((dir_light_component.color, 1.0)),
                 };
 
                 let (spotlight_transform, spotlight_component) = world
@@ -340,7 +358,17 @@ impl Renderer for VkRenderer {
                         &mut vk_render_scene,
                 )?;
 
+                Self::write_image_resource(
+                        &self.vk_asset_manager,
+                        &SHADER_RESOURCE_SHADOW_MAP,
+                        *self.shadow_map_img_view,
+                        *self.shadow_map_sampler,
+                        &mut self.world_shader_resource_descriptors_data,
+                );
+
                 unsafe {
+                        self.map_shadows(&asset_manager, &vk_render_scene)?;
+
                         let time = self.creation_instant.elapsed().as_secs_f32();
                         let intensity = (((time.sin() + 1.0) / 2.0) * 0.05) + 0.05;
 
@@ -378,7 +406,7 @@ impl Renderer for VkRenderer {
                                 slice::from_ref(&self.swapchain.scissor),
                         );
 
-                        self.draw_scene(*frame_data.draw_cmd_buffer, &asset_manager, vk_render_scene)?;
+                        self.draw_scene(*frame_data.draw_cmd_buffer, &asset_manager, &vk_render_scene)?;
 
                         self.imgui_renderer
                                 .as_mut()
@@ -404,6 +432,7 @@ impl Renderer for VkRenderer {
                         drop(self.imgui_renderer.take().unwrap());
                         self.frames_data.clear();
                         self.setup_cmd_buffer.destroy();
+                        self.shadow_map_sampler.destroy();
                         self.shadow_map_framebuffer.destroy();
                         self.shadow_map_img_view.destroy();
                         self.shadow_map_img.destroy();
@@ -630,7 +659,7 @@ impl VkRenderer {
                         stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
                         stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
                         initial_layout: vk::ImageLayout::UNDEFINED,
-                        final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                        final_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 }];
 
                 let depth_attachment_ref = vk::AttachmentReference {
@@ -651,7 +680,7 @@ impl VkRenderer {
                         vk::SubpassDependency {
                                 src_subpass: vk::SUBPASS_EXTERNAL,
                                 dst_subpass: 0,
-                                src_stage_mask: vk::PipelineStageFlags::LATE_FRAGMENT_TESTS, // Because we skip fragment shader, this can be early_.. instead of late_.. i think
+                                src_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
                                 dst_stage_mask: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
                                 src_access_mask: vk::AccessFlags::NONE,
                                 dst_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
@@ -661,9 +690,9 @@ impl VkRenderer {
                                 src_subpass: 0,
                                 dst_subpass: vk::SUBPASS_EXTERNAL,
                                 src_stage_mask: vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                                dst_stage_mask: vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                                dst_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
                                 src_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                                dst_access_mask: vk::AccessFlags::NONE,
+                                dst_access_mask: vk::AccessFlags::SHADER_READ,
                                 dependency_flags: vk::DependencyFlags::empty(),
                         },
                 ];
@@ -695,7 +724,7 @@ impl VkRenderer {
                                 array_layers: 1,
                                 samples: vk::SampleCountFlags::TYPE_1,
                                 tiling: vk::ImageTiling::OPTIMAL,
-                                usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                                usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                                 queue_family_indices: None,
                                 initial_layout: vk::ImageLayout::UNDEFINED,
 
@@ -745,6 +774,29 @@ impl VkRenderer {
                         .layers(1);
 
                 unsafe { VkFramebuffer::new(device, &framebuffer_cinfo) }
+        }
+
+        fn create_shadow_map_sampler(device: &Rc<VkDevice>) -> VkResult<VkSampler> {
+                let vk_sampler_cinfo = vk::SamplerCreateInfo {
+                        mag_filter: vk::Filter::NEAREST,
+                        min_filter: vk::Filter::NEAREST,
+                        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                        address_mode_u: vk::SamplerAddressMode::CLAMP_TO_BORDER,
+                        address_mode_v: vk::SamplerAddressMode::CLAMP_TO_BORDER,
+                        address_mode_w: vk::SamplerAddressMode::REPEAT,
+                        mip_lod_bias: 0.0,
+                        anisotropy_enable: ENABLE_ANISOTROPY as u32,
+                        max_anisotropy: 1.0,
+                        compare_enable: vk::FALSE,
+                        compare_op: vk::CompareOp::NEVER,
+                        min_lod: 0.0,
+                        max_lod: LOD_CLAMP_NONE,
+                        border_color: vk::BorderColor::FLOAT_OPAQUE_WHITE,
+                        unnormalized_coordinates: vk::FALSE,
+                        ..Default::default()
+                };
+
+                Ok(unsafe { VkSampler::new(Rc::clone(device), &vk_sampler_cinfo)? })
         }
 
         // TODO: check that T is compatible with the shader resource type.
@@ -859,7 +911,7 @@ impl VkRenderer {
                 &self,
                 cmd_buffer: vk::CommandBuffer,
                 asset_manager: &AssetManager,
-                scene: VkRenderScene,
+                scene: &VkRenderScene,
         ) -> VkResult<()> {
                 if let Some(skybox_offset) = scene.skybox_object_matrices_offset {
                         let skybox_model = asset_manager.model(asset_manager.skybox_model);
@@ -878,8 +930,8 @@ impl VkRenderer {
                         self.draw_shader_group(asset_manager, cmd_buffer, skybox_material.shader, &shader_group)?;
                 }
 
-                for (shader_id, shader_group) in scene.mesh_instances {
-                        self.draw_shader_group(asset_manager, cmd_buffer, shader_id, &shader_group)?;
+                for (shader_id, shader_group) in &scene.mesh_instances {
+                        self.draw_shader_group(asset_manager, cmd_buffer, shader_id, shader_group)?;
                 }
 
                 Ok(())
@@ -1130,6 +1182,86 @@ impl VkRenderer {
                 });
         }
 
+        unsafe fn map_shadows(&self, asset_manager: &AssetManager, scene: &VkRenderScene) -> VkResult<()> {
+                let frame_data = &self.frames_data[self.framei];
+                let cmd_buffer = *frame_data.draw_cmd_buffer;
+
+                let clear_values = [vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+                }];
+
+                let shadow_map_rect = vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D {
+                                width: SHADOW_MAP_WIDTH,
+                                height: SHADOW_MAP_HEIGHT,
+                        },
+                };
+
+                // NOTE: we negate the height so that the depth map is not upside down. Because of this,
+                // in the fragment shader we have to flip the y coordinate of textures. If we didn't negate
+                // the height, we could skip that step in the fragment shader, but then the cull mode would
+                // be "reversed", i.e., front cull would actually mean back cull and viceversa, which is kinda confusing.
+                let shadow_map_viewport = vk::Viewport {
+                        x: 0.0,
+                        y: SHADOW_MAP_HEIGHT as f32,
+                        width: SHADOW_MAP_WIDTH as f32,
+                        height: -(SHADOW_MAP_HEIGHT as f32), // flip to change coordinate system
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                };
+
+                let render_pass_binfo = vk::RenderPassBeginInfo::builder()
+                        .render_pass(*self.shadow_map_render_pass)
+                        .framebuffer(*self.shadow_map_framebuffer)
+                        .render_area(shadow_map_rect)
+                        .clear_values(&clear_values);
+
+                self.vk_context.device.cmd_begin_render_pass(
+                        cmd_buffer,
+                        &render_pass_binfo,
+                        vk::SubpassContents::INLINE,
+                );
+
+                self.vk_context
+                        .device
+                        .cmd_set_viewport(cmd_buffer, 0, slice::from_ref(&shadow_map_viewport));
+
+                self.vk_context
+                        .device
+                        .cmd_set_scissor(cmd_buffer, 0, slice::from_ref(&shadow_map_rect));
+
+                let shadow_map_shader_id = asset_manager.shader_names()["shadow-map"];
+                let shadow_map_shader = &self.vk_asset_manager.shaders[shadow_map_shader_id];
+
+                self.vk_context.device.cmd_bind_pipeline(
+                        cmd_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        *shadow_map_shader.graphics_pipeline,
+                );
+
+                self.vk_context.device.cmd_bind_descriptor_sets(
+                        cmd_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        *shadow_map_shader.graphics_pipeline_layout,
+                        VkDescriptorSetIndex::World.value(),
+                        &[shadow_map_shader.world_dst_set[self.framei]],
+                        &[],
+                );
+
+                for (_, shader_group) in &scene.mesh_instances {
+                        for (_, material_group) in shader_group {
+                                for mesh_instance in material_group {
+                                        self.draw_mesh_instance(cmd_buffer, shadow_map_shader, mesh_instance);
+                                }
+                        }
+                }
+
+                self.vk_context.device.cmd_end_render_pass(cmd_buffer);
+
+                Ok(())
+        }
+
         fn update_world_descriptors(
                 device: &VkDevice,
                 world_shader_resource_descriptors_data: &HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
@@ -1242,6 +1374,7 @@ pub struct WorldMatrices {
 #[repr(C)]
 #[derive(ShaderStruct)]
 struct WorldDirectionalLight {
+        vp: Mat4,
         direction: Vec4,
         color: Vec4,
 }
