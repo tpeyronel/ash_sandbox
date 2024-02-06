@@ -585,7 +585,7 @@ fn spawn_entities(mut commands: Commands) {
                 .insert(Spotlight {
                         radius_angle: 45.0f32.to_radians(),
                         inner_radius_percentage: 0.5,
-                        color: Vec3::new(1.0, 1.0, 1.0),
+                        color: Vec3::ZERO,
                         kc: 1.0,
                         kl: 0.0,
                         kq: 1.0,

@@ -33,7 +33,7 @@ float calc_attenuation(vec3 kc_kl_kq, float distance) {
         return 1.0 / (kc_kl_kq.x + kc_kl_kq.y * distance + kc_kl_kq.z * distance * distance);
 }
 
-float calc_not_in_shadow() {
+float calc_shadow() {
         // Note: we only need to normalize xy and not z, because depth is already in [0, 1] range
 
         vec3 proj_coords = i_frag_pos_sun_space.xyz;
@@ -44,9 +44,17 @@ float calc_not_in_shadow() {
         float current_depth = min(proj_coords.z, 1.0);
         float depth_bias = 0.00001;
 
-        float not_in_shadow = float(current_depth <= stored_depth + depth_bias);
+        float shadow = 0.0;
+        vec2 texel_size_in_uv = 1.0 / textureSize(u_shadow_map, 0);
+        for(int x = -1; x <= 1; ++x) {
+                for(int y = -1; y <= 1; ++y) {
+                        float pcf_depth = texture(u_shadow_map, uv + vec2(x, y) * texel_size_in_uv).r;
+                        shadow += float(current_depth <= pcf_depth + depth_bias);
+                }
+        }
+        shadow /= 9.0;
 
-        return not_in_shadow;
+        return shadow;
 }
 
 vec3 calc_dir_light(
@@ -67,7 +75,7 @@ vec3 calc_dir_light(
         vec3 diffuse = diffuse_texel * calc_diffuse(diffuse_strength, normal, dir_light_dir, dir_light_color);
         vec3 specular = specular_texel * calc_specular(camera_rdir, specular_strength, normal, dir_light_dir, dir_light_color, shininess);
 
-        float shadow = calc_not_in_shadow();
+        float shadow = calc_shadow();
 
         return ambient + (shadow * (diffuse + specular));
 }
