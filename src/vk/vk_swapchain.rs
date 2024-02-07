@@ -9,6 +9,7 @@ use crate::AnyResult;
 
 use super::{
         vk_image::{VkImage, VkImageCreateInfo},
+        vk_util,
         vk_wrapper::{
                 impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkDevice, VkFramebuffer,
                 VkImageView, VkInstance, VkSurface, VmaAllocator,
@@ -341,7 +342,7 @@ impl VkSwapchain {
         }
 
         fn choose_depth_format(instance: &VkInstance, physical_device: vk::PhysicalDevice) -> VkResult<vk::Format> {
-                let fmt_candidates = [
+                let candidates = [
                         vk::Format::D32_SFLOAT,
                         vk::Format::D32_SFLOAT_S8_UINT,
                         vk::Format::D24_UNORM_S8_UINT,
@@ -351,11 +352,7 @@ impl VkSwapchain {
 
                 let features = vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT;
 
-                fmt_candidates.into_iter().find(|&fmt| {
-                        let fmt_props = unsafe { instance.get_physical_device_format_properties(physical_device, fmt) };
-
-                        (fmt_props.optimal_tiling_features & features) == features
-                }).ok_or(vk::Result::ERROR_FORMAT_NOT_SUPPORTED)
+                vk_util::find_best_format_for_optimal_tiling(instance, physical_device, &candidates, features)
         }
 
         fn clamp_image_count(image_count: u32, surface_capabilities: &vk::SurfaceCapabilitiesKHR) -> u32 {

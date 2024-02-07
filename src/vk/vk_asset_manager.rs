@@ -127,6 +127,7 @@ pub struct VkAssetManager {
 
         swapchain_samples: vk::SampleCountFlags,
         render_pass: vk::RenderPass,
+        cube_shadow_map_render_pass: vk::RenderPass,
         shadow_map_render_pass: vk::RenderPass,
 
         pub meshes: SecondaryMap<MeshId, VkMesh>,
@@ -147,6 +148,7 @@ impl VkAssetManager {
                 vk_context: &mut VkContext,
                 swapchain_samples: vk::SampleCountFlags,
                 render_pass: vk::RenderPass,
+                cube_shadow_map_render_pass: vk::RenderPass,
                 shadow_map_render_pass: vk::RenderPass,
                 concurrent_frames: usize,
         ) -> AnyResult<Self> {
@@ -168,6 +170,7 @@ impl VkAssetManager {
 
                         swapchain_samples,
                         render_pass,
+                        cube_shadow_map_render_pass,
                         shadow_map_render_pass,
 
                         meshes: SecondaryMap::new(),
@@ -288,16 +291,20 @@ impl VkAssetManager {
         fn create_graphics_pipeline_layout(
                 device: &Rc<VkDevice>,
                 dst_set_layouts: &[vk::DescriptorSetLayout],
+                push_constants_size: u32,
         ) -> VkResult<VkPipelineLayout> {
-                // let push_constant_range = vk::PushConstantRange {
-                //         stage_flags: vk::ShaderStageFlags::VERTEX,
-                //         offset: 0,
-                //         size: std::mem::size_of::<MatricesMMvp>() as u32,
-                // };
+                let push_constant_range = vk::PushConstantRange {
+                        stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        offset: 0,
+                        size: push_constants_size,
+                };
 
-                let layout_cinfo = vk::PipelineLayoutCreateInfo::builder()
-                        // .push_constant_ranges(std::slice::from_ref(&push_constant_range))
-                        .set_layouts(dst_set_layouts);
+                let layout_cinfo = vk::PipelineLayoutCreateInfo::builder().set_layouts(dst_set_layouts);
+                let layout_cinfo = if push_constants_size > 0 {
+                        layout_cinfo.push_constant_ranges(std::slice::from_ref(&push_constant_range))
+                } else {
+                        layout_cinfo
+                };
 
                 unsafe { VkPipelineLayout::new(device, &layout_cinfo) }
         }
@@ -528,6 +535,7 @@ impl VkAssetManager {
                 let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
                         &self.device,
                         &[world_dst_set_layout, material_dst_set_layout, mesh_dst_set_layout],
+                        shader.push_constants_size,
                 )?;
 
                 let samples = match shader.render_stage {
@@ -536,7 +544,7 @@ impl VkAssetManager {
                 };
 
                 let render_pass = match shader.render_stage {
-                        ShaderRenderStage::PointShadowMapping => todo!(),
+                        ShaderRenderStage::PointShadowMapping => self.cube_shadow_map_render_pass,
                         ShaderRenderStage::DirectionalShadowMapping => self.shadow_map_render_pass,
                         ShaderRenderStage::Drawing => self.render_pass,
                 };

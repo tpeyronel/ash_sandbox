@@ -1,6 +1,7 @@
 #version 450
 #extension GL_EXT_debug_printf : enable
 
+#resource samplerCube u_cube_shadow_map : CUBE_SHADOW_MAP;
 #resource sampler2D u_shadow_map : SHADOW_MAP;
 #resource WorldMatrices u_world_matrices : WORLD_MATRICES;
 #resource WorldLights u_lights : WORLD_LIGHTS;
@@ -80,6 +81,19 @@ vec3 calc_dir_light(
         return ambient + (shadow * (diffuse + specular));
 }
 
+float calc_point_shadow() {
+        vec3 point_light_to_frag = i_frag_pos - u_lights.point_light.pos.xyz;
+
+        float current_depth = length(point_light_to_frag);
+        float stored_depth = texture(u_cube_shadow_map, point_light_to_frag).r;
+
+        // float direct_measure = dot(normalize(i_normal), normalize(-point_light_to_frag));
+        // float depth_bias = 0.01 / max(direct_measure, 0.001) - 0.01 + 0.0001;
+        float depth_bias = 0.005;
+
+        return float(current_depth <= stored_depth + depth_bias);
+}
+
 vec3 calc_point_light(
         WorldPointLight point_light,
         float ambient_strength,
@@ -101,7 +115,9 @@ vec3 calc_point_light(
         vec3 diffuse = attenuation * diffuse_texel * calc_diffuse(diffuse_strength, normal, point_light_dir, point_light_color);
         vec3 specular = attenuation * specular_texel * calc_specular(camera_rdir, specular_strength, normal, point_light_dir, point_light_color, shininess);
 
-        return ambient + diffuse + specular;
+        float shadow = calc_point_shadow();
+
+        return ambient + (shadow * (diffuse + specular));
 }
 
 vec3 calc_spotlight(

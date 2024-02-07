@@ -337,6 +337,9 @@ impl Application {
                 let _shadow_map_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/shadow_map/shadow_map.yaml"))?;
 
+                let _cube_shadow_map_shader = asset_manager
+                        .load_shader_from_yaml(Path::new("res/shader/cube_shadow_map/cube_shadow_map.yaml"))?;
+
                 let _basic_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/basic_shader/basic_shader.yaml"))?;
                 let color_shader =
@@ -685,7 +688,7 @@ fn spawn_entities(mut commands: Commands) {
                 })
                 .id();
 
-        commands.add(CmdAddModelInstanceByName::from_str(light, "lit-icosphere"));
+        // commands.add(CmdAddModelInstanceByName::from_str(light, "lit-icosphere"));
 
         let _dir_light = commands
                 .spawn()

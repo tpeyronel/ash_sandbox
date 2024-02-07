@@ -57,7 +57,9 @@ impl ShaderResourceType {
                         ShaderResourceType::Struct(ShaderStructDeclaration { type_name, fields }) => {
                                 let body: String = fields
                                         .iter()
-                                        .map(|f| format!("\t{} {};", f.field_type.glsl_type_name(), f.field_name))
+                                        .map(|f| {
+                                                format!("\t{};", f.field_type.glsl_type_name_with_field(&f.field_name))
+                                        })
                                         .collect::<Vec<String>>()
                                         .join("\n");
 
@@ -90,6 +92,9 @@ impl ShaderStructDeclaration {
                                 ShaderStructFieldType::Vec2 => std::mem::size_of::<crate::my_glm::Vec2>(),
                                 ShaderStructFieldType::Vec4 => std::mem::size_of::<crate::my_glm::Vec4>(),
                                 ShaderStructFieldType::Mat4 => std::mem::size_of::<crate::my_glm::Mat4>(),
+                                ShaderStructFieldType::Array { element_type, length } => {
+                                        element_type.compute_size() * length
+                                },
                         })
                         .sum()
         }
@@ -98,7 +103,7 @@ impl ShaderStructDeclaration {
                 let fields = self
                         .fields
                         .iter()
-                        .map(|f| format!("\t{} {};", f.field_type.glsl_type_name(), f.field_name))
+                        .map(|f| format!("\t{};", f.field_type.glsl_type_name_with_field(&f.field_name)))
                         .collect::<Vec<String>>()
                         .join("\n");
 
@@ -122,15 +127,44 @@ pub enum ShaderStructFieldType {
         Vec2,
         Vec4,
         Mat4,
+        Array {
+                element_type: Box<ShaderStructFieldType>,
+                length: usize,
+        },
 }
 
 impl ShaderStructFieldType {
+        fn compute_size(&self) -> usize {
+                match &self {
+                        ShaderStructFieldType::Struct(declaration) => declaration.compute_size(),
+                        ShaderStructFieldType::Vec2 => std::mem::size_of::<crate::my_glm::Vec2>(),
+                        ShaderStructFieldType::Vec4 => std::mem::size_of::<crate::my_glm::Vec4>(),
+                        ShaderStructFieldType::Mat4 => std::mem::size_of::<crate::my_glm::Mat4>(),
+                        ShaderStructFieldType::Array { element_type, length } => element_type.compute_size() * length,
+                }
+        }
+
         pub fn glsl_type_name(&self) -> &str {
                 match self {
                         ShaderStructFieldType::Vec2 => "vec2",
                         ShaderStructFieldType::Vec4 => "vec4",
                         ShaderStructFieldType::Mat4 => "mat4",
                         ShaderStructFieldType::Struct(ShaderStructDeclaration { type_name, .. }) => &type_name,
+                        ShaderStructFieldType::Array { element_type, .. } => element_type.glsl_type_name(),
+                }
+        }
+
+        pub fn glsl_type_name_with_field(&self, field_name: &str) -> String {
+                match self {
+                        ShaderStructFieldType::Vec2 => format!("vec2 {}", field_name),
+                        ShaderStructFieldType::Vec4 => format!("vec4 {}", field_name),
+                        ShaderStructFieldType::Mat4 => format!("mat4 {}", field_name),
+                        ShaderStructFieldType::Struct(ShaderStructDeclaration { type_name, .. }) => {
+                                format!("{} {}", type_name, field_name)
+                        },
+                        ShaderStructFieldType::Array { element_type, length } => {
+                                format!("{} {}[{}]", element_type.glsl_type_name(), field_name, length)
+                        },
                 }
         }
 }
@@ -163,5 +197,17 @@ where
 {
         fn shader_struct_field_type() -> ShaderStructFieldType {
                 ShaderStructFieldType::Struct(Self::shader_struct_declaration())
+        }
+}
+
+impl<T, const N: usize> ShaderStructFieldTypeProvider for [T; N]
+where
+        T: ShaderStructFieldTypeProvider,
+{
+        fn shader_struct_field_type() -> ShaderStructFieldType {
+                ShaderStructFieldType::Array {
+                        element_type: Box::new(T::shader_struct_field_type()),
+                        length: N,
+                }
         }
 }

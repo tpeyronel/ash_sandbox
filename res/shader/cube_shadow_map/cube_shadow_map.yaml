@@ -1,0 +1,10 @@
+---
+name: "cube-shadow-map"
+vertex-shader: "cube_shadow_map.vert"
+fragment-shader: "cube_shadow_map.frag"
+vertex-inputs:
+  - "positions"
+uniforms: []
+render-stage: "point-shadow-mapping"
+cull-mode: "back" # (actually front)
+push-constants-size: 4

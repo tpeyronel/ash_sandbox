@@ -39,3 +39,15 @@ impl<T: Deref<Target = D>, D: 'static> DerefIntoSlice<D> for T {
 pub fn default<T: Default>() -> T {
         Default::default()
 }
+
+pub trait RefIntoBytesSlice {
+        unsafe fn into_bytes_slice(&self) -> &[u8];
+}
+
+impl<T: 'static> RefIntoBytesSlice for T {
+        unsafe fn into_bytes_slice(&self) -> &[u8] {
+                let data = self as *const _ as *const u8;
+                let len = std::mem::size_of::<T>();
+                unsafe { std::slice::from_raw_parts(data, len) }
+        }
+}

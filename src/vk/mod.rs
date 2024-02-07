@@ -7,5 +7,6 @@ mod vk_descriptor_set_layout_cache;
 mod vk_image;
 pub mod vk_renderer;
 mod vk_swapchain;
+mod vk_util;
 #[macro_use]
 mod vk_wrapper;

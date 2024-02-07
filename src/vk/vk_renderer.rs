@@ -15,7 +15,10 @@ use super::{
         vk_context::VkContext,
         vk_image::{VkImage, VkImageCreateInfo},
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
-        vk_wrapper::{VkDevice, VkFramebuffer, VkImageView, VkRenderPass, VkSampler, VkSemaphore, VmaAllocator},
+        vk_util,
+        vk_wrapper::{
+                VkDevice, VkFramebuffer, VkImageView, VkInstance, VkRenderPass, VkSampler, VkSemaphore, VmaAllocator,
+        },
 };
 use crate::{
         application::InterpGlobalTransform,
@@ -28,12 +31,12 @@ use crate::{
         renderer::Renderer,
         shader_resource::ShaderResourceId,
         shader_resources::{
-                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_OBJECT_MATRICES,
-                SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS,
-                SHADER_RESOURCE_WORLD_MATRICES,
+                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_CUBE_SHADOW_MAP, SHADER_RESOURCE_MATERIAL_DATA,
+                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX,
+                SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
         },
         skybox::Skybox,
-        util::RefIntoSlice,
+        util::{RefIntoBytesSlice, RefIntoSlice},
 };
 use crate::{
         constants::{DESIRED_SWAPCHAIN_IMG_COUNT, MAX_CONCURRENT_FRAMES},
@@ -51,6 +54,7 @@ pub struct VkRenderer {
         swapchain: VkSwapchain,
         swapchain_outdated_causes: VkSwapchainOutdatedCauseFlags,
 
+        cube_shadow_map_render_pass: VkRenderPass,
         shadow_map_render_pass: VkRenderPass,
         render_pass: VkRenderPass,
 
@@ -58,6 +62,14 @@ pub struct VkRenderer {
         shadow_map_img_view: VkImageView,
         shadow_map_framebuffer: VkFramebuffer,
         shadow_map_sampler: VkSampler,
+
+        cube_shadow_map_img: VkImage,
+        cube_shadow_map_img_view: VkImageView, // For entire cube
+        cube_shadow_map_img_views: [VkImageView; 6],
+        cube_shadow_map_depth_img: VkImage,
+        cube_shadow_map_depth_img_view: VkImageView,
+        cube_shadow_map_framebuffers: [VkFramebuffer; 6],
+        cube_shadow_map_sampler: VkSampler,
 
         setup_cmd_buffer: VkReusableCommandBuffer,
 
@@ -99,8 +111,22 @@ impl VkRenderer {
                 )?;
                 trace!("Created VkRenderPass");
 
+                let shadow_map_depth_format = swapchain.depth_format;
+
                 let shadow_map_render_pass =
-                        Self::create_shadow_map_render_pass(&vk_context.device, swapchain.depth_format)?;
+                        Self::create_shadow_map_render_pass(&vk_context.device, shadow_map_depth_format)?;
+                trace!("Created shadow map VkRenderPass");
+
+                let cube_shadow_map_color_format =
+                        Self::choose_cube_shadow_map_color_format(&vk_context.instance, **vk_context.pdevice)?;
+
+                let cube_shadow_map_depth_format = shadow_map_depth_format;
+
+                let cube_shadow_map_render_pass = Self::create_cube_shadow_map_render_pass(
+                        &vk_context.device,
+                        cube_shadow_map_color_format,
+                        cube_shadow_map_depth_format,
+                )?;
                 trace!("Created shadow map VkRenderPass");
 
                 swapchain.create_framebuffers(*render_pass)?;
@@ -109,7 +135,7 @@ impl VkRenderer {
                 let (shadow_map_img, shadow_map_img_view) = Self::create_shadow_map_img_and_view(
                         Rc::clone(&vk_context.device),
                         Rc::clone(&vk_context.allocator),
-                        swapchain.depth_format,
+                        shadow_map_depth_format,
                 )?;
 
                 let shadow_map_framebuffer = Self::create_shadow_map_framebuffer(
@@ -119,6 +145,29 @@ impl VkRenderer {
                 )?;
 
                 let shadow_map_sampler = Self::create_shadow_map_sampler(&vk_context.device)?;
+
+                let (cube_shadow_map_img, cube_shadow_map_img_view, cube_shadow_map_img_views) =
+                        Self::create_cube_shadow_map_img_and_views(
+                                &vk_context.device,
+                                &vk_context.allocator,
+                                cube_shadow_map_color_format,
+                        )?;
+
+                let (cube_shadow_map_depth_img, cube_shadow_map_depth_img_view) =
+                        Self::create_cube_shadow_map_depth_img_and_view(
+                                &vk_context.device,
+                                &vk_context.allocator,
+                                cube_shadow_map_depth_format,
+                        )?;
+
+                let cube_shadow_map_framebuffers = Self::create_cube_shadow_map_framebuffers(
+                        &vk_context.device,
+                        *cube_shadow_map_render_pass,
+                        &cube_shadow_map_img_views,
+                        *cube_shadow_map_depth_img_view,
+                )?;
+
+                let cube_shadow_map_sampler = Self::create_cube_shadow_map_sampler(&vk_context.device)?;
 
                 let setup_cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
@@ -133,6 +182,7 @@ impl VkRenderer {
                         &mut vk_context,
                         swapchain.samples,
                         *render_pass,
+                        *cube_shadow_map_render_pass,
                         *shadow_map_render_pass,
                         max_concurrent_frames,
                 )?;
@@ -166,6 +216,7 @@ impl VkRenderer {
                         swapchain,
                         swapchain_outdated_causes: VkSwapchainOutdatedCauseFlags::NONE,
 
+                        cube_shadow_map_render_pass,
                         shadow_map_render_pass,
                         render_pass,
 
@@ -173,6 +224,14 @@ impl VkRenderer {
                         shadow_map_img_view,
                         shadow_map_framebuffer,
                         shadow_map_sampler,
+
+                        cube_shadow_map_img,
+                        cube_shadow_map_img_view,
+                        cube_shadow_map_img_views,
+                        cube_shadow_map_depth_img,
+                        cube_shadow_map_depth_img_view,
+                        cube_shadow_map_framebuffers,
+                        cube_shadow_map_sampler,
 
                         setup_cmd_buffer,
                         max_concurrent_frames,
@@ -241,8 +300,30 @@ impl Renderer for VkRenderer {
                         .next()
                         .unwrap();
 
+                let point_light_pos = light_transform.0.translation;
+                let point_light_proj = Mat4::perspective_rh(
+                        90.0f32.to_radians(),
+                        SHADOW_MAP_WIDTH as f32 / SHADOW_MAP_HEIGHT as f32,
+                        0.1,
+                        20.0,
+                );
+
+                let mk_light_vp_mat = |dir: Vec3, up: Vec3| {
+                        point_light_proj * Mat4::look_at_rh(point_light_pos, point_light_pos + dir, up)
+                };
+
+                let point_light_vp_mats = [
+                        mk_light_vp_mat(Vec3::RIGHT, Vec3::DOWN),
+                        mk_light_vp_mat(Vec3::LEFT, Vec3::DOWN),
+                        mk_light_vp_mat(Vec3::UP, Vec3::BACKWARD),
+                        mk_light_vp_mat(Vec3::DOWN, Vec3::FORWARD),
+                        mk_light_vp_mat(Vec3::BACKWARD, Vec3::DOWN),
+                        mk_light_vp_mat(Vec3::FORWARD, Vec3::DOWN),
+                ];
+
                 let point_light = WorldPointLight {
-                        pos: Vec4::from((light_transform.0.translation, 1.0)),
+                        vp_mats: point_light_vp_mats,
+                        pos: Vec4::from((point_light_pos, 1.0)),
                         color: Vec4::from((point_light.color, 1.0)),
                         kc_kl_kq: Vec4::new(point_light.kc, point_light.kl, point_light.kq, 0.0),
                 };
@@ -370,7 +451,16 @@ impl Renderer for VkRenderer {
                         &mut self.world_shader_resource_descriptors_data,
                 );
 
+                Self::write_image_resource(
+                        &self.vk_asset_manager,
+                        &SHADER_RESOURCE_CUBE_SHADOW_MAP,
+                        *self.cube_shadow_map_img_view,
+                        *self.cube_shadow_map_sampler,
+                        &mut self.world_shader_resource_descriptors_data,
+                );
+
                 unsafe {
+                        self.map_point_shadows(&asset_manager, &vk_render_scene)?;
                         self.map_shadows(&asset_manager, &vk_render_scene)?;
 
                         let time = self.creation_instant.elapsed().as_secs_f32();
@@ -435,12 +525,20 @@ impl Renderer for VkRenderer {
                         let _ = self.vk_context.device.device_wait_idle();
                         drop(self.imgui_renderer.take().unwrap());
                         self.frames_data.clear();
+                        self.cube_shadow_map_sampler.destroy();
+                        self.cube_shadow_map_framebuffers.iter().for_each(|x| x.destroy());
+                        self.cube_shadow_map_depth_img_view.destroy();
+                        self.cube_shadow_map_depth_img.destroy();
+                        self.cube_shadow_map_img_views.iter().for_each(|x| x.destroy());
+                        self.cube_shadow_map_img_view.destroy();
+                        self.cube_shadow_map_img.destroy();
                         self.setup_cmd_buffer.destroy();
                         self.shadow_map_sampler.destroy();
                         self.shadow_map_framebuffer.destroy();
                         self.shadow_map_img_view.destroy();
                         self.shadow_map_img.destroy();
                         self.shadow_map_render_pass.destroy();
+                        self.cube_shadow_map_render_pass.destroy();
                         self.render_pass.destroy();
                         self.swapchain.destroy();
                         self.vk_asset_manager.destroy();
@@ -709,6 +807,86 @@ impl VkRenderer {
                 unsafe { VkRenderPass::new(device, &render_pass_cinfo) }
         }
 
+        fn create_cube_shadow_map_render_pass(
+                device: &Rc<VkDevice>,
+                cube_shadow_map_color_format: vk::Format,
+                cube_shadow_map_depth_format: vk::Format,
+        ) -> VkResult<VkRenderPass> {
+                let attachments = [
+                        vk::AttachmentDescription {
+                                flags: vk::AttachmentDescriptionFlags::empty(),
+                                format: cube_shadow_map_color_format,
+                                samples: vk::SampleCountFlags::TYPE_1,
+                                load_op: vk::AttachmentLoadOp::CLEAR,
+                                store_op: vk::AttachmentStoreOp::STORE,
+                                stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+                                stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+                                initial_layout: vk::ImageLayout::UNDEFINED,
+                                final_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        },
+                        vk::AttachmentDescription {
+                                flags: vk::AttachmentDescriptionFlags::empty(),
+                                format: cube_shadow_map_depth_format,
+                                samples: vk::SampleCountFlags::TYPE_1,
+                                load_op: vk::AttachmentLoadOp::CLEAR,
+                                store_op: vk::AttachmentStoreOp::DONT_CARE,
+                                stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+                                stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+                                initial_layout: vk::ImageLayout::UNDEFINED,
+                                final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                        },
+                ];
+
+                let color_attachment_ref = vk::AttachmentReference {
+                        attachment: 0,
+                        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                };
+
+                let depth_attachment_ref = vk::AttachmentReference {
+                        attachment: 1,
+                        layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                };
+
+                let subpass_descriptions = [vk::SubpassDescription::builder()
+                        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+                        //.input_attachments(&[])
+                        .color_attachments(&[color_attachment_ref])
+                        .depth_stencil_attachment(&depth_attachment_ref)
+                        //.resolve_attachments(&[])
+                        //.preserve_attachments(&[])
+                        .build()];
+
+                let subpass_dependencies = [
+                        vk::SubpassDependency {
+                                src_subpass: vk::SUBPASS_EXTERNAL,
+                                dst_subpass: 0,
+                                src_stage_mask: vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                                dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                                        | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                                dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                                dependency_flags: vk::DependencyFlags::empty(),
+                        },
+                        vk::SubpassDependency {
+                                src_subpass: 0,
+                                dst_subpass: vk::SUBPASS_EXTERNAL,
+                                src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                dst_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
+                                src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                                dst_access_mask: vk::AccessFlags::SHADER_READ,
+                                dependency_flags: vk::DependencyFlags::empty(),
+                        },
+                ];
+
+                let render_pass_cinfo = vk::RenderPassCreateInfo::builder()
+                        .attachments(&attachments)
+                        .subpasses(&subpass_descriptions)
+                        .dependencies(&subpass_dependencies);
+
+                unsafe { VkRenderPass::new(device, &render_pass_cinfo) }
+        }
+
         fn create_shadow_map_img_and_view(
                 device: Rc<VkDevice>,
                 allocator: Rc<VmaAllocator>,
@@ -801,6 +979,170 @@ impl VkRenderer {
                 };
 
                 Ok(unsafe { VkSampler::new(Rc::clone(device), &vk_sampler_cinfo)? })
+        }
+
+        fn choose_cube_shadow_map_color_format(
+                instance: &VkInstance,
+                pdevice: vk::PhysicalDevice,
+        ) -> VkResult<vk::Format> {
+                let candidates = [vk::Format::R32_SFLOAT, vk::Format::R16_SFLOAT];
+
+                let features = vk::FormatFeatureFlags::COLOR_ATTACHMENT;
+
+                vk_util::find_best_format_for_optimal_tiling(instance, pdevice, &candidates, features)
+        }
+
+        fn create_cube_shadow_map_img_and_views(
+                device: &Rc<VkDevice>,
+                allocator: &Rc<VmaAllocator>,
+                cube_shadow_map_format: vk::Format,
+        ) -> VkResult<(VkImage, VkImageView, [VkImageView; 6])> {
+                let img = unsafe {
+                        let img_cinfo = VkImageCreateInfo {
+                                flags: vk::ImageCreateFlags::CUBE_COMPATIBLE,
+                                image_type: vk::ImageType::TYPE_2D,
+                                format: cube_shadow_map_format,
+                                extent: vk::Extent3D {
+                                        width: SHADOW_MAP_WIDTH,
+                                        height: SHADOW_MAP_HEIGHT,
+                                        depth: 1,
+                                },
+                                mip_levels: 1,
+                                array_layers: 6,
+                                samples: vk::SampleCountFlags::TYPE_1,
+                                tiling: vk::ImageTiling::OPTIMAL,
+                                usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                                queue_family_indices: None,
+                                initial_layout: vk::ImageLayout::UNDEFINED,
+
+                                mem_usage: vma::MemoryUsage::GpuOnly,
+                                alloc_cflags: vma::AllocationCreateFlags::empty(),
+                                required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                                preferred_flags: Default::default(),
+                        };
+
+                        VkImage::new(Rc::clone(allocator), &img_cinfo)?
+                };
+
+                let mut img_view_cinfo = vk::ImageViewCreateInfo {
+                        image: *img,
+                        view_type: vk::ImageViewType::CUBE,
+                        format: cube_shadow_map_format,
+                        components: vk::ComponentMapping::default(),
+                        subresource_range: vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: 1,
+                                base_array_layer: 0,
+                                layer_count: 6,
+                        },
+                        ..vk::ImageViewCreateInfo::default()
+                };
+
+                let img_view = unsafe { VkImageView::new(Rc::clone(device), &img_view_cinfo)? };
+
+                img_view_cinfo.view_type = vk::ImageViewType::TYPE_2D;
+                img_view_cinfo.subresource_range.layer_count = 1;
+                let mut mk_img_view = |l| unsafe {
+                        img_view_cinfo.subresource_range.base_array_layer = l;
+                        VkImageView::new(Rc::clone(device), &img_view_cinfo)
+                };
+
+                let img_views = [
+                        mk_img_view(0)?,
+                        mk_img_view(1)?,
+                        mk_img_view(2)?,
+                        mk_img_view(3)?,
+                        mk_img_view(4)?,
+                        mk_img_view(5)?,
+                ];
+
+                Ok((img, img_view, img_views))
+        }
+
+        fn create_cube_shadow_map_depth_img_and_view(
+                device: &Rc<VkDevice>,
+                allocator: &Rc<VmaAllocator>,
+                cube_shadow_map_depth_format: vk::Format,
+        ) -> VkResult<(VkImage, VkImageView)> {
+                let img = unsafe {
+                        let img_cinfo = VkImageCreateInfo {
+                                flags: vk::ImageCreateFlags::empty(),
+                                image_type: vk::ImageType::TYPE_2D,
+                                format: cube_shadow_map_depth_format,
+                                extent: vk::Extent3D {
+                                        width: SHADOW_MAP_WIDTH,
+                                        height: SHADOW_MAP_HEIGHT,
+                                        depth: 1,
+                                },
+                                mip_levels: 1,
+                                array_layers: 1,
+                                samples: vk::SampleCountFlags::TYPE_1,
+                                tiling: vk::ImageTiling::OPTIMAL,
+                                usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                                queue_family_indices: None,
+                                initial_layout: vk::ImageLayout::UNDEFINED,
+
+                                mem_usage: vma::MemoryUsage::GpuOnly,
+                                alloc_cflags: vma::AllocationCreateFlags::empty(),
+                                required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                                preferred_flags: Default::default(),
+                        };
+
+                        VkImage::new(Rc::clone(allocator), &img_cinfo)?
+                };
+
+                let img_view_cinfo = vk::ImageViewCreateInfo {
+                        image: *img,
+                        view_type: vk::ImageViewType::TYPE_2D,
+                        format: cube_shadow_map_depth_format,
+                        components: vk::ComponentMapping::default(),
+                        subresource_range: vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::DEPTH,
+                                base_mip_level: 0,
+                                level_count: 1,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                        },
+                        ..vk::ImageViewCreateInfo::default()
+                };
+
+                let img_view = unsafe { VkImageView::new(Rc::clone(device), &img_view_cinfo)? };
+
+                Ok((img, img_view))
+        }
+
+        fn create_cube_shadow_map_framebuffers(
+                device: &Rc<VkDevice>,
+                cube_shadow_map_render_pass: vk::RenderPass,
+                cube_shadow_map_color_img_views: &[VkImageView; 6],
+                cube_shadow_map_depth_img_view: vk::ImageView,
+        ) -> VkResult<[VkFramebuffer; 6]> {
+                let mk_framebuffer = |i: usize| {
+                        let attachments = [*cube_shadow_map_color_img_views[i], cube_shadow_map_depth_img_view];
+
+                        let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
+                                .render_pass(cube_shadow_map_render_pass)
+                                .width(SHADOW_MAP_WIDTH)
+                                .height(SHADOW_MAP_HEIGHT)
+                                .layers(1)
+                                .attachments(&attachments);
+
+                        unsafe { VkFramebuffer::new(device, &framebuffer_cinfo) }
+                };
+
+                Ok([
+                        mk_framebuffer(0)?,
+                        mk_framebuffer(1)?,
+                        mk_framebuffer(2)?,
+                        mk_framebuffer(3)?,
+                        mk_framebuffer(4)?,
+                        mk_framebuffer(5)?,
+                ])
+        }
+
+        fn create_cube_shadow_map_sampler(device: &Rc<VkDevice>) -> VkResult<VkSampler> {
+                Self::create_shadow_map_sampler(device)
         }
 
         // TODO: check that T is compatible with the shader resource type.
@@ -1186,6 +1528,106 @@ impl VkRenderer {
                 });
         }
 
+        unsafe fn map_point_shadows(&self, asset_manager: &AssetManager, scene: &VkRenderScene) -> VkResult<()> {
+                let frame_data = &self.frames_data[self.framei];
+                let cmd_buffer = *frame_data.draw_cmd_buffer;
+
+                let clear_values = [
+                        vk::ClearValue {
+                                color: vk::ClearColorValue {
+                                        float32: [f32::MAX, 0.0, 0.0, 0.0], // We only care about red channel
+                                },
+                        },
+                        vk::ClearValue {
+                                depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+                        },
+                ];
+
+                let shadow_map_rect = vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D {
+                                width: SHADOW_MAP_WIDTH,
+                                height: SHADOW_MAP_HEIGHT,
+                        },
+                };
+
+                // NOTE: we don't negate the height because otherwise cubemap addressing is a pain.
+                let shadow_map_viewport = vk::Viewport {
+                        x: 0.0,
+                        y: 0.0,
+                        width: SHADOW_MAP_WIDTH as f32,
+                        height: SHADOW_MAP_HEIGHT as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                };
+
+                for i in 0..6 {
+                        let framebuffer = *self.cube_shadow_map_framebuffers[i];
+
+                        let render_pass_binfo = vk::RenderPassBeginInfo::builder()
+                                .render_pass(*self.cube_shadow_map_render_pass)
+                                .framebuffer(framebuffer)
+                                .render_area(shadow_map_rect)
+                                .clear_values(&clear_values);
+
+                        self.vk_context.device.cmd_begin_render_pass(
+                                cmd_buffer,
+                                &render_pass_binfo,
+                                vk::SubpassContents::INLINE,
+                        );
+
+                        self.vk_context
+                                .device
+                                .cmd_set_viewport(cmd_buffer, 0, slice::from_ref(&shadow_map_viewport));
+
+                        self.vk_context
+                                .device
+                                .cmd_set_scissor(cmd_buffer, 0, slice::from_ref(&shadow_map_rect));
+
+                        let cube_shadow_map_shader_id = asset_manager.shader_names()["cube-shadow-map"];
+                        let cube_shadow_map_shader = &self.vk_asset_manager.shaders[cube_shadow_map_shader_id];
+
+                        self.vk_context.device.cmd_bind_pipeline(
+                                cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                *cube_shadow_map_shader.graphics_pipeline,
+                        );
+
+                        self.vk_context.device.cmd_push_constants(
+                                cmd_buffer,
+                                *cube_shadow_map_shader.graphics_pipeline_layout,
+                                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                0,
+                                (i as u32).into_bytes_slice(),
+                        );
+
+                        self.vk_context.device.cmd_bind_descriptor_sets(
+                                cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                *cube_shadow_map_shader.graphics_pipeline_layout,
+                                VkDescriptorSetIndex::World.value(),
+                                &[cube_shadow_map_shader.world_dst_set[self.framei]],
+                                &[],
+                        );
+
+                        for (_, shader_group) in &scene.mesh_instances {
+                                for (_, material_group) in shader_group {
+                                        for mesh_instance in material_group {
+                                                self.draw_mesh_instance(
+                                                        cmd_buffer,
+                                                        cube_shadow_map_shader,
+                                                        mesh_instance,
+                                                );
+                                        }
+                                }
+                        }
+
+                        self.vk_context.device.cmd_end_render_pass(cmd_buffer);
+                }
+
+                Ok(())
+        }
+
         unsafe fn map_shadows(&self, asset_manager: &AssetManager, scene: &VkRenderScene) -> VkResult<()> {
                 let frame_data = &self.frames_data[self.framei];
                 let cmd_buffer = *frame_data.draw_cmd_buffer;
@@ -1387,6 +1829,7 @@ struct WorldDirectionalLight {
 #[repr(C)]
 #[derive(ShaderStruct)]
 struct WorldPointLight {
+        vp_mats: [Mat4; 6],
         pos: Vec4,
         color: Vec4,
         kc_kl_kq: Vec4,
