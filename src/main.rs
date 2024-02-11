@@ -46,13 +46,11 @@ pub type AnyResult<T> = anyhow::Result<T>;
 fn main() -> Result<(), Box<dyn Error>> {
         env_logger::Builder::from_env(Env::default().default_filter_or("trace"))
                 .format(|buf, record| {
-                        writeln!(
-                                buf,
-                                "[{} {:<5}]  {}",
-                                Local::now().time().format("%H:%M:%S"),
-                                buf.default_level_style(record.level()).value(record.level()),
-                                record.args()
-                        )
+                        let style = buf.default_level_style(record.level());
+
+                        let tag = format!("[{} {:>5}]", Local::now().time().format("%H:%M:%S"), record.level());
+
+                        writeln!(buf, "{}  {}", style.value(tag), record.args())
                 })
                 .init();
 
