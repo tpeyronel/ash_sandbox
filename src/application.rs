@@ -13,10 +13,10 @@ use crate::{
         asset_manager::*,
         components::{
                 ActiveCamera, ActiveCameraControlEnabled, AngularVelocity, Billboard, Children, ClearWorldTrackers,
-                DirectionalLight, Force, GlobalTransform, ImguiWantCaptureKeyboard, ImguiWantCaptureMouse,
-                InterpScalar, Mass, OrbitalVelocity, Parent, Player, PointLight, PreviousGlobalTransform,
-                ProjectionCamera, ShouldQuit, Spotlight, TickTime, Transform, UpdateBegin, UpdateTime,
-                UpdateTimeAccumulator, Velocity,
+                DirectionalLight, EnableAngularVelocity, EnableOrbitalVelocity, Force, GlobalTransform,
+                ImguiWantCaptureKeyboard, ImguiWantCaptureMouse, InterpScalar, Mass, OrbitalVelocity, Parent, Player,
+                PointLight, PreviousGlobalTransform, ProjectionCamera, ShouldQuit, Spotlight, TickTime, Transform,
+                UpdateBegin, UpdateTime, UpdateTimeAccumulator, Velocity,
         },
         constants::{FONT_SIZE, PLAYER_MOVEMENT_SPEED, ROTATION_PER_SECOND},
         euler_angles::EulerAngles,
@@ -118,6 +118,14 @@ impl Application {
                                                 world.entity_mut(world.get_resource::<ActiveCamera>().unwrap().0);
                                         imgui_util::euler_angles_mut(ui, &mut camera.get_mut::<EulerAngles>().unwrap());
 
+                                        let mut enable_orbital_velocity =
+                                                world.get_resource_mut::<EnableOrbitalVelocity>().unwrap();
+                                        ui.checkbox("enable orbital velocity", &mut enable_orbital_velocity.0);
+
+                                        let mut enable_angular_velocity =
+                                                world.get_resource_mut::<EnableAngularVelocity>().unwrap();
+                                        ui.checkbox("enable angular velocity", &mut enable_angular_velocity.0);
+
                                         if let Some(_) = ui.tree_node("directional light") {
                                                 let mut dir_light = world
                                                         .query::<&mut DirectionalLight>()
@@ -191,18 +199,20 @@ impl Application {
 
                 let skybox = asset_manager.insert_cubemap(Cubemap {
                         faces: [
-                                Image::from_file(Path::new("res/image/skybox/right.png"))?,
-                                Image::from_file(Path::new("res/image/skybox/left.png"))?,
-                                Image::from_file(Path::new("res/image/skybox/up.png"))?,
-                                Image::from_file(Path::new("res/image/skybox/down.png"))?,
-                                Image::from_file(Path::new("res/image/skybox/front.png"))?,
-                                Image::from_file(Path::new("res/image/skybox/back.png"))?,
+                                Image::from_file(Path::new("res/image/skybox/right.png"), ColorSpace::Srgb)?,
+                                Image::from_file(Path::new("res/image/skybox/left.png"), ColorSpace::Srgb)?,
+                                Image::from_file(Path::new("res/image/skybox/up.png"), ColorSpace::Srgb)?,
+                                Image::from_file(Path::new("res/image/skybox/down.png"), ColorSpace::Srgb)?,
+                                Image::from_file(Path::new("res/image/skybox/front.png"), ColorSpace::Srgb)?,
+                                Image::from_file(Path::new("res/image/skybox/back.png"), ColorSpace::Srgb)?,
                         ],
                 });
                 world.insert_resource(Skybox(skybox));
 
                 world.insert_resource(asset_manager);
                 world.insert_resource(ShouldQuit(false));
+                world.insert_resource(EnableOrbitalVelocity(true));
+                world.insert_resource(EnableAngularVelocity(true));
 
                 let cursor_state = CursorState::Normal;
                 let window_mode = WindowMode::Windowed;
@@ -366,6 +376,8 @@ impl Application {
                         Path::new("res/model/health-bar/health-bar.gltf"),
                         billboard_shader,
                 )?;
+                let _model_brick_wall =
+                        asset_manager.import_gltf_file(Path::new("res/model/brick-wall/brick-wall.gltf"))?;
 
                 trace!("Initialized AssetManager");
                 Ok((asset_manager, event_rx))
@@ -582,7 +594,7 @@ fn spawn_entities(mut commands: Commands) {
         let player_head = commands
                 .spawn()
                 .insert(Parent(player))
-                .insert(Transform::from_translation(Vec3::new(0.0, 1.0, 0.0)))
+                .insert(Transform::from_translation(Vec3::new(0.0, 2.0, 0.0)))
                 .insert(EulerAngles::new(0.0, 0.0, 0.0))
                 .insert(ProjectionCamera::new(90.0f32.to_radians(), 1.0, 0.1, 100.0))
                 .insert(Spotlight {
@@ -599,7 +611,7 @@ fn spawn_entities(mut commands: Commands) {
 
         let colt = commands
                 .spawn()
-                .insert(Transform::from_translation(Vec3::new(2.5, 0.0, 0.0)))
+                .insert(Transform::from_translation(Vec3::new(2.5, 1.0, 0.0)))
                 .insert(AngularVelocity(Vec3::Y * 45.0f32.to_radians()))
                 .insert(OrbitalVelocity {
                         origin: Vec3::new(0.0, 2.5, 0.0),
@@ -611,7 +623,11 @@ fn spawn_entities(mut commands: Commands) {
 
         let icosphere = commands
                 .spawn()
-                .insert(Transform::from_scale(Vec3::new(4.0, 4.0, 4.0)))
+                .insert(Transform {
+                        translation: Vec3::new(0.0, 1.0, 0.0),
+                        scale: Vec3::splat(4.0),
+                        ..Transform::identity()
+                })
                 .insert(Force(Vec3::new(0.0, 0.0, 0.0)))
                 .insert(Mass(1.0))
                 .insert(Velocity(Vec3::new(0.0, 0.0, 0.0)))
@@ -622,7 +638,7 @@ fn spawn_entities(mut commands: Commands) {
         let backpack = commands
                 .spawn()
                 .insert(Transform {
-                        translation: Vec3::new(2.0, 0.0, 0.0),
+                        translation: Vec3::new(2.0, 1.0, 0.0),
                         scale: Vec3::new(5.0, 5.0, 5.0),
                         ..Transform::identity()
                 })
@@ -634,6 +650,17 @@ fn spawn_entities(mut commands: Commands) {
                 .id();
 
         commands.add(CmdAddModelInstanceByName::from_str(backpack, "backpack"));
+
+        let brick_wall = commands
+                .spawn()
+                .insert(Transform {
+                        translation: Vec3::new(4.0, 0.0, -4.0),
+                        scale: Vec3::splat(0.25),
+                        rotation: Quat::from_axis_angle(Vec3::Y, -45.0f32.to_radians()),
+                })
+                .id();
+
+        commands.add(CmdAddModelInstanceByName::from_str(brick_wall, "brick-wall"));
 
         // TODO: make only some models (or materials?) cast shadow.
 
@@ -664,7 +691,7 @@ fn spawn_entities(mut commands: Commands) {
 
         let grass_plane = commands
                 .spawn()
-                .insert(Transform::from_translation(Vec3::new(0.0, -1.0, 0.0)))
+                .insert(Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)))
                 .id();
 
         commands.add(CmdAddModelInstanceByName::from_str(grass_plane, "grass-plane"));
@@ -990,13 +1017,29 @@ fn integrate_linear_velocity(mut query: Query<(&Velocity, &mut Transform)>, tick
         }
 }
 
-fn integrate_angular_velocities(mut query: Query<(&AngularVelocity, &mut Transform)>, tick_time: Res<TickTime>) {
+fn integrate_angular_velocities(
+        mut query: Query<(&AngularVelocity, &mut Transform)>,
+        enable_angular_velocity: Res<EnableAngularVelocity>,
+        tick_time: Res<TickTime>,
+) {
+        if !enable_angular_velocity.0 {
+                return;
+        }
+
         for (angular_velocity, mut transform) in query.iter_mut() {
                 transform.rotation *= Quat::from_scaled_axis(angular_velocity.0 * tick_time.0);
         }
 }
 
-fn integrate_orbital_velocities(mut query: Query<(&OrbitalVelocity, &mut Transform)>, tick_time: Res<TickTime>) {
+fn integrate_orbital_velocities(
+        mut query: Query<(&OrbitalVelocity, &mut Transform)>,
+        enable_orbital_velocity: Res<EnableOrbitalVelocity>,
+        tick_time: Res<TickTime>,
+) {
+        if !enable_orbital_velocity.0 {
+                return;
+        }
+
         for (orbital_velocity, mut transform) in query.iter_mut() {
                 let orbital_pos = transform.translation - orbital_velocity.origin;
                 let orbital_rot = Quat::from_scaled_axis(orbital_velocity.velocity * tick_time.0);

@@ -1389,8 +1389,13 @@ impl VkRenderer {
                 device.cmd_bind_vertex_buffers(
                         cmd_buffer,
                         0,
-                        &[*vk_mesh.positions, *vk_mesh.normals, *vk_mesh.tex_coords],
-                        &[0, 0, 0],
+                        &[
+                                *vk_mesh.positions,
+                                *vk_mesh.normals,
+                                *vk_mesh.tex_coords,
+                                *vk_mesh.tangents,
+                        ],
+                        &[0, 0, 0, 0],
                 );
                 device.cmd_bind_index_buffer(cmd_buffer, *vk_mesh.indices.buffer, 0, vk_mesh.indices.index_type);
 

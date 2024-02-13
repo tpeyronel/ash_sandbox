@@ -43,6 +43,7 @@ slotmap = "1.0.2"
 stb_image = "0.2.3"
 thiserror = "1.0.30"
 tps-counter = { git = "https://github.com/tpeyronel/tps-counter" }
+path-clean = "1.0.1"
 
 [profile.dev.package."*"]
 opt-level = 3

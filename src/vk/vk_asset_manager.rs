@@ -17,13 +17,13 @@ use slotmap::SecondaryMap;
 
 use crate::{
         asset_manager::{
-                AssetManager, AssetManagerEvent, CubemapId, CullMode, ImageFormat, ImageId, IndicesVec, MagFilter,
-                MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule, ShaderRenderStage,
-                WrappingMode,
+                AssetManager, AssetManagerEvent, ColorSpace, CubemapId, CullMode, ImageFormat, ImageId, IndicesVec,
+                MagFilter, MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule, ShaderRenderStage,
+                ShaderResourceData, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         hashmap::GetOrInsert,
-        my_glm::{Vec2, Vec3},
+        my_glm::{Vec2, Vec3, Vec4},
         shader_preprocessor::{PreprocessedShaderStage, ShaderStageSourceBuilder},
         shader_resource::{ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
         shader_resource_registry::ShaderResourceRegistry,
@@ -39,10 +39,10 @@ use crate::{
 
 use super::{
         vk_buffer::VkDynamicUniformBuffer,
-        vk_context::VkContext,
+        vk_context::{VkContext, ENABLE_VALIDATION_LAYERS},
         vk_descriptor_set_allocator::VkDescriptorSetAllocator,
         vk_image::VkImageCubemapCreateInfo,
-        vk_wrapper::{VkInstance, VkPipeline, VkPipelineLayout, VkShaderModule, VmaAllocator},
+        vk_wrapper::{VkDebugUtils, VkInstance, VkPipeline, VkPipelineLayout, VkShaderModule, VmaAllocator},
 };
 
 pub struct VkMesh {
@@ -119,6 +119,7 @@ pub struct VkAssetManager {
         instance: Rc<VkInstance>,
         pdevice: Rc<VkPhysicalDevice>,
         device: Rc<VkDevice>,
+        debug_utils: Option<Rc<VkDebugUtils>>,
         allocator: Rc<VmaAllocator>,
         transfer_queue: vk::Queue,
         dst_set_allocator: VkDescriptorSetAllocator,
@@ -162,6 +163,7 @@ impl VkAssetManager {
                         instance: Rc::clone(&vk_context.instance),
                         pdevice: Rc::clone(&vk_context.pdevice),
                         device: Rc::clone(&vk_context.device),
+                        debug_utils: vk_context.debug_utils.as_ref().map(|d| Rc::clone(d)),
                         allocator: Rc::clone(&vk_context.allocator),
                         transfer_queue: vk_context.queues.graphics,
                         dst_set_allocator,
@@ -524,6 +526,12 @@ impl VkAssetManager {
                                         binding = binding.stride(std::mem::size_of::<Vec2>() as u32);
                                         binding = binding.input_rate(vk::VertexInputRate::VERTEX);
                                         attribute = attribute.format(vk::Format::R32G32_SFLOAT);
+                                },
+                                "tangents" => {
+                                        // NOTE: tangents are Vec4 (w is sign).
+                                        binding = binding.stride(std::mem::size_of::<Vec4>() as u32);
+                                        binding = binding.input_rate(vk::VertexInputRate::VERTEX);
+                                        attribute = attribute.format(vk::Format::R32G32B32A32_SFLOAT);
                                 },
                                 _ => panic!("Invalid shader vertex input: {}", vertex_input),
                         }
@@ -1029,7 +1037,7 @@ impl VkAssetManager {
                         data: &image.pixels,
                         width: image.width,
                         height: image.height,
-                        format: Self::vk_format_from_image_format(image.format),
+                        format: Self::vk_format_from_image_format_and_color_space(image.format, image.color_space),
                         mip_levels: MipLevels::Log2,
                         samples: vk::SampleCountFlags::TYPE_1,
                         setup_cmd_buffer: &self.cmd_buffer,
@@ -1046,10 +1054,19 @@ impl VkAssetManager {
                         )?
                 };
 
+                if ENABLE_VALIDATION_LAYERS {
+                        let name = match &image.name {
+                                Some(name) => format!("[image] {}", name),
+                                None => format!("[image] {:?}", image_id),
+                        };
+
+                        unsafe { vk_image.set_debug_name(&self.device, self.debug_utils.as_ref().unwrap(), &name)? };
+                }
+
                 let vk_image_view_cinfo = vk::ImageViewCreateInfo {
                         image: *vk_image,
                         view_type: vk::ImageViewType::TYPE_2D,
-                        format: vk::Format::R8G8B8A8_SRGB, // vk_image_cinfo.format,
+                        format: vk_image.format,
                         components: Default::default(),
                         subresource_range: vk::ImageSubresourceRange {
                                 aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -1169,16 +1186,26 @@ impl VkAssetManager {
                                         },
                                         VkShaderResourceType::UniformBufferDynamic => panic!("{}", resource_id),
                                         VkShaderResourceType::CombinedImageSampler => {
-                                                let texture = asset_manager.texture(material.base_color_texture);
+                                                material.get_shader_resource_data(resource_id, |data| {
+                                                        let data = data
+                                                                .expect(&format!("material does not have resource {}", resource_id));
 
-                                                let image_info = vk::DescriptorImageInfo {
-                                                        sampler: *self.samplers[texture.sampler],
-                                                        image_view: *self.images[texture.image].image_view,
-                                                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                                                };
+                                                        match data {
+                                                                ShaderResourceData::Image2D(texture_id) =>  {
+                                                                        let texture = asset_manager.texture(texture_id);
 
-                                                let write = write.image_info(image_info.ref_into_slice());
-                                                unsafe { self.device.update_descriptor_sets(&[write.build()], &[]) };
+                                                                        let image_info = vk::DescriptorImageInfo {
+                                                                                sampler: *self.samplers[texture.sampler],
+                                                                                image_view: *self.images[texture.image].image_view,
+                                                                                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                                                        };
+
+                                                                        let write = write.image_info(image_info.ref_into_slice());
+                                                                        unsafe { self.device.update_descriptor_sets(&[write.build()], &[]) };
+                                                                },
+                                                           _ => panic!("invalid resource data type {:?}", data),
+                                                        }
+                                                });
                                         },
                                 };
                         }
@@ -1334,18 +1361,28 @@ impl VkAssetManager {
         //         }
         // }
 
-        fn vk_format_from_image_format(img_format: ImageFormat) -> vk::Format {
-                match img_format {
-                        ImageFormat::R8 => vk::Format::R8_SRGB,
-                        ImageFormat::R8G8 => vk::Format::R8G8_SRGB,
-                        ImageFormat::R8G8B8 => vk::Format::R8G8B8_SRGB,
-                        ImageFormat::R8G8B8A8 => vk::Format::R8G8B8A8_SRGB,
-                        ImageFormat::B8G8R8 => vk::Format::B8G8R8_SRGB,
-                        ImageFormat::B8G8R8A8 => vk::Format::B8G8R8A8_SRGB,
-                        ImageFormat::R16 => vk::Format::R16_UINT,
-                        ImageFormat::R16G16 => vk::Format::R16G16_UINT,
-                        ImageFormat::R16G16B16 => vk::Format::R16G16B16_UINT,
-                        ImageFormat::R16G16B16A16 => vk::Format::R16G16B16A16_UINT,
+        fn vk_format_from_image_format_and_color_space(img_format: ImageFormat, color_space: ColorSpace) -> vk::Format {
+                match (img_format, color_space) {
+                        (ImageFormat::R8, ColorSpace::Srgb) => vk::Format::R8_SRGB,
+                        (ImageFormat::R8G8, ColorSpace::Srgb) => vk::Format::R8G8_SRGB,
+                        (ImageFormat::R8G8B8, ColorSpace::Srgb) => vk::Format::R8G8B8_SRGB,
+                        (ImageFormat::R8G8B8A8, ColorSpace::Srgb) => vk::Format::R8G8B8A8_SRGB,
+                        (ImageFormat::B8G8R8, ColorSpace::Srgb) => vk::Format::B8G8R8_SRGB,
+                        (ImageFormat::B8G8R8A8, ColorSpace::Srgb) => vk::Format::B8G8R8A8_SRGB,
+                        (ImageFormat::R8, ColorSpace::Linear) => vk::Format::R8_UNORM,
+                        (ImageFormat::R8G8, ColorSpace::Linear) => vk::Format::R8G8_UNORM,
+                        (ImageFormat::R8G8B8, ColorSpace::Linear) => vk::Format::R8G8B8_UNORM,
+                        (ImageFormat::R8G8B8A8, ColorSpace::Linear) => vk::Format::R8G8B8A8_UNORM,
+                        (ImageFormat::B8G8R8, ColorSpace::Linear) => vk::Format::B8G8R8_UNORM,
+                        (ImageFormat::B8G8R8A8, ColorSpace::Linear) => vk::Format::B8G8R8A8_UNORM,
+                        (ImageFormat::R16, ColorSpace::Linear) => vk::Format::R16_UINT,
+                        (ImageFormat::R16G16, ColorSpace::Linear) => vk::Format::R16G16_UINT,
+                        (ImageFormat::R16G16B16, ColorSpace::Linear) => vk::Format::R16G16B16_UINT,
+                        (ImageFormat::R16G16B16A16, ColorSpace::Linear) => vk::Format::R16G16B16A16_UINT,
+                        _ => panic!(
+                                "unsupported (image format, color space) pair ({:?}, {:?})",
+                                img_format, color_space
+                        ),
                 }
         }
 

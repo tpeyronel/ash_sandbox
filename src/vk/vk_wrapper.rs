@@ -295,7 +295,7 @@ impl VkDevice {
 
 impl_destroyable!(VkDevice, ash::Device, destroy_device, None);
 
-pub struct VkDebugUtilsMessenger {
+pub struct VkDebugUtils {
         _entry: Rc<ash::Entry>,
 
         loader: DebugUtils,
@@ -303,7 +303,7 @@ pub struct VkDebugUtilsMessenger {
         destroyed: Cell<bool>,
 }
 
-impl VkDebugUtilsMessenger {
+impl VkDebugUtils {
         pub unsafe fn new(
                 entry: &Rc<ash::Entry>,
                 instance: &ash::Instance,
@@ -319,13 +319,15 @@ impl VkDebugUtilsMessenger {
                         destroyed: Cell::new(false),
                 })
         }
+
+        pub fn loader(&self) -> &DebugUtils {
+                &self.loader
+        }
 }
 
-impl_destroyable_expr!(
-        VkDebugUtilsMessenger,
-        vk::DebugUtilsMessengerEXT,
-        |s: &VkDebugUtilsMessenger| s.loader.destroy_debug_utils_messenger(s.handle, None)
-);
+impl_destroyable_expr!(VkDebugUtils, vk::DebugUtilsMessengerEXT, |s: &VkDebugUtils| s
+        .loader
+        .destroy_debug_utils_messenger(s.handle, None));
 
 pub struct VkSurface {
         _window: Rc<winit::window::Window>,

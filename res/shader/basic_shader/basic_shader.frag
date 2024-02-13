@@ -8,11 +8,13 @@
 #resource MaterialData u_material : MATERIAL_DATA;
 #resource sampler2D u_diffuse_map : MATERIAL_DIFFUSE_TEXTURE;
 #resource sampler2D u_specular_map : MATERIAL_SPECULAR_TEXTURE;
+#resource sampler2D u_normal_map : MATERIAL_NORMAL_TEXTURE;
 
 layout (location = 0) in vec3 i_frag_pos;
 layout (location = 1) in vec3 i_normal;
 layout (location = 2) in vec2 i_tex_coord;
-layout (location = 3) in vec4 i_frag_pos_sun_space;
+layout (location = 3) in mat3 i_tbn;
+layout (location = 6) in vec4 i_frag_pos_sun_space;
 
 layout (location = 0) out vec4 o_output;
 
@@ -175,7 +177,8 @@ void main() {
         vec3 specular_texel = texture(u_specular_map, i_tex_coord).rgb;
 
         vec3 camera_rdir = normalize(u_world_matrices.view_pos.xyz - i_frag_pos);
-        vec3 normal = normalize(i_normal);
+        vec3 normal = texture(u_normal_map, i_tex_coord).xyz * 2.0 - 1.0;
+        normal = normalize(i_tbn * normal);
 
         vec3 output_color = vec3(0.0);
 
@@ -220,4 +223,4 @@ void main() {
         output_color = pow(output_color, vec3(1.0 / gamma));
 
         o_output = vec4(output_color, 1.0);
-}
+        }

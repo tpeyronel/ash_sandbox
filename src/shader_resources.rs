@@ -10,6 +10,7 @@ lazy_static! {
         pub static ref SHADER_RESOURCE_MATERIAL_DATA: ShaderResourceId = "MATERIAL_DATA".into();
         pub static ref SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE: ShaderResourceId = "MATERIAL_DIFFUSE_TEXTURE".into();
         pub static ref SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE: ShaderResourceId = "MATERIAL_SPECULAR_TEXTURE".into();
+        pub static ref SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE: ShaderResourceId = "MATERIAL_NORMAL_TEXTURE".into();
         pub static ref SHADER_RESOURCE_OBJECT_MATRICES: ShaderResourceId = "OBJECT_MATRICES".into();
         pub static ref SHADER_RESOURCE_SHADOW_MAP: ShaderResourceId = "SHADOW_MAP".into();
         pub static ref SHADER_RESOURCE_CUBE_SHADOW_MAP: ShaderResourceId = "CUBE_SHADOW_MAP".into();

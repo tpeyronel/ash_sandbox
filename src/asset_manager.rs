@@ -7,6 +7,7 @@ use std::{
         process::Command,
 };
 
+use bitflags::bitflags;
 use crossbeam_channel::Receiver;
 use gltf::{
         accessor::{DataType, Dimensions},
@@ -14,6 +15,7 @@ use gltf::{
 };
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
+use path_clean::PathClean;
 use serde::{Deserialize, Serialize};
 use slotmap::{Key, SecondaryMap, SlotMap};
 use thiserror::Error;
@@ -31,9 +33,9 @@ use crate::{
         shader_resource_registry::ShaderResourceRegistry,
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_CUBE_SHADOW_MAP, SHADER_RESOURCE_MATERIAL_DATA,
-                SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE, SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE,
-                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX,
-                SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
+                SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE, SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE,
+                SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE, SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SHADOW_MAP,
+                SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
         },
         util::default,
         vk::vk_renderer::{BillboardData, MaterialData, ObjectMatrices, WorldLights, WorldMatrices},
@@ -107,49 +109,70 @@ pub struct Material {
 
         pub base_color_texture: TextureId,
         pub metallic_roughness_texture: TextureId,
-        pub normal_texture: Option<TextureId>,
+        pub normal_texture: TextureId,
         pub occlusion_texture: Option<TextureId>,
         pub emissive_texture: Option<TextureId>,
         pub emissive_factor: Vec3,
 }
 
 impl Material {
-        // fn get_shader_resource_data(&self, resource: &ShaderResourceId, f: impl FnOnce(Option<ShaderResourceData>)) {
-        //         match resource {
-        //                 SHADER_RESOURCE_DIFFUSE_TEXTURE => {
-        //                         f(Some(ShaderResourceData::Image2D(self.base_color_texture)));
-        //                 },
-        //                 SHADER_RESOURCE_MATERIAL_DATA => {
-        //                         let data = MaterialData {
-        //                                 ambient_color: self.base_color_factor,
-        //                                 diffuse_color: self.base_color_factor,
-        //                                 specular_color: self.base_color_factor,
-        //                                 shininess_and_ambient_strength: Vec2::new(
-        //                                         self.shininess,
-        //                                         self.ambient_strength,
-        //                                 ),
-        //                                 specular_strength_and_diffuse_strength: Vec2::new(
-        //                                         self.specular_strength,
-        //                                         self.diffuse_strength,
-        //                                 ),
-        //                         };
+        pub fn get_shader_resource_data<T>(
+                &self,
+                resource: &ShaderResourceId,
+                f: impl FnOnce(Option<ShaderResourceData>) -> T,
+        ) -> T {
+                match resource {
+                        r if *r == *SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE => {
+                                f(Some(ShaderResourceData::Image2D(self.base_color_texture)))
+                        },
+                        r if *r == *SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE => {
+                                f(Some(ShaderResourceData::Image2D(self.metallic_roughness_texture)))
+                        },
+                        r if *r == *SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE => {
+                                f(Some(ShaderResourceData::Image2D(self.normal_texture)))
+                        },
+                        r if *r == *SHADER_RESOURCE_MATERIAL_DATA => {
+                                let data = MaterialData {
+                                        ambient_color: self.base_color_factor,
+                                        diffuse_color: self.base_color_factor,
+                                        specular_color: self.base_color_factor,
+                                        shininess_and_ambient_strength: Vec2::new(
+                                                self.shininess,
+                                                self.ambient_strength,
+                                        ),
+                                        specular_strength_and_diffuse_strength: Vec2::new(
+                                                self.specular_strength,
+                                                self.diffuse_strength,
+                                        ),
+                                };
 
-        //                         let bytes = unsafe {
-        //                                 ::core::slice::from_raw_parts(
-        //                                         (&data as *const MaterialData) as *const u8,
-        //                                         ::core::mem::size_of::<MaterialData>(),
-        //                                 )
-        //                         };
+                                let bytes = unsafe {
+                                        ::core::slice::from_raw_parts(
+                                                (&data as *const MaterialData) as *const u8,
+                                                ::core::mem::size_of::<MaterialData>(),
+                                        )
+                                };
 
-        //                         f(Some(ShaderResourceData::StructData(bytes)));
-        //                 },
-        //                 _ => {
-        //                         f(None);
-        //                 },
-        //         }
+                                f(Some(ShaderResourceData::StructData(bytes)))
+                        },
+                        _ => f(None),
+                }
+        }
+
+        // pub fn get_shader_resource_data_or_default<T>(
+        //         &self,
+        //         resource: &ShaderResourceId,
+        //         default: &Material,
+        //         f: impl FnOnce(Option<ShaderResourceData>) -> T,
+        // ) -> T {
+        //         self.get_shader_resource_data(resource, |data| match data {
+        //                 Some(data) => f(Some(data)),
+        //                 None => default.get_shader_resource_data(resource, f),
+        //         })
         // }
 }
 
+#[derive(Debug)]
 pub enum ShaderResourceData<'a> {
         StructData(&'a [u8]),
         Image2D(TextureId),
@@ -176,15 +199,16 @@ slotmap::new_key_type! { pub struct ImageId; }
 
 #[derive(Debug, Clone)]
 pub struct Image {
-        // name: Option<String>,
+        pub name: Option<String>,
         pub pixels: Vec<u8>,
         pub width: u32,
         pub height: u32,
         pub format: ImageFormat,
+        pub color_space: ColorSpace,
 }
 
 impl Image {
-        pub fn from_file(path: &Path) -> AnyResult<Self> {
+        pub fn from_file(path: &Path, color_space: ColorSpace) -> AnyResult<Self> {
                 let image = image::open(path)?;
 
                 match image {
@@ -193,10 +217,12 @@ impl Image {
                 }
 
                 Ok(Self {
+                        name: Some(path.to_string_lossy().to_string()),
                         width: image.width(),
                         height: image.height(),
                         pixels: image.into_bytes(),
                         format: ImageFormat::R8G8B8A8,
+                        color_space,
                 })
         }
 }
@@ -204,6 +230,22 @@ impl Image {
 pub type MagFilter = gltf::texture::MagFilter;
 pub type MinFilter = gltf::texture::MinFilter;
 pub type WrappingMode = gltf::texture::WrappingMode;
+
+#[derive(Debug, Clone, Copy)]
+pub enum ColorSpace {
+        Srgb,
+        Linear,
+}
+
+bitflags! {
+        struct ImageUsage: u32 {
+                const BASE_COLOR = 1 << 0;
+                const METALLIC_ROUGHNESS = 1 << 1;
+                const NORMAL = 1 << 2;
+                const OCCLUSION = 1 << 3;
+                const EMISSIVE = 1 << 4;
+        }
+}
 
 slotmap::new_key_type! { pub struct SamplerId; }
 
@@ -455,7 +497,9 @@ impl AssetBundle {
 
                 let (doc, buffer_data, image_data) = gltf::import(gltf)?;
 
-                let images_by_index = Self::load_images(gltf, &doc, image_data, &mut assets.images)?;
+                let image_usages_by_index = Self::discover_image_usages(&doc, &image_data);
+                let images_by_index =
+                        Self::load_images(gltf, &doc, image_data, &image_usages_by_index, &mut assets.images)?;
                 let samplers_by_index = Self::load_samplers(&doc, &mut assets.samplers);
                 let textures_by_index =
                         Self::load_textures(&doc, &images_by_index, &samplers_by_index, &mut assets.textures);
@@ -469,22 +513,49 @@ impl AssetBundle {
                 Ok((Self { assets }, root_model.0))
         }
 
+        fn discover_image_usages(doc: &gltf::Document, image_data: &Vec<gltf::image::Data>) -> Vec<ImageUsage> {
+                let mut usages = vec![ImageUsage::empty(); image_data.len()];
+
+                let mut process_texture = |t: Option<gltf::texture::Texture<'_>>, usage: ImageUsage| {
+                        if let Some(t) = t {
+                                usages[t.index()].insert(usage);
+                        }
+                };
+
+                for material in doc.materials() {
+                        let pbr = material.pbr_metallic_roughness();
+
+                        process_texture(pbr.base_color_texture().map(|t| t.texture()), ImageUsage::BASE_COLOR);
+                        process_texture(
+                                pbr.metallic_roughness_texture().map(|t| t.texture()),
+                                ImageUsage::METALLIC_ROUGHNESS,
+                        );
+                        process_texture(material.normal_texture().map(|t| t.texture()), ImageUsage::NORMAL);
+                        process_texture(material.occlusion_texture().map(|t| t.texture()), ImageUsage::OCCLUSION);
+                        process_texture(material.emissive_texture().map(|t| t.texture()), ImageUsage::EMISSIVE);
+                }
+
+                usages
+        }
+
         fn load_images(
                 gltf_path: &Path,
                 doc: &gltf::Document,
                 image_data: Vec<gltf::image::Data>,
+                image_usages: &Vec<ImageUsage>,
                 out_images: &mut ObservableSlotMap<ImageId, Image, AssetManagerEvent>,
         ) -> Result<Vec<ImageId>, GLTFImportError> {
                 image_data
                         .into_iter()
+                        .zip(image_usages)
                         .zip(doc.images())
-                        .map(|(image, json_image)| {
+                        .map(|((image, image_usage), json_image)| {
                                 if !Self::is_image_format_supported(image.format) {
                                         return Err(GLTFImportError::ImageFormatNotSupported);
                                 }
 
                                 // Image path relative to working directory
-                                let _image_relative_path = match json_image.source() {
+                                let relative_path = match json_image.source() {
                                         gltf::image::Source::Uri { uri, .. } => {
                                                 if uri.contains(':') {
                                                         error!("Trying to import image with non relative uri!");
@@ -497,13 +568,18 @@ impl AssetBundle {
                                                 error!("Image source is not an uri!");
                                                 return Err(GLTFImportError::ImageSourceNotUri);
                                         },
-                                };
+                                }
+                                .clean();
+
+                                let color_space = Self::color_space_from_usage(*image_usage);
 
                                 let image_id = out_images.insert(Image {
+                                        name: Some(relative_path.to_string_lossy().to_string()),
                                         pixels: image.pixels,
                                         width: image.width,
                                         height: image.height,
                                         format: image.format,
+                                        color_space,
                                 });
 
                                 Ok(image_id)
@@ -515,6 +591,19 @@ impl AssetBundle {
                 type Format = gltf::image::Format;
 
                 matches!(format, Format::R8 | Format::R8G8B8 | Format::R8G8B8A8)
+        }
+
+        fn color_space_from_usage(image_usage: ImageUsage) -> ColorSpace {
+                if image_usage.intersects(
+                        ImageUsage::METALLIC_ROUGHNESS
+                                | ImageUsage::NORMAL
+                                | ImageUsage::OCCLUSION
+                                | ImageUsage::EMISSIVE,
+                ) {
+                        ColorSpace::Linear
+                } else {
+                        ColorSpace::Srgb
+                }
         }
 
         fn load_samplers(
@@ -544,14 +633,16 @@ impl AssetBundle {
         ) -> Vec<TextureId> {
                 doc.textures()
                         .map(|t| {
-                                let tex_id = out_textures.insert(Texture {
+                                let texture = Texture {
                                         name: t.name().map(String::from),
                                         image: images_by_index[t.source().index()],
                                         sampler: t
                                                 .sampler()
                                                 .index()
                                                 .map_or(SamplerId::default(), |i| samplers_by_index[i]),
-                                });
+                                };
+
+                                let tex_id = out_textures.insert(texture);
 
                                 tex_id
                         })
@@ -577,14 +668,16 @@ impl AssetBundle {
                                 let metallic_roughness_texture = pbr_mr
                                         .metallic_roughness_texture()
                                         .map_or(TextureId::default(), |t| textures_by_index[t.texture().index()]);
-                                let normal_texture = m.normal_texture().map(|t| textures_by_index[t.texture().index()]);
+                                let normal_texture = m
+                                        .normal_texture()
+                                        .map_or(TextureId::default(), |t| textures_by_index[t.texture().index()]);
                                 let occlusion_texture =
                                         m.occlusion_texture().map(|t| textures_by_index[t.texture().index()]);
                                 let emissive_texture =
                                         m.emissive_texture().map(|t| textures_by_index[t.texture().index()]);
                                 let emissive_factor = Vec3::from_slice(&m.emissive_factor());
 
-                                let mat_id = out_materials.insert(Material {
+                                let material = Material {
                                         name: m.name().map(String::from),
                                         shader: ShaderId::default(),
                                         base_color_factor,
@@ -600,7 +693,9 @@ impl AssetBundle {
                                         occlusion_texture,
                                         emissive_texture,
                                         emissive_factor,
-                                });
+                                };
+
+                                let mat_id = out_materials.insert(material);
 
                                 mat_id
                         })
@@ -861,8 +956,10 @@ impl AssetStorage {
                         model.children.iter_mut().for_each(|mid| *mid = new_model_ids[*mid]);
                 }
 
+                let default_base_color_texture = self.materials[default_material].base_color_texture;
+                let default_normal_texture = self.materials[default_material].normal_texture;
+
                 for (_, &new_key) in &new_material_ids {
-                        let default_base_color_texture = self.materials[default_material].base_color_texture;
                         let material = &mut self.materials[new_key];
 
                         material.shader = if material.shader != default() {
@@ -882,6 +979,15 @@ impl AssetStorage {
                         } else {
                                 material.base_color_texture
                         };
+
+                        material.normal_texture = if material.normal_texture != default() {
+                                new_texture_ids[material.normal_texture]
+                        } else {
+                                default_normal_texture
+                        };
+
+                        material.occlusion_texture = material.occlusion_texture.map(|t| new_texture_ids[t]);
+                        material.emissive_texture = material.emissive_texture.map(|t| new_texture_ids[t]);
                 }
 
                 for (_, &new_key) in &new_texture_ids {
@@ -952,6 +1058,12 @@ impl AssetManager {
                 });
 
                 assets.shader_resources.register(ShaderResource {
+                        id: SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE.clone(),
+                        resource_type: ShaderResourceType::Image2D,
+                        provider: ShaderResourceProvider::Material,
+                });
+
+                assets.shader_resources.register(ShaderResource {
                         id: SHADER_RESOURCE_SKYBOX.clone(),
                         resource_type: ShaderResourceType::ImageCube,
                         provider: ShaderResourceProvider::World,
@@ -978,10 +1090,12 @@ impl AssetManager {
                 });
 
                 let default_diffuse_image = assets.images.insert(Image {
+                        name: Some("default-diffuse-image".into()),
                         pixels: vec![u8::MAX; 4],
                         width: 1,
                         height: 1,
                         format: Format::R8G8B8A8,
+                        color_space: ColorSpace::Srgb,
                 });
 
                 let default_diffuse_texture = assets.textures.insert(Texture {
@@ -991,15 +1105,32 @@ impl AssetManager {
                 });
 
                 let default_specular_image = assets.images.insert(Image {
+                        name: Some("default-specular-image".into()),
                         pixels: vec![u8::MAX; 4],
                         width: 1,
                         height: 1,
                         format: Format::R8G8B8A8,
+                        color_space: ColorSpace::Linear,
                 });
 
                 let default_specular_texture = assets.textures.insert(Texture {
                         name: Some("default-specular-texture".into()),
                         image: default_specular_image,
+                        sampler: default_sampler,
+                });
+
+                let default_normal_image = assets.images.insert(Image {
+                        name: Some("default-normal-image".into()),
+                        pixels: vec![u8::MAX / 2, u8::MAX / 2, u8::MAX, 0],
+                        width: 1,
+                        height: 1,
+                        format: Format::R8G8B8A8,
+                        color_space: ColorSpace::Linear,
+                });
+
+                let default_normal_texture = assets.textures.insert(Texture {
+                        name: Some("default-normal-texture".into()),
+                        image: default_normal_image,
                         sampler: default_sampler,
                 });
 
@@ -1020,7 +1151,7 @@ impl AssetManager {
                         diffuse_strength: DEFAULT_DIFFUSE_STRENGTH,
                         base_color_texture: default_diffuse_texture,
                         metallic_roughness_texture: default_specular_texture,
-                        normal_texture: None,
+                        normal_texture: default_normal_texture,
                         occlusion_texture: None,
                         emissive_texture: None,
                         emissive_factor: Vec3::splat(0.0),

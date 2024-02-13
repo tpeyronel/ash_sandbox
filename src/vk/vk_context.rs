@@ -20,7 +20,7 @@ use super::{
         vk_descriptor_set_allocator::VkDescriptorSetAllocator,
         vk_descriptor_set_layout_cache::VkDescriptorSetLayoutCache,
         vk_wrapper::{
-                impl_destroyable_drop, VkCommandPool, VkDebugUtilsMessenger, VkDevice, VkInstance, VkSurface,
+                impl_destroyable_drop, VkCommandPool, VkDebugUtils, VkDevice, VkInstance, VkSurface,
                 VmaAllocator,
         },
 };
@@ -38,7 +38,7 @@ macro_rules! cstring {
 pub struct VkContext {
         pub instance: Rc<VkInstance>,
 
-        debug_utils_messenger: Option<VkDebugUtilsMessenger>,
+        pub debug_utils: Option<Rc<VkDebugUtils>>,
 
         pub surface: Rc<VkSurface>,
 
@@ -58,9 +58,9 @@ pub struct VkContext {
 }
 
 #[cfg(all(debug_assertions))]
-const ENABLE_VALIDATION_LAYERS: bool = true;
+pub const ENABLE_VALIDATION_LAYERS: bool = true;
 #[cfg(not(debug_assertions))]
-const ENABLE_VALIDATION_LAYERS: bool = false;
+pub const ENABLE_VALIDATION_LAYERS: bool = false;
 
 impl VkContext {
         pub fn new(window: Rc<Window>) -> AnyResult<Self> {
@@ -72,17 +72,13 @@ impl VkContext {
                 let instance = Self::create_instance(&window, &entry, vulkan_api_version)?;
                 trace!("Created VkInstance");
 
-                let debug_utils_messenger = if !ENABLE_VALIDATION_LAYERS {
+                let debug_utils = if !ENABLE_VALIDATION_LAYERS {
                         None
                 } else {
-                        let debug_messenger = {
-                                let debug_cinfo = Self::create_debug_utils_messenger_cinfo();
-
-                                unsafe { VkDebugUtilsMessenger::new(&entry, &instance, &debug_cinfo)? }
-                        };
+                        let debug_cinfo = Self::create_debug_utils_messenger_cinfo();
+                        let debug_utils = unsafe { VkDebugUtils::new(&entry, &instance, &debug_cinfo)? };
                         trace!("Created VkDebugUtilsMessenger");
-
-                        Some(debug_messenger)
+                        Some(Rc::new(debug_utils))
                 };
 
                 let surface = Rc::new(unsafe {
@@ -116,7 +112,7 @@ impl VkContext {
                 Ok(Self {
                         instance,
 
-                        debug_utils_messenger,
+                        debug_utils,
 
                         surface,
 
@@ -148,7 +144,7 @@ impl VkContext {
                 self.allocator.destroy();
                 self.device.destroy();
                 self.surface.destroy();
-                if let Some(dum) = &self.debug_utils_messenger {
+                if let Some(dum) = &self.debug_utils {
                         dum.destroy();
                 }
                 self.instance.destroy();

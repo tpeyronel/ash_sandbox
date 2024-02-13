@@ -10,3 +10,4 @@ vertex-inputs:
   - "positions"
   - "normals"
   - "texture-coordinates"
+  - "tangents"

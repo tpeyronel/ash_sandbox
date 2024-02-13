@@ -6,6 +6,10 @@ use crate::my_glm::*;
 
 pub struct ShouldQuit(pub bool);
 
+pub struct EnableOrbitalVelocity(pub bool);
+
+pub struct EnableAngularVelocity(pub bool);
+
 pub struct Player(pub Entity);
 
 pub struct ActiveCameraControlEnabled(pub bool);

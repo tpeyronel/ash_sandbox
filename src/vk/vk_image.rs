@@ -1,6 +1,9 @@
-use std::{cell::Cell, ops::Deref, rc::Rc};
+use std::{cell::Cell, ffi::CString, ops::Deref, rc::Rc};
 
-use ash::{prelude::VkResult, vk};
+use ash::{
+        prelude::VkResult,
+        vk::{self, Handle},
+};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use vk_mem::Alloc;
@@ -10,7 +13,10 @@ use crate::AnyResult;
 use super::{
         vk_buffer::VkBuffer,
         vk_command_buffer::VkReusableCommandBuffer,
-        vk_wrapper::{impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VmaAllocator},
+        vk_wrapper::{
+                impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkDebugUtils, VkDevice,
+                VmaAllocator,
+        },
 };
 
 #[allow(dead_code)]
@@ -78,6 +84,7 @@ pub struct VkImage {
 
         destroyed: Cell<bool>,
 
+        pub format: vk::Format,
         pub mip_levels: u32,
 }
 
@@ -131,6 +138,7 @@ impl VkImage {
                         handle,
                         alloc,
                         destroyed: Cell::new(false),
+                        format: create_info.format,
                         mip_levels: create_info.mip_levels,
                 })
         }
@@ -147,28 +155,41 @@ impl VkImage {
                 let buffer_size = (cinfo.width * cinfo.height * 4) as vk::DeviceSize;
                 let staging_buffer = VkBuffer::new_transfer_src(device, Rc::clone(&allocator), buffer_size)?;
 
-                match cinfo.format {
-                        vk::Format::R8G8B8A8_SRGB => {
+                let final_format = match cinfo.format {
+                        vk::Format::R8G8B8A8_SRGB | vk::Format::R8G8B8A8_UNORM => {
                                 staging_buffer.write_bytes(cinfo.data)?;
+                                cinfo.format
                         },
-                        vk::Format::R8G8B8_SRGB => {
+                        vk::Format::R8G8B8_SRGB | vk::Format::R8G8B8_UNORM => {
                                 assert_eq!(cinfo.data.len() % 3, 0);
 
                                 for (i, rgb) in cinfo.data.chunks(3).enumerate() {
                                         staging_buffer
                                                 .write_bytes_offsetted(&[rgb[0], rgb[1], rgb[2], u8::MAX], i * 4)?;
                                 }
+
+                                if cinfo.format == vk::Format::R8G8B8_SRGB {
+                                        vk::Format::R8G8B8A8_SRGB
+                                } else {
+                                        vk::Format::R8G8B8A8_UNORM
+                                }
                         },
-                        vk::Format::R8_SRGB => {
+                        vk::Format::R8_SRGB | vk::Format::R8_UNORM => {
                                 for (i, &r) in cinfo.data.iter().enumerate() {
                                         staging_buffer.write_bytes_offsetted(&[r, r, r, u8::MAX], i * 4)?;
                                 }
+
+                                if cinfo.format == vk::Format::R8_SRGB {
+                                        vk::Format::R8G8B8A8_SRGB
+                                } else {
+                                        vk::Format::R8G8B8A8_UNORM
+                                }
                         },
                         _ => panic!("Unsupported vk::Format! {:?}", cinfo.format),
-                }
+                };
                 staging_buffer.unmap_memory();
 
-                let format = vk::Format::R8G8B8A8_SRGB;
+                let format = final_format;
                 let vk_img_cinfo = VkImageCreateInfo {
                         flags: Default::default(),
                         image_type: vk::ImageType::TYPE_2D,
@@ -237,7 +258,7 @@ impl VkImage {
                         device,
                         cmd_buffer,
                         image: *vk_img,
-                        image_format: vk::Format::R8G8B8A8_SRGB,
+                        image_format: format,
                         width: cinfo.width,
                         height: cinfo.height,
                         mip_levels,
@@ -362,6 +383,18 @@ impl VkImage {
                 staging_buffer.destroy();
 
                 Ok(image)
+        }
+
+        pub unsafe fn set_debug_name(&self, device: &VkDevice, debug_utils: &VkDebugUtils, name: &str) -> VkResult<()> {
+                let name = CString::new(name).unwrap();
+                let name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
+                        .object_handle(self.handle.as_raw())
+                        .object_type(vk::ObjectType::IMAGE)
+                        .object_name(name.as_c_str());
+
+                debug_utils
+                        .loader()
+                        .set_debug_utils_object_name(device.handle(), &name_info)
         }
 
         fn cmd_transition_img_layout(tinfo: &TransitionImageLayoutInfo) {
