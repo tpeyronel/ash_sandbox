@@ -5,6 +5,7 @@ use std::{
 };
 
 use crossbeam_channel::Receiver;
+use shader_resource_derive::ShaderStruct;
 use tps_counter::TPSCounter;
 
 use crate::{
@@ -118,6 +119,12 @@ impl Application {
                                                 world.entity_mut(world.get_resource::<ActiveCamera>().unwrap().0);
                                         imgui_util::euler_angles_mut(ui, &mut camera.get_mut::<EulerAngles>().unwrap());
 
+                                        ui.separator();
+                                        ui.text("Shader Settings");
+                                        let mut shader_settings = world.get_resource_mut::<ShaderSettings>().unwrap();
+                                        imgui_util::shader_settings(ui, &mut shader_settings);
+                                        ui.separator();
+
                                         let mut enable_orbital_velocity =
                                                 world.get_resource_mut::<EnableOrbitalVelocity>().unwrap();
                                         ui.checkbox("enable orbital velocity", &mut enable_orbital_velocity.0);
@@ -213,6 +220,7 @@ impl Application {
                 world.insert_resource(ShouldQuit(false));
                 world.insert_resource(EnableOrbitalVelocity(true));
                 world.insert_resource(EnableAngularVelocity(true));
+                world.insert_resource(ShaderSettings::default());
 
                 let cursor_state = CursorState::Normal;
                 let window_mode = WindowMode::Windowed;
@@ -1219,4 +1227,18 @@ fn register_event<T: Resource>(world: &mut World, schedule: &mut Schedule) {
         let events = Events::<T>::from_world(world);
         world.insert_resource(events);
         schedule.add_system_to_stage(CoreStage::Cleanup, Events::<T>::update_system);
+}
+
+#[repr(C)]
+#[derive(ShaderStruct)]
+pub struct ShaderSettings {
+        pub alt_normals: Vec2u,
+}
+
+impl Default for ShaderSettings {
+        fn default() -> Self {
+                Self {
+                        alt_normals: Vec2u::new(0, 0),
+                }
+        }
 }

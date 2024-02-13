@@ -3,6 +3,7 @@
 
 #resource samplerCube u_cube_shadow_map : CUBE_SHADOW_MAP;
 #resource sampler2D u_shadow_map : SHADOW_MAP;
+#resource ShaderSettings u_settings : SHADER_SETTINGS;
 #resource WorldMatrices u_world_matrices : WORLD_MATRICES;
 #resource WorldLights u_lights : WORLD_LIGHTS;
 #resource MaterialData u_material : MATERIAL_DATA;
@@ -178,7 +179,11 @@ void main() {
 
         vec3 camera_rdir = normalize(u_world_matrices.view_pos.xyz - i_frag_pos);
         vec3 normal = texture(u_normal_map, i_tex_coord).xyz * 2.0 - 1.0;
-        normal = normalize(i_tbn * normal);
+        if (u_settings.alt_normals.x == 0) {
+                normal = normalize(i_tbn * normal);
+        } else {
+                normal = normalize(i_normal);
+        }
 
         vec3 output_color = vec3(0.0);
 

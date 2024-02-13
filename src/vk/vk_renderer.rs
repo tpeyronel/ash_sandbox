@@ -21,7 +21,7 @@ use super::{
         },
 };
 use crate::{
-        application::InterpGlobalTransform,
+        application::{InterpGlobalTransform, ShaderSettings},
         asset_manager::{AssetManager, AssetManagerEvent, MaterialId, MaterialMesh, MeshId, ShaderId},
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE, SHADOW_MAP_HEIGHT, SHADOW_MAP_WIDTH},
@@ -32,8 +32,8 @@ use crate::{
         shader_resource::ShaderResourceId,
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_CUBE_SHADOW_MAP, SHADER_RESOURCE_MATERIAL_DATA,
-                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX,
-                SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
+                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP,
+                SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
         },
         skybox::Skybox,
         util::{RefIntoBytesSlice, RefIntoSlice},
@@ -265,6 +265,13 @@ impl Renderer for VkRenderer {
                 };
 
                 let frame_data = &self.frames_data[self.framei];
+
+                Self::write_struct_resource(
+                        self.framei,
+                        &self.vk_asset_manager,
+                        &SHADER_RESOURCE_SHADER_SETTINGS,
+                        world.get_resource::<ShaderSettings>().unwrap(),
+                )?;
 
                 let PhysicalSize { width, height } = self.window.inner_size();
                 let aspect_ratio = width as f32 / height as f32;

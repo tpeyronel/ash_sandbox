@@ -85,18 +85,7 @@ pub struct ShaderStructDeclaration {
 
 impl ShaderStructDeclaration {
         pub fn compute_size(&self) -> usize {
-                self.fields
-                        .iter()
-                        .map(|f| match &f.field_type {
-                                ShaderStructFieldType::Struct(child) => child.compute_size(),
-                                ShaderStructFieldType::Vec2 => std::mem::size_of::<crate::my_glm::Vec2>(),
-                                ShaderStructFieldType::Vec4 => std::mem::size_of::<crate::my_glm::Vec4>(),
-                                ShaderStructFieldType::Mat4 => std::mem::size_of::<crate::my_glm::Mat4>(),
-                                ShaderStructFieldType::Array { element_type, length } => {
-                                        element_type.compute_size() * length
-                                },
-                        })
-                        .sum()
+                self.fields.iter().map(|f| f.field_type.compute_size()).sum()
         }
 
         pub fn glsl_type_declaration(&self) -> String {
@@ -127,6 +116,8 @@ pub enum ShaderStructFieldType {
         Vec2,
         Vec4,
         Mat4,
+        Vec2u,
+        Vec4u,
         Array {
                 element_type: Box<ShaderStructFieldType>,
                 length: usize,
@@ -140,6 +131,8 @@ impl ShaderStructFieldType {
                         ShaderStructFieldType::Vec2 => std::mem::size_of::<crate::my_glm::Vec2>(),
                         ShaderStructFieldType::Vec4 => std::mem::size_of::<crate::my_glm::Vec4>(),
                         ShaderStructFieldType::Mat4 => std::mem::size_of::<crate::my_glm::Mat4>(),
+                        ShaderStructFieldType::Vec2u => std::mem::size_of::<crate::my_glm::Vec2u>(),
+                        ShaderStructFieldType::Vec4u => std::mem::size_of::<crate::my_glm::Vec4u>(),
                         ShaderStructFieldType::Array { element_type, length } => element_type.compute_size() * length,
                 }
         }
@@ -149,6 +142,8 @@ impl ShaderStructFieldType {
                         ShaderStructFieldType::Vec2 => "vec2",
                         ShaderStructFieldType::Vec4 => "vec4",
                         ShaderStructFieldType::Mat4 => "mat4",
+                        ShaderStructFieldType::Vec2u => "uvec2",
+                        ShaderStructFieldType::Vec4u => "uvec4",
                         ShaderStructFieldType::Struct(ShaderStructDeclaration { type_name, .. }) => &type_name,
                         ShaderStructFieldType::Array { element_type, .. } => element_type.glsl_type_name(),
                 }
@@ -156,15 +151,10 @@ impl ShaderStructFieldType {
 
         pub fn glsl_type_name_with_field(&self, field_name: &str) -> String {
                 match self {
-                        ShaderStructFieldType::Vec2 => format!("vec2 {}", field_name),
-                        ShaderStructFieldType::Vec4 => format!("vec4 {}", field_name),
-                        ShaderStructFieldType::Mat4 => format!("mat4 {}", field_name),
-                        ShaderStructFieldType::Struct(ShaderStructDeclaration { type_name, .. }) => {
-                                format!("{} {}", type_name, field_name)
-                        },
                         ShaderStructFieldType::Array { element_type, length } => {
                                 format!("{} {}[{}]", element_type.glsl_type_name(), field_name, length)
                         },
+                        _ => format!("{} {}", self.glsl_type_name(), field_name),
                 }
         }
 }
@@ -188,6 +178,18 @@ impl ShaderStructFieldTypeProvider for crate::my_glm::Vec4 {
 impl ShaderStructFieldTypeProvider for crate::my_glm::Mat4 {
         fn shader_struct_field_type() -> ShaderStructFieldType {
                 ShaderStructFieldType::Mat4
+        }
+}
+
+impl ShaderStructFieldTypeProvider for crate::my_glm::Vec2u {
+        fn shader_struct_field_type() -> ShaderStructFieldType {
+                ShaderStructFieldType::Vec2u
+        }
+}
+
+impl ShaderStructFieldTypeProvider for crate::my_glm::Vec4u {
+        fn shader_struct_field_type() -> ShaderStructFieldType {
+                ShaderStructFieldType::Vec4u
         }
 }
 

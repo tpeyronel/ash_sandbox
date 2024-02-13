@@ -3,6 +3,7 @@ use crate::shader_resource::ShaderResourceId;
 use lazy_static::lazy_static;
 
 lazy_static! {
+        pub static ref SHADER_RESOURCE_SHADER_SETTINGS: ShaderResourceId = "SHADER_SETTINGS".into();
         pub static ref SHADER_RESOURCE_WORLD_MATRICES: ShaderResourceId = "WORLD_MATRICES".into();
         pub static ref SHADER_RESOURCE_WORLD_LIGHTS: ShaderResourceId = "WORLD_LIGHTS".into();
         pub static ref SHADER_RESOURCE_BILLBOARD_DATA: ShaderResourceId = "BILLBOARD_DATA".into();

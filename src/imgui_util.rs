@@ -1,6 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use crate::{
+        application::ShaderSettings,
         asset_manager::Material,
         components::{DirectionalLight, PointLight, Spotlight, Transform},
         euler_angles::EulerAngles,
@@ -200,4 +201,10 @@ pub fn material_mut(ui: &imgui::Ui, material: &mut Material) {
         ui.slider("ambient strength", 0.0f32, 1.0, &mut material.ambient_strength);
         ui.slider("specular strength", 0.0f32, 1.0, &mut material.specular_strength);
         ui.slider("diffuse strength", 0.0f32, 1.0, &mut material.diffuse_strength);
+}
+
+pub fn shader_settings(ui: &imgui::Ui, shader_settings: &mut ShaderSettings) {
+        let mut alt_normals = shader_settings.alt_normals.x != 0;
+        ui.checkbox("alt normals", &mut alt_normals);
+        shader_settings.alt_normals.x = alt_normals as u32;
 }
