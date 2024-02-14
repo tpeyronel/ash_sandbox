@@ -397,7 +397,7 @@ impl VkImage {
                         .set_debug_utils_object_name(device.handle(), &name_info)
         }
 
-        fn cmd_transition_img_layout(tinfo: &TransitionImageLayoutInfo) {
+        pub fn cmd_transition_img_layout(tinfo: &TransitionImageLayoutInfo) {
                 let barrier = vk::ImageMemoryBarrier {
                         src_access_mask: tinfo.src_access_mask,
                         dst_access_mask: tinfo.dst_access_mask,
@@ -427,6 +427,51 @@ impl VkImage {
                                 std::slice::from_ref(&barrier),
                         );
                 }
+        }
+
+        pub unsafe fn cmd_copy_image_to_image(
+                device: &ash::Device,
+                cmd_buffer: vk::CommandBuffer,
+                width: u32,
+                height: u32,
+                src_image: vk::Image,
+                dst_image: vk::Image,
+                filter: vk::Filter,
+        ) {
+                let subresource = vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                };
+
+                let offsets = [
+                        vk::Offset3D { x: 0, y: 0, z: 0 },
+                        vk::Offset3D {
+                                x: width as i32,
+                                y: height as i32,
+                                z: 1,
+                        },
+                ];
+
+                let region = vk::ImageBlit2::builder()
+                        .src_subresource(subresource)
+                        .src_offsets(offsets)
+                        .dst_subresource(subresource)
+                        .dst_offsets(offsets)
+                        .build();
+
+                let regions = [region];
+
+                let blit_image_info = vk::BlitImageInfo2::builder()
+                        .src_image(src_image)
+                        .src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                        .dst_image(dst_image)
+                        .dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                        .regions(&regions)
+                        .filter(filter);
+
+                device.cmd_blit_image2(cmd_buffer, &blit_image_info);
         }
 
         fn cmd_copy_buffer_to_image(
@@ -583,21 +628,21 @@ impl_destroyable_expr!(VkImage, vk::Image, |s: &VkImage| {
         s.allocator.destroy_image(s.handle, s.alloc);
 });
 
-struct TransitionImageLayoutInfo<'a> {
-        device: &'a ash::Device,
-        cmd_buffer: vk::CommandBuffer,
-        image: vk::Image,
-        base_mip_level: u32,
-        mip_levels: u32,
-        base_array_layer: u32,
-        layer_count: u32,
-        aspect_mask: vk::ImageAspectFlags,
-        src_access_mask: vk::AccessFlags,
-        dst_access_mask: vk::AccessFlags,
-        old_layout: vk::ImageLayout,
-        new_layout: vk::ImageLayout,
-        src_stage_mask: vk::PipelineStageFlags,
-        dst_stage_mask: vk::PipelineStageFlags,
+pub struct TransitionImageLayoutInfo<'a> {
+        pub device: &'a ash::Device,
+        pub cmd_buffer: vk::CommandBuffer,
+        pub image: vk::Image,
+        pub base_mip_level: u32,
+        pub mip_levels: u32,
+        pub base_array_layer: u32,
+        pub layer_count: u32,
+        pub aspect_mask: vk::ImageAspectFlags,
+        pub src_stage_mask: vk::PipelineStageFlags,
+        pub dst_stage_mask: vk::PipelineStageFlags,
+        pub src_access_mask: vk::AccessFlags,
+        pub dst_access_mask: vk::AccessFlags,
+        pub old_layout: vk::ImageLayout,
+        pub new_layout: vk::ImageLayout,
 }
 
 struct GenerateMipmapsInfo<'a> {

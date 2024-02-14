@@ -20,8 +20,7 @@ use super::{
         vk_descriptor_set_allocator::VkDescriptorSetAllocator,
         vk_descriptor_set_layout_cache::VkDescriptorSetLayoutCache,
         vk_wrapper::{
-                impl_destroyable_drop, VkCommandPool, VkDebugUtils, VkDevice, VkInstance, VkSurface,
-                VmaAllocator,
+                impl_destroyable_drop, VkCommandPool, VkDebugUtils, VkDevice, VkInstance, VkSurface, VmaAllocator,
         },
 };
 use crate::{
@@ -225,13 +224,15 @@ impl VkContext {
         ) -> AnyResult<(Rc<VkDevice>, VkQueues)> {
                 let memory_budget_ext = CStr::from_bytes_with_nul(b"VK_EXT_memory_budget\0").unwrap();
 
-                let req_device_extensions_raw = vec![
-                        Swapchain::name().as_ptr(),
-                        memory_budget_ext.as_ptr(),
-                ];
+                let req_device_extensions_raw = vec![Swapchain::name().as_ptr(), memory_budget_ext.as_ptr()];
                 let req_device_features = vk::PhysicalDeviceFeatures::builder()
                         .sampler_anisotropy(true)
                         .shader_clip_distance(true);
+
+                let mut features13 = vk::PhysicalDeviceVulkan13Features::builder().synchronization2(true);
+                let mut features = vk::PhysicalDeviceFeatures2::builder()
+                        .features(req_device_features.build())
+                        .push_next(&mut features13);
 
                 let queue_priorities;
 
@@ -260,7 +261,8 @@ impl VkContext {
                 let device_cinfo = vk::DeviceCreateInfo::builder()
                         .queue_create_infos(&device_q_cinfos)
                         .enabled_extension_names(&req_device_extensions_raw)
-                        .enabled_features(&req_device_features);
+                        // .enabled_features(&req_device_features)
+                        .push_next(&mut features);
 
                 let device = unsafe { Rc::new(VkDevice::new(instance, physical_device, &device_cinfo)?) };
 

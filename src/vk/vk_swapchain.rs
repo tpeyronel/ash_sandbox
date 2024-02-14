@@ -11,8 +11,8 @@ use super::{
         vk_image::{VkImage, VkImageCreateInfo},
         vk_util,
         vk_wrapper::{
-                impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkDevice, VkFramebuffer,
-                VkImageView, VkInstance, VkSurface, VmaAllocator,
+                impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkDevice, VkImageView,
+                VkInstance, VkSurface, VmaAllocator,
         },
 };
 
@@ -30,8 +30,9 @@ pub struct VkSwapchain {
         handle: vk::SwapchainKHR,
         destroyed: Cell<bool>,
 
-        pub color_format: vk::SurfaceFormatKHR,
+        pub color_format: vk::Format,
         pub depth_format: vk::Format,
+        pub present_format: vk::SurfaceFormatKHR,
         pub extent: vk::Extent2D,
         pub viewport: vk::Viewport,
         pub scissor: vk::Rect2D,
@@ -44,10 +45,12 @@ pub struct VkSwapchain {
         pub depth_img: VkImage,
         pub depth_img_view: VkImageView,
 
-        pub resolve_imgs: Vec<vk::Image>,
-        pub resolve_img_views: Vec<VkImageView>,
+        pub resolve_img: VkImage,
+        pub resolve_img_view: VkImageView,
+
+        pub present_imgs: Vec<vk::Image>,
+        pub present_img_views: Vec<VkImageView>,
         pub img_count: u32,
-        pub framebuffers: Vec<VkFramebuffer>,
 }
 
 impl VkSwapchain {
@@ -60,9 +63,10 @@ impl VkSwapchain {
                 allocator: Rc<VmaAllocator>,
                 desired_img_count: u32,
         ) -> AnyResult<Self> {
-                let color_format = Self::choose_color_format(&surface, physical_device)?;
-                debug!("VkSwapchain color format ({:?})", color_format);
+                let color_format = Self::choose_color_format(&instance, physical_device)?;
                 let depth_format = Self::choose_depth_format(&instance, physical_device)?;
+                let present_format = Self::choose_present_format(&surface, physical_device)?;
+                debug!("VkSwapchain present format ({:?})", present_format);
 
                 let surface_capabilities = unsafe {
                         surface.loader()
@@ -88,10 +92,10 @@ impl VkSwapchain {
                 let swch_cinfo = vk::SwapchainCreateInfoKHR::builder()
                         .surface(**surface)
                         .min_image_count(requested_img_count)
-                        .image_color_space(color_format.color_space)
-                        .image_format(color_format.format)
+                        .image_color_space(present_format.color_space)
+                        .image_format(present_format.format)
                         .image_extent(extent)
-                        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+                        .image_usage(vk::ImageUsageFlags::TRANSFER_DST)
                         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
                         .pre_transform(pre_transform)
                         .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
@@ -108,9 +112,15 @@ impl VkSwapchain {
                 let (color_img, color_img_view) = Self::create_color_img_resources(
                         Rc::clone(&device),
                         Rc::clone(&allocator),
-                        color_format.format,
+                        color_format,
                         &extent,
                         samples,
+                )?;
+                let (resolve_img, resolve_img_view) = Self::create_resolve_img_resources(
+                        Rc::clone(&device),
+                        Rc::clone(&allocator),
+                        color_format,
+                        &extent,
                 )?;
                 let (depth_img, depth_img_view) = Self::create_depth_img_resources(
                         Rc::clone(&device),
@@ -120,11 +130,11 @@ impl VkSwapchain {
                         samples,
                 )?;
 
-                let resolve_imgs = unsafe { loader.get_swapchain_images(handle)? };
-                let resolve_img_views =
-                        Self::create_resolve_img_views(Rc::clone(&device), &resolve_imgs, color_format.format)?;
+                let present_imgs = unsafe { loader.get_swapchain_images(handle)? };
+                let present_img_views =
+                        Self::create_present_img_views(Rc::clone(&device), &present_imgs, present_format.format)?;
 
-                let img_count = resolve_imgs.len() as u32;
+                let img_count = present_imgs.len() as u32;
 
                 Ok(Self {
                         loader,
@@ -142,6 +152,7 @@ impl VkSwapchain {
 
                         color_format,
                         depth_format,
+                        present_format,
 
                         extent,
                         viewport,
@@ -155,29 +166,28 @@ impl VkSwapchain {
                         depth_img,
                         depth_img_view,
 
-                        resolve_imgs,
-                        resolve_img_views,
-                        img_count,
+                        resolve_img,
+                        resolve_img_view,
 
-                        framebuffers: vec![],
+                        present_imgs,
+                        present_img_views,
+                        img_count,
                 })
         }
 
         pub fn recreate(&mut self) -> VkResult<VkSwapchainRecreationInfo> {
-                self.framebuffers.drain(..).for_each(|fb| unsafe { fb.destroy() });
-
                 let mut recreation_info = VkSwapchainRecreationInfo {
-                        color_format_changed: false,
+                        present_format_changed: false,
                         extent_changed: false,
                         samples_changed: false,
                         img_count_changed: false,
                 };
 
-                let old_color_format = self.color_format;
-                self.color_format = Self::choose_color_format(&self.surface, self.physical_device)?;
-                recreation_info.color_format_changed = old_color_format != self.color_format;
-                if recreation_info.color_format_changed {
-                        debug!("VkSwapchain color format ({:?})", self.color_format);
+                let old_present_format = self.present_format;
+                self.present_format = Self::choose_present_format(&self.surface, self.physical_device)?;
+                recreation_info.present_format_changed = old_present_format != self.present_format;
+                if recreation_info.present_format_changed {
+                        debug!("VkSwapchain present format ({:?})", self.color_format);
                 }
 
                 self.depth_format = Self::choose_depth_format(&self.instance, self.physical_device)?;
@@ -209,8 +219,8 @@ impl VkSwapchain {
                 let swch_cinfo = vk::SwapchainCreateInfoKHR {
                         surface: **self.surface,
                         min_image_count: requested_img_count,
-                        image_format: self.color_format.format,
-                        image_color_space: self.color_format.color_space,
+                        image_format: self.present_format.format,
+                        image_color_space: self.present_format.color_space,
                         image_extent: self.extent,
                         image_array_layers: 1,
                         image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
@@ -236,20 +246,32 @@ impl VkSwapchain {
                         debug!("VkSwapchain samples: {:?}", self.samples);
                 }
 
-                if recreation_info.color_format_changed
+                // This doesn't make much sense i think.
+                if recreation_info.present_format_changed
                         || recreation_info.extent_changed
                         || recreation_info.samples_changed
                 {
                         let (color_img, color_img_view) = Self::create_color_img_resources(
                                 Rc::clone(&self.device),
                                 Rc::clone(&self.allocator),
-                                self.color_format.format,
+                                self.color_format,
                                 &self.extent,
                                 self.samples,
                         )?;
                         unsafe {
                                 std::mem::replace(&mut self.color_img, color_img).destroy();
                                 std::mem::replace(&mut self.color_img_view, color_img_view).destroy();
+                        }
+
+                        let (resolve_img, resolve_img_view) = Self::create_resolve_img_resources(
+                                Rc::clone(&self.device),
+                                Rc::clone(&self.allocator),
+                                self.color_format,
+                                &self.extent,
+                        )?;
+                        unsafe {
+                                std::mem::replace(&mut self.resolve_img, resolve_img).destroy();
+                                std::mem::replace(&mut self.resolve_img_view, resolve_img_view).destroy();
                         }
 
                         let (depth_img, depth_img_view) = Self::create_depth_img_resources(
@@ -265,45 +287,22 @@ impl VkSwapchain {
                         }
                 }
 
-                self.resolve_imgs = unsafe { loader.get_swapchain_images(self.handle)? };
-                unsafe { self.resolve_img_views.drain(..).for_each(|iv| iv.destroy()) };
-                self.resolve_img_views = Self::create_resolve_img_views(
+                self.present_imgs = unsafe { loader.get_swapchain_images(self.handle)? };
+                unsafe { self.present_img_views.drain(..).for_each(|iv| iv.destroy()) };
+                self.present_img_views = Self::create_present_img_views(
                         Rc::clone(&self.device),
-                        &self.resolve_imgs,
-                        self.color_format.format,
+                        &self.present_imgs,
+                        self.present_format.format,
                 )?;
 
                 let old_img_count = self.img_count;
-                self.img_count = self.resolve_imgs.len() as u32;
+                self.img_count = self.present_imgs.len() as u32;
                 recreation_info.img_count_changed = old_img_count != self.img_count;
                 if recreation_info.img_count_changed {
                         debug!("VkSwapchain image count: {}", self.img_count);
                 }
 
                 Ok(recreation_info)
-        }
-
-        pub fn create_framebuffers(&mut self, render_pass: vk::RenderPass) -> VkResult<()> {
-                assert!(self.framebuffers.is_empty());
-
-                self.framebuffers = self
-                        .resolve_img_views
-                        .iter()
-                        .map(|resolve_img_view| {
-                                let attachments = [*self.color_img_view, *self.depth_img_view, **resolve_img_view];
-
-                                let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
-                                        .render_pass(render_pass)
-                                        .attachments(&attachments)
-                                        .width(self.extent.width)
-                                        .height(self.extent.height)
-                                        .layers(1);
-
-                                unsafe { VkFramebuffer::new(&self.device, &framebuffer_cinfo) }
-                        })
-                        .collect::<VkResult<Vec<VkFramebuffer>>>()?;
-
-                Ok(())
         }
 
         pub unsafe fn acquire_next_image(
@@ -319,7 +318,29 @@ impl VkSwapchain {
                 self.loader.queue_present(queue, present_info)
         }
 
-        fn choose_color_format(
+        fn choose_color_format(instance: &VkInstance, physical_device: vk::PhysicalDevice) -> VkResult<vk::Format> {
+                let candidates = [vk::Format::R16G16B16A16_SFLOAT];
+
+                let features = vk::FormatFeatureFlags::COLOR_ATTACHMENT | vk::FormatFeatureFlags::BLIT_SRC;
+
+                vk_util::find_best_format_for_optimal_tiling(instance, physical_device, &candidates, features)
+        }
+
+        fn choose_depth_format(instance: &VkInstance, physical_device: vk::PhysicalDevice) -> VkResult<vk::Format> {
+                let candidates = [
+                        vk::Format::D32_SFLOAT,
+                        vk::Format::D32_SFLOAT_S8_UINT,
+                        vk::Format::D24_UNORM_S8_UINT,
+                        vk::Format::D16_UNORM,
+                        vk::Format::D16_UNORM_S8_UINT,
+                ];
+
+                let features = vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT;
+
+                vk_util::find_best_format_for_optimal_tiling(instance, physical_device, &candidates, features)
+        }
+
+        fn choose_present_format(
                 surface: &VkSurface,
                 physical_device: vk::PhysicalDevice,
         ) -> VkResult<vk::SurfaceFormatKHR> {
@@ -339,20 +360,6 @@ impl VkSwapchain {
                 } else {
                         Ok(formats[0])
                 }
-        }
-
-        fn choose_depth_format(instance: &VkInstance, physical_device: vk::PhysicalDevice) -> VkResult<vk::Format> {
-                let candidates = [
-                        vk::Format::D32_SFLOAT,
-                        vk::Format::D32_SFLOAT_S8_UINT,
-                        vk::Format::D24_UNORM_S8_UINT,
-                        vk::Format::D16_UNORM,
-                        vk::Format::D16_UNORM_S8_UINT,
-                ];
-
-                let features = vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT;
-
-                vk_util::find_best_format_for_optimal_tiling(instance, physical_device, &candidates, features)
         }
 
         fn clamp_image_count(image_count: u32, surface_capabilities: &vk::SurfaceCapabilitiesKHR) -> u32 {
@@ -459,8 +466,7 @@ impl VkSwapchain {
                                 array_layers: 1,
                                 samples,
                                 tiling: vk::ImageTiling::OPTIMAL,
-                                usage: vk::ImageUsageFlags::TRANSIENT_ATTACHMENT
-                                        | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                                usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
                                 queue_family_indices: None,
                                 initial_layout: vk::ImageLayout::UNDEFINED,
 
@@ -493,6 +499,63 @@ impl VkSwapchain {
                 };
 
                 Ok((color_img, color_img_view))
+        }
+
+        fn create_resolve_img_resources(
+                device: Rc<VkDevice>,
+                allocator: Rc<VmaAllocator>,
+                format: vk::Format,
+                extent: &vk::Extent2D,
+        ) -> VkResult<(VkImage, VkImageView)> {
+                let resolve_img = unsafe {
+                        let resolve_img_cinfo = VkImageCreateInfo {
+                                flags: Default::default(),
+                                image_type: vk::ImageType::TYPE_2D,
+                                format,
+                                extent: vk::Extent3D {
+                                        width: extent.width,
+                                        height: extent.height,
+                                        depth: 1,
+                                },
+                                mip_levels: 1,
+                                array_layers: 1,
+                                samples: vk::SampleCountFlags::TYPE_1,
+                                tiling: vk::ImageTiling::OPTIMAL,
+                                usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
+                                        | vk::ImageUsageFlags::TRANSFER_DST // for color -> resolve
+                                        | vk::ImageUsageFlags::TRANSFER_SRC, // for resolve -> present
+                                queue_family_indices: None,
+                                initial_layout: vk::ImageLayout::UNDEFINED,
+
+                                mem_usage: vma::MemoryUsage::GpuOnly,
+                                alloc_cflags: vma::AllocationCreateFlags::empty(),
+                                required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                                preferred_flags: Default::default(),
+                        };
+
+                        VkImage::new(allocator, &resolve_img_cinfo)?
+                };
+
+                let resolve_img_view = unsafe {
+                        let resolve_img_view_cinfo = vk::ImageViewCreateInfo {
+                                image: *resolve_img,
+                                view_type: vk::ImageViewType::TYPE_2D,
+                                format,
+                                components: vk::ComponentMapping::default(),
+                                subresource_range: vk::ImageSubresourceRange {
+                                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                                        base_mip_level: 0,
+                                        level_count: 1,
+                                        base_array_layer: 0,
+                                        layer_count: 1,
+                                },
+                                ..vk::ImageViewCreateInfo::default()
+                        };
+
+                        VkImageView::new(device, &resolve_img_view_cinfo)?
+                };
+
+                Ok((resolve_img, resolve_img_view))
         }
 
         fn create_depth_img_resources(
@@ -551,7 +614,7 @@ impl VkSwapchain {
                 Ok((depth_img, depth_img_view))
         }
 
-        fn create_resolve_img_views(
+        fn create_present_img_views(
                 device: Rc<VkDevice>,
                 resolve_imgs: &[vk::Image],
                 format: vk::Format,
@@ -581,8 +644,9 @@ impl VkSwapchain {
 }
 
 impl_destroyable_expr!(VkSwapchain, vk::SwapchainKHR, |s: &VkSwapchain| {
-        s.resolve_img_views.iter().for_each(|iv| iv.destroy());
-        s.framebuffers.iter().for_each(|fb| fb.destroy());
+        s.present_img_views.iter().for_each(|iv| iv.destroy());
+        s.resolve_img_view.destroy();
+        s.resolve_img.destroy();
         s.depth_img_view.destroy();
         s.depth_img.destroy();
         s.color_img_view.destroy();
@@ -600,7 +664,7 @@ bitflags! {
 }
 
 pub struct VkSwapchainRecreationInfo {
-        pub color_format_changed: bool,
+        pub present_format_changed: bool,
         pub extent_changed: bool,
         pub samples_changed: bool,
         pub img_count_changed: bool,
