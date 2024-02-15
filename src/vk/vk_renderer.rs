@@ -221,7 +221,7 @@ impl VkRenderer {
                         in_flight_frames: max_concurrent_frames,
                         enable_depth_test: false,
                         enable_depth_write: false,
-                        sample_count: swapchain.samples,
+                        sample_count: vk::SampleCountFlags::TYPE_1,
                 };
 
                 let imgui_renderer = Some(imgui_rs_vulkan_renderer::Renderer::with_default_allocator(
@@ -230,7 +230,7 @@ impl VkRenderer {
                         (**vk_context.device).clone(),
                         vk_context.queues.graphics,
                         **vk_context.cmd_pool,
-                        *render_pass,
+                        *postprocess_render_pass,
                         imguic,
                         Some(imgui_renderer_options),
                 )?);
@@ -513,14 +513,9 @@ impl Renderer for VkRenderer {
                         self.map_point_shadows(&asset_manager, &vk_render_scene)?;
                         self.map_shadows(&asset_manager, &vk_render_scene)?;
 
-                        self.draw_scene(
-                                *frame_data.draw_cmd_buffer,
-                                &asset_manager,
-                                &vk_render_scene,
-                                imgui_draw_data,
-                        )?;
+                        self.draw_scene(*frame_data.draw_cmd_buffer, &asset_manager, &vk_render_scene)?;
 
-                        self.do_postprocess(&asset_manager);
+                        self.do_postprocess(&asset_manager, imgui_draw_data)?;
 
                         self.end_frame(imagei)?;
                 }
@@ -610,10 +605,10 @@ impl VkRenderer {
                                 self.swapchain.depth_format,
                         )?;
 
-                        self.imgui_renderer
-                                .as_mut()
-                                .unwrap()
-                                .set_render_pass(*self.render_pass)?;
+                        // self.imgui_renderer
+                        //         .as_mut()
+                        //         .unwrap()
+                        //         .set_render_pass(*self.render_pass)?;
 
                         recreate_pipeline = true;
                 }
@@ -1424,8 +1419,7 @@ impl VkRenderer {
                 cmd_buffer: vk::CommandBuffer,
                 asset_manager: &AssetManager,
                 scene: &VkRenderScene,
-                imgui_draw_data: &imgui::DrawData,
-        ) -> AnyResult<()> {
+        ) -> VkResult<()> {
                 let time = self.creation_instant.elapsed().as_secs_f32();
                 let intensity = (((time.sin() + 1.0) / 2.0) * 0.05) + 0.05;
 
@@ -1479,11 +1473,6 @@ impl VkRenderer {
                 for (shader_id, shader_group) in &scene.mesh_instances {
                         self.draw_shader_group(asset_manager, cmd_buffer, shader_id, shader_group)?;
                 }
-
-                self.imgui_renderer
-                        .as_mut()
-                        .unwrap()
-                        .cmd_draw(cmd_buffer, imgui_draw_data)?;
 
                 self.vk_context.device.cmd_end_render_pass(cmd_buffer);
 
@@ -1609,7 +1598,11 @@ impl VkRenderer {
                 device.cmd_draw_indexed(cmd_buffer, vk_mesh.indices.index_count, 1, 0, 0, 0);
         }
 
-        unsafe fn do_postprocess(&self, asset_manager: &AssetManager) {
+        unsafe fn do_postprocess(
+                &mut self,
+                asset_manager: &AssetManager,
+                imgui_draw_data: &imgui::DrawData,
+        ) -> AnyResult<()> {
                 let frame_data = &self.frames_data[self.framei];
                 let cmd_buffer = *frame_data.draw_cmd_buffer;
 
@@ -1669,7 +1662,14 @@ impl VkRenderer {
 
                 self.vk_context.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
 
+                self.imgui_renderer
+                        .as_mut()
+                        .unwrap()
+                        .cmd_draw(cmd_buffer, imgui_draw_data)?;
+
                 self.vk_context.device.cmd_end_render_pass(cmd_buffer);
+
+                Ok(())
         }
 
         unsafe fn end_frame(&mut self, imagei: u32) -> AnyResult<()> {
