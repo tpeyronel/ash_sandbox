@@ -355,6 +355,9 @@ impl Application {
                 let _shadow_map_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/shadow_map/shadow_map.yaml"))?;
 
+                let _hdr_shader =
+                        asset_manager.load_shader_from_yaml(Path::new("res/shader/hdr_shader/hdr_shader.yaml"))?;
+
                 let _cube_shadow_map_shader = asset_manager
                         .load_shader_from_yaml(Path::new("res/shader/cube_shadow_map/cube_shadow_map.yaml"))?;
 

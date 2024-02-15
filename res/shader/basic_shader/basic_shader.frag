@@ -224,8 +224,5 @@ void main() {
                 specular_texel
         );
 
-        float gamma = 2.2;
-        output_color = pow(output_color, vec3(1.0 / gamma));
-
         o_output = vec4(output_color, 1.0);
-        }
+}

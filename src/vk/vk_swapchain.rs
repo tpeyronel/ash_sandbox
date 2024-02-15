@@ -45,8 +45,8 @@ pub struct VkSwapchain {
         pub depth_img: VkImage,
         pub depth_img_view: VkImageView,
 
-        pub resolve_img: VkImage,
-        pub resolve_img_view: VkImageView,
+        pub resolve_imgs: [VkImage; 2],
+        pub resolve_img_views: [VkImageView; 2],
 
         pub present_imgs: Vec<vk::Image>,
         pub present_img_views: Vec<VkImageView>,
@@ -89,20 +89,15 @@ impl VkSwapchain {
 
                 let loader = Swapchain::new(&**instance, &**device);
 
-                let swch_cinfo = vk::SwapchainCreateInfoKHR::builder()
-                        .surface(**surface)
-                        .min_image_count(requested_img_count)
-                        .image_color_space(present_format.color_space)
-                        .image_format(present_format.format)
-                        .image_extent(extent)
-                        .image_usage(vk::ImageUsageFlags::TRANSFER_DST)
-                        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-                        .pre_transform(pre_transform)
-                        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-                        .present_mode(present_mode)
-                        .clipped(true)
-                        .image_array_layers(1)
-                        .old_swapchain(vk::SwapchainKHR::null());
+                let swch_cinfo = Self::swapchain_create_info(
+                        &surface,
+                        requested_img_count,
+                        present_format,
+                        extent,
+                        pre_transform,
+                        present_mode,
+                        vk::SwapchainKHR::null(),
+                );
 
                 let handle = unsafe { loader.create_swapchain(&swch_cinfo, None)? };
 
@@ -116,12 +111,8 @@ impl VkSwapchain {
                         &extent,
                         samples,
                 )?;
-                let (resolve_img, resolve_img_view) = Self::create_resolve_img_resources(
-                        Rc::clone(&device),
-                        Rc::clone(&allocator),
-                        color_format,
-                        &extent,
-                )?;
+                let (resolve_imgs, resolve_img_views) =
+                        Self::create_resolve_imgs_resources(&device, &allocator, color_format, &extent)?;
                 let (depth_img, depth_img_view) = Self::create_depth_img_resources(
                         Rc::clone(&device),
                         Rc::clone(&allocator),
@@ -166,8 +157,8 @@ impl VkSwapchain {
                         depth_img,
                         depth_img_view,
 
-                        resolve_img,
-                        resolve_img_view,
+                        resolve_imgs,
+                        resolve_img_views,
 
                         present_imgs,
                         present_img_views,
@@ -216,24 +207,15 @@ impl VkSwapchain {
 
                 let loader = Swapchain::new(&**self.instance, &**self.device);
 
-                let swch_cinfo = vk::SwapchainCreateInfoKHR {
-                        surface: **self.surface,
-                        min_image_count: requested_img_count,
-                        image_format: self.present_format.format,
-                        image_color_space: self.present_format.color_space,
-                        image_extent: self.extent,
-                        image_array_layers: 1,
-                        image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
-                        image_sharing_mode: vk::SharingMode::EXCLUSIVE,
-                        queue_family_index_count: 0,
-                        p_queue_family_indices: std::ptr::null(),
-                        pre_transform: surface_capabilities.current_transform,
-                        composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
-                        present_mode: self.present_mode,
-                        clipped: vk::TRUE,
-                        old_swapchain: self.handle,
-                        ..Default::default()
-                };
+                let swch_cinfo = Self::swapchain_create_info(
+                        &self.surface,
+                        requested_img_count,
+                        self.present_format,
+                        self.extent,
+                        surface_capabilities.current_transform,
+                        self.present_mode,
+                        self.handle,
+                );
 
                 let old_handle = self.handle;
                 self.handle = unsafe { loader.create_swapchain(&swch_cinfo, None)? };
@@ -263,15 +245,19 @@ impl VkSwapchain {
                                 std::mem::replace(&mut self.color_img_view, color_img_view).destroy();
                         }
 
-                        let (resolve_img, resolve_img_view) = Self::create_resolve_img_resources(
-                                Rc::clone(&self.device),
-                                Rc::clone(&self.allocator),
+                        let (resolve_imgs, resolve_img_views) = Self::create_resolve_imgs_resources(
+                                &self.device,
+                                &self.allocator,
                                 self.color_format,
                                 &self.extent,
                         )?;
                         unsafe {
-                                std::mem::replace(&mut self.resolve_img, resolve_img).destroy();
-                                std::mem::replace(&mut self.resolve_img_view, resolve_img_view).destroy();
+                                std::mem::replace(&mut self.resolve_imgs, resolve_imgs)
+                                        .iter()
+                                        .for_each(|x| x.destroy());
+                                std::mem::replace(&mut self.resolve_img_views, resolve_img_views)
+                                        .iter()
+                                        .for_each(|x| x.destroy());
                         }
 
                         let (depth_img, depth_img_view) = Self::create_depth_img_resources(
@@ -423,6 +409,31 @@ impl VkSwapchain {
                 }
         }
 
+        fn swapchain_create_info(
+                surface: &VkSurface,
+                requested_img_count: u32,
+                present_format: vk::SurfaceFormatKHR,
+                extent: vk::Extent2D,
+                pre_transform: vk::SurfaceTransformFlagsKHR,
+                present_mode: vk::PresentModeKHR,
+                old_swapchain: vk::SwapchainKHR,
+        ) -> vk::SwapchainCreateInfoKHRBuilder {
+                vk::SwapchainCreateInfoKHR::builder()
+                        .surface(**surface)
+                        .min_image_count(requested_img_count)
+                        .image_color_space(present_format.color_space)
+                        .image_format(present_format.format)
+                        .image_extent(extent)
+                        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST)
+                        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+                        .pre_transform(pre_transform)
+                        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+                        .present_mode(present_mode)
+                        .clipped(true)
+                        .image_array_layers(1)
+                        .old_swapchain(old_swapchain)
+        }
+
         fn choose_sample_count(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> vk::SampleCountFlags {
                 let limits = unsafe { instance.get_physical_device_properties(physical_device).limits };
 
@@ -501,44 +512,49 @@ impl VkSwapchain {
                 Ok((color_img, color_img_view))
         }
 
-        fn create_resolve_img_resources(
-                device: Rc<VkDevice>,
-                allocator: Rc<VmaAllocator>,
+        fn create_resolve_imgs_resources(
+                device: &Rc<VkDevice>,
+                allocator: &Rc<VmaAllocator>,
                 format: vk::Format,
                 extent: &vk::Extent2D,
-        ) -> VkResult<(VkImage, VkImageView)> {
-                let resolve_img = unsafe {
-                        let resolve_img_cinfo = VkImageCreateInfo {
-                                flags: Default::default(),
-                                image_type: vk::ImageType::TYPE_2D,
-                                format,
-                                extent: vk::Extent3D {
-                                        width: extent.width,
-                                        height: extent.height,
-                                        depth: 1,
-                                },
-                                mip_levels: 1,
-                                array_layers: 1,
-                                samples: vk::SampleCountFlags::TYPE_1,
-                                tiling: vk::ImageTiling::OPTIMAL,
-                                usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
-                                        | vk::ImageUsageFlags::TRANSFER_DST // for color -> resolve
-                                        | vk::ImageUsageFlags::TRANSFER_SRC, // for resolve -> present
-                                queue_family_indices: None,
-                                initial_layout: vk::ImageLayout::UNDEFINED,
+        ) -> VkResult<([VkImage; 2], [VkImageView; 2])> {
+                let mk_resolve_img = || {
+                        unsafe {
+                                let resolve_img_cinfo = VkImageCreateInfo {
+                                        flags: Default::default(),
+                                        image_type: vk::ImageType::TYPE_2D,
+                                        format,
+                                        extent: vk::Extent3D {
+                                                width: extent.width,
+                                                height: extent.height,
+                                                depth: 1,
+                                        },
+                                        mip_levels: 1,
+                                        array_layers: 1,
+                                        samples: vk::SampleCountFlags::TYPE_1,
+                                        tiling: vk::ImageTiling::OPTIMAL,
+                                        usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
+                                                | vk::ImageUsageFlags::SAMPLED
+                                                | vk::ImageUsageFlags::TRANSFER_DST // for color -> resolve
+                                                | vk::ImageUsageFlags::TRANSFER_SRC, // for resolve -> present
+                                        queue_family_indices: None,
+                                        initial_layout: vk::ImageLayout::UNDEFINED,
 
-                                mem_usage: vma::MemoryUsage::GpuOnly,
-                                alloc_cflags: vma::AllocationCreateFlags::empty(),
-                                required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                                preferred_flags: Default::default(),
-                        };
+                                        mem_usage: vma::MemoryUsage::GpuOnly,
+                                        alloc_cflags: vma::AllocationCreateFlags::empty(),
+                                        required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                                        preferred_flags: Default::default(),
+                                };
 
-                        VkImage::new(allocator, &resolve_img_cinfo)?
+                                VkImage::new(Rc::clone(allocator), &resolve_img_cinfo)
+                        }
                 };
 
-                let resolve_img_view = unsafe {
+                let resolve_imgs = [mk_resolve_img()?, mk_resolve_img()?];
+
+                let mk_resolve_img_view = |resolve_img: vk::Image| unsafe {
                         let resolve_img_view_cinfo = vk::ImageViewCreateInfo {
-                                image: *resolve_img,
+                                image: resolve_img,
                                 view_type: vk::ImageViewType::TYPE_2D,
                                 format,
                                 components: vk::ComponentMapping::default(),
@@ -552,10 +568,15 @@ impl VkSwapchain {
                                 ..vk::ImageViewCreateInfo::default()
                         };
 
-                        VkImageView::new(device, &resolve_img_view_cinfo)?
+                        VkImageView::new(Rc::clone(device), &resolve_img_view_cinfo)
                 };
 
-                Ok((resolve_img, resolve_img_view))
+                let resolve_img_views = [
+                        mk_resolve_img_view(*resolve_imgs[0])?,
+                        mk_resolve_img_view(*resolve_imgs[1])?,
+                ];
+
+                Ok((resolve_imgs, resolve_img_views))
         }
 
         fn create_depth_img_resources(
@@ -645,8 +666,8 @@ impl VkSwapchain {
 
 impl_destroyable_expr!(VkSwapchain, vk::SwapchainKHR, |s: &VkSwapchain| {
         s.present_img_views.iter().for_each(|iv| iv.destroy());
-        s.resolve_img_view.destroy();
-        s.resolve_img.destroy();
+        s.resolve_img_views.iter().for_each(|x| x.destroy());
+        s.resolve_imgs.iter().for_each(|x| x.destroy());
         s.depth_img_view.destroy();
         s.depth_img.destroy();
         s.color_img_view.destroy();

@@ -21,12 +21,27 @@ use slotmap::{Key, SecondaryMap, SlotMap};
 use thiserror::Error;
 
 use crate::{
-        application::ShaderSettings, components::Transform, constants::{
+        application::ShaderSettings,
+        components::Transform,
+        constants::{
                 DEFAULT_AMBIENT_STRENGTH, DEFAULT_DIFFUSE_STRENGTH, DEFAULT_MAG_FILTER, DEFAULT_MIN_FILTER,
                 DEFAULT_SHININESS, DEFAULT_SPECULAR_STRENGTH,
-        }, hashmap::HashMap, my_glm::*, shader_preprocessor::{PreprocessedShaderStage, ShaderPreprocessor}, shader_resource::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType}, shader_resource_registry::ShaderResourceRegistry, shader_resources::{
-                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_CUBE_SHADOW_MAP, SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE, SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE, SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE, SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES
-        }, util::default, vk::vk_renderer::{BillboardData, MaterialData, ObjectMatrices, WorldLights, WorldMatrices}, AnyResult
+        },
+        hashmap::HashMap,
+        my_glm::*,
+        shader_preprocessor::{PreprocessedShaderStage, ShaderPreprocessor},
+        shader_resource::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
+        shader_resource_registry::ShaderResourceRegistry,
+        shader_resources::{
+                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_CUBE_SHADOW_MAP, SHADER_RESOURCE_INPUT_FRAMEBUFFER,
+                SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE,
+                SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE, SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE,
+                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP,
+                SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
+        },
+        util::default,
+        vk::vk_renderer::{BillboardData, MaterialData, ObjectMatrices, WorldLights, WorldMatrices},
+        AnyResult,
 };
 
 /*enum ComponentType {
@@ -371,6 +386,7 @@ pub enum ShaderRenderStage {
         PointShadowMapping,
         DirectionalShadowMapping,
         Drawing,
+        Postprocessing,
 }
 
 impl Default for ShaderRenderStage {
@@ -1070,6 +1086,12 @@ impl AssetManager {
                 assets.shader_resources.register(ShaderResource {
                         id: SHADER_RESOURCE_CUBE_SHADOW_MAP.clone(),
                         resource_type: ShaderResourceType::ImageCube,
+                        provider: ShaderResourceProvider::World,
+                });
+
+                assets.shader_resources.register(ShaderResource {
+                        id: SHADER_RESOURCE_INPUT_FRAMEBUFFER.clone(),
+                        resource_type: ShaderResourceType::Image2D,
                         provider: ShaderResourceProvider::World,
                 });
 

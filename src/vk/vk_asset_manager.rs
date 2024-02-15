@@ -130,6 +130,7 @@ pub struct VkAssetManager {
         render_pass: vk::RenderPass,
         cube_shadow_map_render_pass: vk::RenderPass,
         shadow_map_render_pass: vk::RenderPass,
+        postprocess_render_pass: vk::RenderPass,
 
         pub meshes: SecondaryMap<MeshId, VkMesh>,
         pub images: SecondaryMap<ImageId, VkModelImage>,
@@ -151,6 +152,7 @@ impl VkAssetManager {
                 render_pass: vk::RenderPass,
                 cube_shadow_map_render_pass: vk::RenderPass,
                 shadow_map_render_pass: vk::RenderPass,
+                postprocess_render_pass: vk::RenderPass,
                 concurrent_frames: usize,
         ) -> AnyResult<Self> {
                 assert!(concurrent_frames > 0, "Frames in flight must be greater to zero");
@@ -174,6 +176,7 @@ impl VkAssetManager {
                         render_pass,
                         cube_shadow_map_render_pass,
                         shadow_map_render_pass,
+                        postprocess_render_pass,
 
                         meshes: SecondaryMap::new(),
                         images: SecondaryMap::new(),
@@ -555,6 +558,7 @@ impl VkAssetManager {
                         ShaderRenderStage::PointShadowMapping => self.cube_shadow_map_render_pass,
                         ShaderRenderStage::DirectionalShadowMapping => self.shadow_map_render_pass,
                         ShaderRenderStage::Drawing => self.render_pass,
+                        ShaderRenderStage::Postprocessing => self.postprocess_render_pass,
                 };
 
                 let graphics_pipeline = Self::create_graphics_pipeline_for_vk_shader(
@@ -1247,10 +1251,15 @@ impl VkAssetManager {
                                 .name(&entry_point)
                                 .build());
                 }
+                let mut vert_input_cinfo = vk::PipelineVertexInputStateCreateInfo::builder();
 
-                let vert_input_cinfo = vk::PipelineVertexInputStateCreateInfo::builder()
-                        .vertex_binding_descriptions(&vertex_input_bindings)
-                        .vertex_attribute_descriptions(&vertex_input_attributes);
+                if !vertex_input_bindings.is_empty() {
+                        vert_input_cinfo = vert_input_cinfo.vertex_binding_descriptions(&vertex_input_bindings);
+                }
+
+                if !vertex_input_attributes.is_empty() {
+                        vert_input_cinfo = vert_input_cinfo.vertex_attribute_descriptions(&vertex_input_attributes);
+                }
 
                 let input_assembly_cinfo = vk::PipelineInputAssemblyStateCreateInfo::builder()
                         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)

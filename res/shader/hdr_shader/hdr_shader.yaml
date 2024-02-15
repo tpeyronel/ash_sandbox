@@ -1,0 +1,8 @@
+---
+name: "hdr-shader"
+vertex-shader: "hdr_shader.vert"
+fragment-shader: "hdr_shader.frag"
+uniforms: []
+vertex-inputs: []
+render-stage: "postprocessing"
+cull-mode: "front"
