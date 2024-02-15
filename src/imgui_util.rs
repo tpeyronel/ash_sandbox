@@ -207,4 +207,8 @@ pub fn shader_settings(ui: &imgui::Ui, shader_settings: &mut ShaderSettings) {
         let mut alt_normals = shader_settings.alt_normals.x != 0;
         ui.checkbox("alt normals", &mut alt_normals);
         shader_settings.alt_normals.x = alt_normals as u32;
+        ui.slider("gamma", 0.0f32, 5.0, &mut shader_settings.gamma_and_exposure.x);
+        ui.slider_config("exposure", 0.0, 10.0)
+                .flags(imgui::SliderFlags::LOGARITHMIC)
+                .build(&mut shader_settings.gamma_and_exposure.y);
 }

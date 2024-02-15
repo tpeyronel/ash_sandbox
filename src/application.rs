@@ -1236,12 +1236,14 @@ fn register_event<T: Resource>(world: &mut World, schedule: &mut Schedule) {
 #[derive(ShaderStruct)]
 pub struct ShaderSettings {
         pub alt_normals: Vec2u,
+        pub gamma_and_exposure: Vec2,
 }
 
 impl Default for ShaderSettings {
         fn default() -> Self {
                 Self {
                         alt_normals: Vec2u::new(0, 0),
+                        gamma_and_exposure: Vec2::new(2.2, 1.0),
                 }
         }
 }
