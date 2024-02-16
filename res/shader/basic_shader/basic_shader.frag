@@ -72,7 +72,7 @@ vec3 calc_dir_light(
         vec3 diffuse_texel,
         vec3 specular_texel
 ) {
-        vec3 dir_light_color = u_lights.dir_light.color.rgb;
+        vec3 dir_light_color = u_lights.dir_light.color_and_intensity.rgb * u_lights.dir_light.color_and_intensity.w;
         vec3 dir_light_dir = normalize(u_lights.dir_light.direction.xyz);
 
         vec3 ambient = diffuse_texel * ambient_strength * dir_light_color;

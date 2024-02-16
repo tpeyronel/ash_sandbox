@@ -733,6 +733,7 @@ fn spawn_entities(mut commands: Commands) {
                 .insert(DirectionalLight {
                         direction: Vec3::new(1.0, -1.0, 0.0),
                         color: Vec3::new(0.9, 1.0, 0.9),
+                        intensity: 1.0,
                 })
                 .id();
 }

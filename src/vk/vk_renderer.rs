@@ -385,7 +385,7 @@ impl Renderer for VkRenderer {
                 let dir_light = WorldDirectionalLight {
                         vp: sun_vp,
                         direction: Vec4::from((dir_light_component.direction, 0.0)),
-                        color: Vec4::from((dir_light_component.color, 1.0)),
+                        color_and_intensity: Vec4::from((dir_light_component.color, dir_light_component.intensity)),
                 };
 
                 let (spotlight_transform, spotlight_component) = world
@@ -2168,7 +2168,7 @@ pub struct WorldMatrices {
 struct WorldDirectionalLight {
         vp: Mat4,
         direction: Vec4,
-        color: Vec4,
+        color_and_intensity: Vec4,
 }
 
 #[allow(dead_code)]

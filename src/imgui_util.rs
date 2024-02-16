@@ -117,6 +117,11 @@ where
         if ui.color_edit3("color", &mut color) {
                 dir_light.color = Vec3::from_slice(&color);
         }
+
+        imgui::Drag::new("intensity")
+                .range(0.0, f32::INFINITY)
+                .speed(0.01)
+                .build(ui, &mut dir_light.intensity);
 }
 
 pub fn point_light_mut<T>(ui: &imgui::Ui, point_light: &mut T)
