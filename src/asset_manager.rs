@@ -34,7 +34,8 @@ use crate::{
         shader_resource_registry::ShaderResourceRegistry,
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_CUBE_SHADOW_MAP, SHADER_RESOURCE_INPUT_FRAMEBUFFER,
-                SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE,
+                SHADER_RESOURCE_MATERIAL_BASE_COLOR_TEXTURE, SHADER_RESOURCE_MATERIAL_DATA,
+                SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE, SHADER_RESOURCE_MATERIAL_METALLIC_ROUGHNESS_TEXTURE,
                 SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE, SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE,
                 SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP,
                 SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
@@ -124,10 +125,14 @@ impl Material {
                 f: impl FnOnce(Option<ShaderResourceData>) -> T,
         ) -> T {
                 match resource {
-                        r if *r == *SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE => {
+                        r if *r == *SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE
+                                || *r == *SHADER_RESOURCE_MATERIAL_BASE_COLOR_TEXTURE =>
+                        {
                                 f(Some(ShaderResourceData::Image2D(self.base_color_texture)))
                         },
-                        r if *r == *SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE => {
+                        r if *r == *SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE
+                                || *r == *SHADER_RESOURCE_MATERIAL_METALLIC_ROUGHNESS_TEXTURE =>
+                        {
                                 f(Some(ShaderResourceData::Image2D(self.metallic_roughness_texture)))
                         },
                         r if *r == *SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE => {
@@ -1052,6 +1057,18 @@ impl AssetManager {
                         SHADER_RESOURCE_MATERIAL_DATA.clone(),
                         ShaderResourceProvider::Material,
                 );
+
+                assets.shader_resources.register(ShaderResource {
+                        id: SHADER_RESOURCE_MATERIAL_BASE_COLOR_TEXTURE.clone(),
+                        resource_type: ShaderResourceType::Image2D,
+                        provider: ShaderResourceProvider::Material,
+                });
+
+                assets.shader_resources.register(ShaderResource {
+                        id: SHADER_RESOURCE_MATERIAL_METALLIC_ROUGHNESS_TEXTURE.clone(),
+                        resource_type: ShaderResourceType::Image2D,
+                        provider: ShaderResourceProvider::Material,
+                });
 
                 assets.shader_resources.register(ShaderResource {
                         id: SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE.clone(),

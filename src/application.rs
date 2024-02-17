@@ -363,6 +363,8 @@ impl Application {
 
                 let _basic_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/basic_shader/basic_shader.yaml"))?;
+                let pbr_shader =
+                        asset_manager.load_shader_from_yaml(Path::new("res/shader/pbr_shader/pbr_shader.yaml"))?;
                 let color_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/color_shader/color_shader.yaml"))?;
                 let billboard_shader = asset_manager
@@ -372,6 +374,10 @@ impl Application {
                 let _model_grass_plane =
                         asset_manager.import_gltf_file(Path::new("res/model/grass-plane/grass-plane.gltf"))?;
                 let _model_sphere = asset_manager.import_gltf_file(Path::new("res/model/sphere/sphere.gltf"))?;
+                let _iron_sphere = asset_manager.import_gltf_file_with_shader(
+                        Path::new("res/model/iron-sphere/iron-sphere.gltf"),
+                        pbr_shader,
+                )?;
                 let _model_icosphere =
                         asset_manager.import_gltf_file(Path::new("res/model/icosphere/icosphere.gltf"))?;
                 let _model_lit_icosphere = asset_manager.import_gltf_file_with_shader(
@@ -598,7 +604,7 @@ pub enum WindowMode {
 fn spawn_entities(mut commands: Commands) {
         let player = commands
                 .spawn()
-                .insert(Transform::from_translation(Vec3::new(0.0, 0.0, 2.0)))
+                .insert(Transform::from_translation(Vec3::new(0.0, -2.0, 1.5)))
                 .id();
         commands.insert_resource(Player(player));
 
@@ -620,23 +626,23 @@ fn spawn_entities(mut commands: Commands) {
         commands.insert_resource(ActiveCamera(player_head));
         commands.insert_resource(ActiveCameraControlEnabled(true));
 
-        let colt = commands
-                .spawn()
-                .insert(Transform::from_translation(Vec3::new(2.5, 1.0, 0.0)))
-                .insert(AngularVelocity(Vec3::Y * 45.0f32.to_radians()))
-                .insert(OrbitalVelocity {
-                        origin: Vec3::new(0.0, 2.5, 0.0),
-                        velocity: (Vec3::X + Vec3::Y).normalize() * -22.5f32.to_radians(),
-                })
-                .id();
+        // let colt = commands
+        //         .spawn()
+        //         .insert(Transform::from_translation(Vec3::new(2.5, 1.0, 0.0)))
+        //         .insert(AngularVelocity(Vec3::Y * 45.0f32.to_radians()))
+        //         .insert(OrbitalVelocity {
+        //                 origin: Vec3::new(0.0, 2.5, 0.0),
+        //                 velocity: (Vec3::X + Vec3::Y).normalize() * -22.5f32.to_radians(),
+        //         })
+        //         .id();
 
-        commands.add(CmdAddModelInstanceByName::from_str(colt, "colt"));
+        // commands.add(CmdAddModelInstanceByName::from_str(colt, "colt"));
 
         let icosphere = commands
                 .spawn()
                 .insert(Transform {
-                        translation: Vec3::new(0.0, 1.0, 0.0),
-                        scale: Vec3::splat(4.0),
+                        translation: Vec3::new(0.0, 0.0, 0.0),
+                        scale: Vec3::splat(1.0),
                         ..Transform::identity()
                 })
                 .insert(Force(Vec3::new(0.0, 0.0, 0.0)))
@@ -644,34 +650,34 @@ fn spawn_entities(mut commands: Commands) {
                 .insert(Velocity(Vec3::new(0.0, 0.0, 0.0)))
                 .id();
 
-        commands.add(CmdAddModelInstanceByName::from_str(icosphere, "icosphere"));
+        commands.add(CmdAddModelInstanceByName::from_str(icosphere, "iron-sphere"));
 
-        let backpack = commands
-                .spawn()
-                .insert(Transform {
-                        translation: Vec3::new(2.0, 1.0, 0.0),
-                        scale: Vec3::new(5.0, 5.0, 5.0),
-                        ..Transform::identity()
-                })
-                .insert(AngularVelocity(Vec3::Y * 22.5f32.to_radians()))
-                .insert(OrbitalVelocity {
-                        origin: Vec3::new(0.0, 0.0, 0.0),
-                        velocity: Vec3::Y * -22.5f32.to_radians(),
-                })
-                .id();
+        // let backpack = commands
+        //         .spawn()
+        //         .insert(Transform {
+        //                 translation: Vec3::new(2.0, 1.0, 0.0),
+        //                 scale: Vec3::new(5.0, 5.0, 5.0),
+        //                 ..Transform::identity()
+        //         })
+        //         .insert(AngularVelocity(Vec3::Y * 22.5f32.to_radians()))
+        //         .insert(OrbitalVelocity {
+        //                 origin: Vec3::new(0.0, 0.0, 0.0),
+        //                 velocity: Vec3::Y * -22.5f32.to_radians(),
+        //         })
+        //         .id();
 
-        commands.add(CmdAddModelInstanceByName::from_str(backpack, "backpack"));
+        // commands.add(CmdAddModelInstanceByName::from_str(backpack, "backpack"));
 
-        let brick_wall = commands
-                .spawn()
-                .insert(Transform {
-                        translation: Vec3::new(4.0, 0.0, -4.0),
-                        scale: Vec3::splat(0.25),
-                        rotation: Quat::from_axis_angle(Vec3::Y, -45.0f32.to_radians()),
-                })
-                .id();
+        // let brick_wall = commands
+        //         .spawn()
+        //         .insert(Transform {
+        //                 translation: Vec3::new(4.0, 0.0, -4.0),
+        //                 scale: Vec3::splat(0.25),
+        //                 rotation: Quat::from_axis_angle(Vec3::Y, -45.0f32.to_radians()),
+        //         })
+        //         .id();
 
-        commands.add(CmdAddModelInstanceByName::from_str(brick_wall, "brick-wall"));
+        // commands.add(CmdAddModelInstanceByName::from_str(brick_wall, "brick-wall"));
 
         // TODO: make only some models (or materials?) cast shadow.
 
@@ -700,17 +706,17 @@ fn spawn_entities(mut commands: Commands) {
 
         // commands.add(CmdAddModelInstanceByName::from_str(static_billboard, "health-bar"));
 
-        let grass_plane = commands
-                .spawn()
-                .insert(Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)))
-                .id();
+        // let grass_plane = commands
+        //         .spawn()
+        //         .insert(Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)))
+        //         .id();
 
-        commands.add(CmdAddModelInstanceByName::from_str(grass_plane, "grass-plane"));
+        // commands.add(CmdAddModelInstanceByName::from_str(grass_plane, "grass-plane"));
 
         let light = commands
                 .spawn()
                 .insert(Transform {
-                        translation: Vec3::new(1.0, 2.0, 0.0),
+                        translation: Vec3::new(1.5, 1.0, 1.5),
                         rotation: Quat::IDENTITY,
                         scale: Vec3::splat(0.25),
                 })
@@ -720,10 +726,10 @@ fn spawn_entities(mut commands: Commands) {
                         kl: 0.0,
                         kq: 1.0,
                 })
-                .insert(OrbitalVelocity {
-                        origin: Vec3::splat(0.0),
-                        velocity: Vec3::Y * 45.0f32.to_radians(),
-                })
+                // .insert(OrbitalVelocity {
+                //         origin: Vec3::splat(0.0),
+                //         velocity: Vec3::Y * 45.0f32.to_radians(),
+                // })
                 .id();
 
         // commands.add(CmdAddModelInstanceByName::from_str(light, "lit-icosphere"));
@@ -732,7 +738,7 @@ fn spawn_entities(mut commands: Commands) {
                 .spawn()
                 .insert(DirectionalLight {
                         direction: Vec3::new(1.0, -1.0, 0.0),
-                        color: Vec3::new(0.9, 1.0, 0.9),
+                        color: Vec3::ZERO,
                         intensity: 1.0,
                 })
                 .id();

@@ -1,0 +1,13 @@
+---
+name: "pbr-shader"
+vertex-shader: "pbr_shader.vert"
+fragment-shader: "pbr_shader.frag"
+uniforms:
+  - "matrices"
+  - "material-texture-sampler"
+  - "lights"
+vertex-inputs:
+  - "positions"
+  - "normals"
+  - "texture-coordinates"
+  - "tangents"
