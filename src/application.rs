@@ -216,6 +216,11 @@ impl Application {
                 });
                 world.insert_resource(Skybox(skybox));
 
+                let wide_street = asset_manager.add_image(Image::from_file(
+                        Path::new("res/image/wide_street.exr"),
+                        ColorSpace::Linear,
+                )?);
+
                 world.insert_resource(asset_manager);
                 world.insert_resource(ShouldQuit(false));
                 world.insert_resource(EnableOrbitalVelocity(true));

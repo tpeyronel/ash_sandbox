@@ -152,41 +152,40 @@ impl VkImage {
         ) -> AnyResult<Self> {
                 let mip_levels = cinfo.mip_levels.to_value(cinfo.width, cinfo.height);
 
-                let buffer_size = (cinfo.width * cinfo.height * 4) as vk::DeviceSize;
+                let final_format = match cinfo.format {
+                        vk::Format::R8_UNORM
+                        | vk::Format::R8G8B8A8_SRGB
+                        | vk::Format::R8G8B8A8_UNORM
+                        | vk::Format::R16G16B16A16_SFLOAT => cinfo.format,
+                        vk::Format::R8G8B8_SRGB => vk::Format::R8G8B8A8_SRGB,
+                        vk::Format::R8G8B8_UNORM => vk::Format::R8G8B8A8_UNORM,
+                        _ => panic!("Unsupported vk::Format! {:?}", cinfo.format),
+                };
+
+                let bytes_per_pixel = Self::get_bytes_per_pixel_for_vk_format(final_format);
+
+                let buffer_size = (cinfo.width * cinfo.height * bytes_per_pixel) as vk::DeviceSize;
                 let staging_buffer = VkBuffer::new_transfer_src(device, Rc::clone(&allocator), buffer_size)?;
 
-                let final_format = match cinfo.format {
-                        vk::Format::R8G8B8A8_SRGB | vk::Format::R8G8B8A8_UNORM => {
+                match (cinfo.format, final_format) {
+                        (i, f) if i == f => {
                                 staging_buffer.write_bytes(cinfo.data)?;
-                                cinfo.format
                         },
-                        vk::Format::R8G8B8_SRGB | vk::Format::R8G8B8_UNORM => {
+                        (vk::Format::R8G8B8_SRGB, vk::Format::R8G8B8A8_SRGB)
+                        | (vk::Format::R8G8B8_UNORM, vk::Format::R8G8B8A8_UNORM) => {
                                 assert_eq!(cinfo.data.len() % 3, 0);
+                                warn!("slow format: {:?}", cinfo.format);
 
                                 for (i, rgb) in cinfo.data.chunks(3).enumerate() {
                                         staging_buffer
                                                 .write_bytes_offsetted(&[rgb[0], rgb[1], rgb[2], u8::MAX], i * 4)?;
                                 }
-
-                                if cinfo.format == vk::Format::R8G8B8_SRGB {
-                                        vk::Format::R8G8B8A8_SRGB
-                                } else {
-                                        vk::Format::R8G8B8A8_UNORM
-                                }
                         },
-                        vk::Format::R8_SRGB | vk::Format::R8_UNORM => {
-                                for (i, &r) in cinfo.data.iter().enumerate() {
-                                        staging_buffer.write_bytes_offsetted(&[r, r, r, u8::MAX], i * 4)?;
-                                }
-
-                                if cinfo.format == vk::Format::R8_SRGB {
-                                        vk::Format::R8G8B8A8_SRGB
-                                } else {
-                                        vk::Format::R8G8B8A8_UNORM
-                                }
-                        },
-                        _ => panic!("Unsupported vk::Format! {:?}", cinfo.format),
-                };
+                        _ => panic!(
+                                "unsupported (initial, final) vk::Format pair ({:?}, {:?})",
+                                cinfo.format, final_format
+                        ),
+                }
                 staging_buffer.unmap_memory();
 
                 let format = final_format;
@@ -273,6 +272,22 @@ impl VkImage {
                 staging_buffer.destroy();
 
                 Ok(vk_img)
+        }
+
+        fn get_bytes_per_pixel_for_vk_format(format: vk::Format) -> u32 {
+                if vk::Format::R8_UNORM <= format && format <= vk::Format::R8_SRGB {
+                        1
+                } else if vk::Format::R8G8_UNORM <= format && format <= vk::Format::R8G8_SRGB {
+                        2
+                } else if vk::Format::R8G8B8_UNORM <= format && format <= vk::Format::B8G8R8_SRGB {
+                        3
+                } else if vk::Format::R8G8B8A8_UNORM <= format && format <= vk::Format::A2B10G10R10_SINT_PACK32 {
+                        4
+                } else if vk::Format::R16G16B16A16_UNORM <= format && format <= vk::Format::R16G16B16A16_SFLOAT {
+                        8
+                } else {
+                        panic!("unsupported image format {:?}", format);
+                }
         }
 
         pub unsafe fn new_cubemap(

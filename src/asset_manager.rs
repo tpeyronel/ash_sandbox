@@ -2,6 +2,7 @@ use std::{
         ffi::OsString,
         hash::Hash,
         marker::PhantomData,
+        mem::ManuallyDrop,
         ops::{Index, IndexMut},
         path::{Path, PathBuf},
         process::Command,
@@ -9,10 +10,8 @@ use std::{
 
 use bitflags::bitflags;
 use crossbeam_channel::Receiver;
-use gltf::{
-        accessor::{DataType, Dimensions},
-        image::Format,
-};
+use exr::prelude::f16;
+use gltf::accessor::{DataType, Dimensions};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use path_clean::PathClean;
@@ -200,14 +199,31 @@ pub struct Texture {
         pub sampler: SamplerId,
 }
 
-pub type ImageFormat = gltf::image::Format;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFormat {
+        R8,
+        R8G8B8,
+        R8G8B8A8,
+        R16G16B16A16, // f16
+}
+
+impl ImageFormat {
+        fn from_gltf_format(format: gltf::image::Format) -> Option<Self> {
+                Some(match format {
+                        gltf::image::Format::R8 => Self::R8,
+                        gltf::image::Format::R8G8B8 => Self::R8G8B8,
+                        gltf::image::Format::R8G8B8A8 => Self::R8G8B8A8,
+                        _ => return None,
+                })
+        }
+}
 
 slotmap::new_key_type! { pub struct ImageId; }
 
 #[derive(Debug, Clone)]
 pub struct Image {
         pub name: Option<String>,
-        pub pixels: Vec<u8>,
+        pub pixels: Vec<u8>, // pixels as raw bytes. `format` must be used to correctly interpret these values.
         pub width: u32,
         pub height: u32,
         pub format: ImageFormat,
@@ -216,21 +232,65 @@ pub struct Image {
 
 impl Image {
         pub fn from_file(path: &Path, color_space: ColorSpace) -> AnyResult<Self> {
-                let image = image::open(path)?;
+                let image_name = path.to_string_lossy().to_string();
 
-                match image {
-                        image::DynamicImage::ImageRgba8(_) => (),
-                        _ => panic!("Unsupported image format!"),
+                if path.extension().map_or(false, |e| e == "exr") {
+                        assert_eq!(color_space, ColorSpace::Linear);
+
+                        let image = exr::prelude::read_first_rgba_layer_from_file(
+                                path,
+                                |resolution, _| {
+                                        let num_components = resolution.area() * 4;
+                                        let pixels: Vec<f16> = vec![f16::ZERO; num_components];
+                                        pixels
+                                },
+                                |pixels, pos, (r, g, b, a): (f16, f16, f16, f16)| {
+                                        let first = pos.area() * 4;
+                                        pixels[first] = r;
+                                        pixels[first + 1] = g;
+                                        pixels[first + 2] = b;
+                                        pixels[first + 3] = a;
+                                },
+                        )?;
+
+                        let width = image.layer_data.size.width() as u32;
+                        let height = image.layer_data.size.height() as u32;
+
+                        let pixels = image.layer_data.channel_data.pixels;
+
+                        assert_eq!(pixels.len(), pixels.capacity());
+
+                        let length = pixels.len() * (std::mem::size_of::<f16>() / std::mem::size_of::<u8>());
+
+                        let mut pixels = ManuallyDrop::new(pixels);
+                        let ptr: *mut u8 = pixels.as_mut_ptr() as *mut u8;
+                        let pixels = unsafe { Vec::from_raw_parts(ptr, length, length) };
+
+                        Ok(Self {
+                                name: Some(image_name),
+                                width,
+                                height,
+                                pixels,
+                                format: ImageFormat::R16G16B16A16,
+                                color_space,
+                        })
+                } else {
+                        let image = image::open(path)?;
+
+                        match image {
+                                image::DynamicImage::ImageRgba8(_) => (),
+                                _ => panic!("Unsupported image format! {:?}", image),
+                        }
+
+                        Ok(Self {
+                                name: Some(image_name),
+                                width: image.width(),
+                                height: image.height(),
+                                pixels: image.into_bytes(),
+                                format: ImageFormat::R8G8B8A8,
+                                color_space,
+                        })
                 }
-
-                Ok(Self {
-                        name: Some(path.to_string_lossy().to_string()),
-                        width: image.width(),
-                        height: image.height(),
-                        pixels: image.into_bytes(),
-                        format: ImageFormat::R8G8B8A8,
-                        color_space,
-                })
         }
 }
 
@@ -238,7 +298,7 @@ pub type MagFilter = gltf::texture::MagFilter;
 pub type MinFilter = gltf::texture::MinFilter;
 pub type WrappingMode = gltf::texture::WrappingMode;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorSpace {
         Srgb,
         Linear,
@@ -422,8 +482,8 @@ pub enum GLTFImportError {
         ImageSourceNotUri,
         #[error("image source uri is not relative")]
         ImageSourceUriNotRelative,
-        #[error("image format not supported")]
-        ImageFormatNotSupported,
+        #[error("image format not supported {0:?}")]
+        ImageFormatNotSupported(gltf::image::Format),
         #[error("accessor missing buffer view")]
         AccessorMissingBufferView,
         #[error("mesh missing primitives")]
@@ -558,9 +618,9 @@ impl AssetBundle {
                         .zip(image_usages)
                         .zip(doc.images())
                         .map(|((image, image_usage), json_image)| {
-                                if !Self::is_image_format_supported(image.format) {
-                                        return Err(GLTFImportError::ImageFormatNotSupported);
-                                }
+                                let Some(format) = ImageFormat::from_gltf_format(image.format) else {
+                                        return Err(GLTFImportError::ImageFormatNotSupported(image.format));
+                                };
 
                                 // Image path relative to working directory
                                 let relative_path = match json_image.source() {
@@ -586,19 +646,13 @@ impl AssetBundle {
                                         pixels: image.pixels,
                                         width: image.width,
                                         height: image.height,
-                                        format: image.format,
+                                        format,
                                         color_space,
                                 });
 
                                 Ok(image_id)
                         })
                         .collect()
-        }
-
-        fn is_image_format_supported(format: gltf::image::Format) -> bool {
-                type Format = gltf::image::Format;
-
-                matches!(format, Format::R8 | Format::R8G8B8 | Format::R8G8B8A8)
         }
 
         fn color_space_from_usage(image_usage: ImageUsage) -> ColorSpace {
@@ -1125,7 +1179,7 @@ impl AssetManager {
                         pixels: vec![u8::MAX; 4],
                         width: 1,
                         height: 1,
-                        format: Format::R8G8B8A8,
+                        format: ImageFormat::R8G8B8A8,
                         color_space: ColorSpace::Srgb,
                 });
 
@@ -1140,7 +1194,7 @@ impl AssetManager {
                         pixels: vec![u8::MAX; 4],
                         width: 1,
                         height: 1,
-                        format: Format::R8G8B8A8,
+                        format: ImageFormat::R8G8B8A8,
                         color_space: ColorSpace::Linear,
                 });
 
@@ -1155,7 +1209,7 @@ impl AssetManager {
                         pixels: vec![u8::MAX / 2, u8::MAX / 2, u8::MAX, 0],
                         width: 1,
                         height: 1,
-                        format: Format::R8G8B8A8,
+                        format: ImageFormat::R8G8B8A8,
                         color_space: ColorSpace::Linear,
                 });
 
@@ -1253,6 +1307,10 @@ impl AssetManager {
 
         pub fn insert_cubemap(&mut self, cubemap: Cubemap) -> CubemapId {
                 self.assets.cubemaps.insert(cubemap)
+        }
+
+        pub fn add_image(&mut self, image: Image) -> ImageId {
+                self.assets.images.insert(image)
         }
 
         pub fn import_gltf_file(&mut self, gltf_path: &Path) -> Result<ModelId, GLTFImportError> {
