@@ -539,8 +539,9 @@ impl From<OsString> for ShaderLoadError {
 slotmap::new_key_type! { pub struct CubemapId; }
 
 #[derive(Debug, Clone)]
-pub struct Cubemap {
-        pub faces: [Image; 6],
+pub enum Cubemap {
+        Faces([Image; 6]),
+        Equirectangular(Image),
 }
 
 /* pub struct AssetManagerBuilder {

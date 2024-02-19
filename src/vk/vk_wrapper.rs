@@ -6,6 +6,8 @@ use log::trace;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use thiserror::Error;
 
+use super::{vk_buffer::VkBuffer, vk_image::VkImage};
+
 macro_rules! impl_destroyable_deref {
         ($t:ty, $h:ty) => {
                 impl Deref for $t {
@@ -606,3 +608,8 @@ impl VkShaderModule {
 impl_destroyable_expr!(VkShaderModule, vk::ShaderModule, |s: &VkShaderModule| s
         .device
         .destroy_shader_module(s.handle, None));
+
+pub enum VkObject {
+        Buffer(VkBuffer),
+        Image(VkImage),
+}

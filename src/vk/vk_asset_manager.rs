@@ -17,9 +17,9 @@ use slotmap::SecondaryMap;
 
 use crate::{
         asset_manager::{
-                AssetManager, AssetManagerEvent, ColorSpace, CubemapId, CullMode, ImageFormat, ImageId, IndicesVec,
-                MagFilter, MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule, ShaderRenderStage,
-                ShaderResourceData, WrappingMode,
+                AssetManager, AssetManagerEvent, ColorSpace, Cubemap, CubemapId, CullMode, ImageFormat, ImageId,
+                IndicesVec, MagFilter, MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule,
+                ShaderRenderStage, ShaderResourceData, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         hashmap::GetOrInsert,
@@ -42,6 +42,7 @@ use super::{
         vk_context::{VkContext, ENABLE_VALIDATION_LAYERS},
         vk_descriptor_set_allocator::VkDescriptorSetAllocator,
         vk_image::VkImageCubemapCreateInfo,
+        vk_util::vk_format_from_image_format_and_color_space,
         vk_wrapper::{VkDebugUtils, VkInstance, VkPipeline, VkPipelineLayout, VkShaderModule, VmaAllocator},
 };
 
@@ -389,7 +390,7 @@ impl VkAssetManager {
                                                         declaration.compute_size() as vk::DeviceSize,
                                                 )
                                         })
-                                        .collect::<AnyResult<Vec<VkBuffer>>>()?;
+                                        .collect::<VkResult<Vec<VkBuffer>>>()?;
 
                                 self.shader_resource_buffers.insert(shader_resource_id.clone(), buffers);
 
@@ -884,30 +885,9 @@ impl VkAssetManager {
                         None => return Ok(()),
                 };
 
-                let width = cubemap.faces[0].width;
-                let height = cubemap.faces[0].width;
-
-                for face in &cubemap.faces {
-                        assert_eq!(width, face.width);
-                        assert_eq!(height, face.height);
-                }
-
-                let faces_data = [
-                        cubemap.faces[0].pixels.as_slice(),
-                        cubemap.faces[1].pixels.as_slice(),
-                        cubemap.faces[2].pixels.as_slice(),
-                        cubemap.faces[3].pixels.as_slice(),
-                        cubemap.faces[4].pixels.as_slice(),
-                        cubemap.faces[5].pixels.as_slice(),
-                ];
-
                 let vk_cubemap_cinfo = VkImageCubemapCreateInfo {
-                        faces_data,
-                        width,
-                        height,
-                        format: vk::Format::R8G8B8A8_SRGB,
+                        cubemap,
                         mip_levels: MipLevels::Log2,
-                        samples: vk::SampleCountFlags::TYPE_1,
                         setup_cmd_buffer: &self.cmd_buffer,
                         transfer_queue: self.transfer_queue,
                 };
@@ -917,7 +897,7 @@ impl VkAssetManager {
                                 &self.instance,
                                 &self.pdevice,
                                 &self.device,
-                                Rc::clone(&self.allocator),
+                                &self.allocator,
                                 &vk_cubemap_cinfo,
                         )?
                 };
@@ -925,7 +905,7 @@ impl VkAssetManager {
                 let vk_image_view_cinfo = vk::ImageViewCreateInfo {
                         image: *vk_image,
                         view_type: vk::ImageViewType::CUBE,
-                        format: vk::Format::R8G8B8A8_SRGB, // vk_image_cinfo.format,
+                        format: vk_image.format,
                         components: Default::default(),
                         subresource_range: vk::ImageSubresourceRange {
                                 aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -1041,7 +1021,7 @@ impl VkAssetManager {
                         data: &image.pixels,
                         width: image.width,
                         height: image.height,
-                        format: Self::vk_format_from_image_format_and_color_space(image.format, image.color_space),
+                        format: vk_format_from_image_format_and_color_space(image.format, image.color_space),
                         mip_levels: MipLevels::Log2,
                         samples: vk::SampleCountFlags::TYPE_1,
                         setup_cmd_buffer: &self.cmd_buffer,
@@ -1369,32 +1349,6 @@ impl VkAssetManager {
         //                 _ => panic!("vk::Format from ({:?}, {:?}) not supported!", comp_type, data_type),
         //         }
         // }
-
-        fn vk_format_from_image_format_and_color_space(img_format: ImageFormat, color_space: ColorSpace) -> vk::Format {
-                match (img_format, color_space) {
-                        (ImageFormat::R8, ColorSpace::Srgb) => vk::Format::R8_SRGB,
-                        // (ImageFormat::R8G8, ColorSpace::Srgb) => vk::Format::R8G8_SRGB,
-                        (ImageFormat::R8G8B8, ColorSpace::Srgb) => vk::Format::R8G8B8_SRGB,
-                        (ImageFormat::R8G8B8A8, ColorSpace::Srgb) => vk::Format::R8G8B8A8_SRGB,
-                        // (ImageFormat::B8G8R8, ColorSpace::Srgb) => vk::Format::B8G8R8_SRGB,
-                        // (ImageFormat::B8G8R8A8, ColorSpace::Srgb) => vk::Format::B8G8R8A8_SRGB,
-                        (ImageFormat::R8, ColorSpace::Linear) => vk::Format::R8_UNORM,
-                        // (ImageFormat::R8G8, ColorSpace::Linear) => vk::Format::R8G8_UNORM,
-                        (ImageFormat::R8G8B8, ColorSpace::Linear) => vk::Format::R8G8B8_UNORM,
-                        (ImageFormat::R8G8B8A8, ColorSpace::Linear) => vk::Format::R8G8B8A8_UNORM,
-                        // (ImageFormat::B8G8R8, ColorSpace::Linear) => vk::Format::B8G8R8_UNORM,
-                        // (ImageFormat::B8G8R8A8, ColorSpace::Linear) => vk::Format::B8G8R8A8_UNORM,
-                        // (ImageFormat::R16, ColorSpace::Linear) => vk::Format::R16_UINT,
-                        // (ImageFormat::R16G16, ColorSpace::Linear) => vk::Format::R16G16_UINT,
-                        // (ImageFormat::R16G16B16, ColorSpace::Linear) => vk::Format::R16G16B16_UINT,
-                        // (ImageFormat::R16G16B16A16, ColorSpace::Linear) => vk::Format::R16G16B16A16_UINT,
-                        (ImageFormat::R16G16B16A16, ColorSpace::Linear) => vk::Format::R16G16B16A16_SFLOAT,
-                        _ => panic!(
-                                "unsupported (image format, color space) pair ({:?}, {:?})",
-                                img_format, color_space
-                        ),
-                }
-        }
 
         fn vk_filter_from_mag_filter(mag_filter: MagFilter) -> vk::Filter {
                 match mag_filter {

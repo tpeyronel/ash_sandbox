@@ -61,7 +61,7 @@ pub struct VkBuffer {
 }
 
 impl VkBuffer {
-        pub fn new(create_info: VkBufferCreateInfo) -> AnyResult<Self> {
+        pub fn new(create_info: VkBufferCreateInfo) -> VkResult<Self> {
                 let mut handle_cinfo = vk::BufferCreateInfo::builder()
                         .size(create_info.buffer_size)
                         .usage(create_info.buffer_usage);
@@ -172,7 +172,7 @@ impl VkBuffer {
                 device: &ash::Device,
                 allocator: Rc<VmaAllocator>,
                 buffer_size: vk::DeviceSize,
-        ) -> AnyResult<Self> {
+        ) -> VkResult<Self> {
                 let cinfo = VkBufferCreateInfo {
                         device,
                         allocator,
@@ -193,7 +193,7 @@ impl VkBuffer {
                 device: &ash::Device,
                 allocator: Rc<VmaAllocator>,
                 buffer_size: vk::DeviceSize,
-        ) -> AnyResult<VkBuffer> {
+        ) -> VkResult<VkBuffer> {
                 let staging_buffer = {
                         let buffer_cinfo = VkBufferCreateInfo {
                                 device,
@@ -285,7 +285,10 @@ impl VkBuffer {
 
         #[allow(dead_code)]
         pub fn flush_all_memory(&self) -> VkResult<()> {
-                unsafe { self.allocator.flush_allocation(self.alloc, 0, self.size_in_bytes as usize) }
+                unsafe {
+                        self.allocator
+                                .flush_allocation(self.alloc, 0, self.size_in_bytes as usize)
+                }
         }
 }
 
