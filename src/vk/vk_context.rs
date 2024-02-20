@@ -229,7 +229,9 @@ impl VkContext {
                         .sampler_anisotropy(true)
                         .shader_clip_distance(true);
 
-                let mut features13 = vk::PhysicalDeviceVulkan13Features::builder().synchronization2(true);
+                let mut features13 = vk::PhysicalDeviceVulkan13Features::builder()
+                        .synchronization2(true)
+                        .dynamic_rendering(true);
                 let mut features = vk::PhysicalDeviceFeatures2::builder()
                         .features(req_device_features.build())
                         .push_next(&mut features13);

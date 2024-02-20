@@ -48,3 +48,29 @@ pub fn vk_format_from_image_format_and_color_space(img_format: ImageFormat, colo
                 ),
         }
 }
+
+pub trait BytesPerPixel {
+        fn bytes_per_pixel(&self) -> u32;
+}
+
+impl BytesPerPixel for vk::Format {
+        fn bytes_per_pixel(&self) -> u32 {
+                let f = *self;
+
+                let ranges = [
+                        (vk::Format::R8_UNORM, vk::Format::R8_SRGB, 1),
+                        (vk::Format::R8G8_UNORM, vk::Format::R8G8_SRGB, 2),
+                        (vk::Format::R8G8B8_UNORM, vk::Format::B8G8R8_SRGB, 3),
+                        (vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_SINT_PACK32, 4),
+                        (vk::Format::R16G16B16A16_UNORM, vk::Format::R16G16B16A16_SFLOAT, 8),
+                ];
+
+                for range in &ranges {
+                        if range.0 <= f && f <= range.1 {
+                                return range.2;
+                        }
+                }
+
+                panic!("unsupported bytes_per_pixel() for format {:?}", f);
+        }
+}

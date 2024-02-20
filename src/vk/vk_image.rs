@@ -8,17 +8,14 @@ use ash::{
 use log::{debug, error, info, trace, warn};
 use vk_mem::Alloc;
 
-use crate::{
-        asset_manager::{Cubemap, Image},
-        AnyResult,
-};
+use crate::AnyResult;
 
 use super::{
         vk_buffer::VkBuffer,
         vk_command_buffer::VkReusableCommandBuffer,
-        vk_util::vk_format_from_image_format_and_color_space,
+        vk_util::BytesPerPixel,
         vk_wrapper::{
-                impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkDebugUtils, VkDevice, VkObject,
+                impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkDebugUtils, VkDevice,
                 VmaAllocator,
         },
 };
@@ -68,24 +65,27 @@ pub struct VkImageCreateFromDataInfo<'a> {
         pub transfer_queue: vk::Queue,
 }
 
-pub struct VkImageCubemapCreateInfo<'a> {
-        pub cubemap: &'a Cubemap,
+pub struct VkImageCubemapCreateInfo {
+        pub format: vk::Format,
+        pub size: u32,
         pub mip_levels: MipLevels,
-        pub setup_cmd_buffer: &'a VkReusableCommandBuffer,
-        pub transfer_queue: vk::Queue,
 }
 
 #[allow(dead_code)]
 pub struct VkImage {
         allocator: Rc<VmaAllocator>,
 
-        handle: vk::Image,
+        pub handle: vk::Image,
         alloc: vma::Allocation,
 
         destroyed: Cell<bool>,
 
         pub format: vk::Format,
+        pub width: u32,
+        pub height: u32,
+        pub depth: u32,
         pub mip_levels: u32,
+        pub array_layers: u32,
 }
 
 impl VkImage {
@@ -139,7 +139,11 @@ impl VkImage {
                         alloc,
                         destroyed: Cell::new(false),
                         format: create_info.format,
+                        width: create_info.extent.width,
+                        height: create_info.extent.height,
+                        depth: create_info.extent.depth,
                         mip_levels: create_info.mip_levels,
+                        array_layers: create_info.array_layers,
                 })
         }
 
@@ -162,9 +166,7 @@ impl VkImage {
                         _ => panic!("Unsupported vk::Format! {:?}", cinfo.format),
                 };
 
-                let bytes_per_pixel = Self::get_bytes_per_pixel_for_vk_format(final_format);
-
-                let buffer_size = (cinfo.width * cinfo.height * bytes_per_pixel) as vk::DeviceSize;
+                let buffer_size = (cinfo.width * cinfo.height * final_format.bytes_per_pixel()) as vk::DeviceSize;
                 let staging_buffer = VkBuffer::new_transfer_src(device, Rc::clone(&allocator), buffer_size)?;
 
                 match (cinfo.format, final_format) {
@@ -274,75 +276,16 @@ impl VkImage {
                 Ok(vk_img)
         }
 
-        fn get_bytes_per_pixel_for_vk_format(format: vk::Format) -> u32 {
-                if vk::Format::R8_UNORM <= format && format <= vk::Format::R8_SRGB {
-                        1
-                } else if vk::Format::R8G8_UNORM <= format && format <= vk::Format::R8G8_SRGB {
-                        2
-                } else if vk::Format::R8G8B8_UNORM <= format && format <= vk::Format::B8G8R8_SRGB {
-                        3
-                } else if vk::Format::R8G8B8A8_UNORM <= format && format <= vk::Format::A2B10G10R10_SINT_PACK32 {
-                        4
-                } else if vk::Format::R16G16B16A16_UNORM <= format && format <= vk::Format::R16G16B16A16_SFLOAT {
-                        8
-                } else {
-                        panic!("unsupported image format {:?}", format);
-                }
-        }
-
-        pub unsafe fn new_cubemap(
-                instance: &ash::Instance,
-                pdevice: &vk::PhysicalDevice,
-                device: &ash::Device,
-                allocator: &Rc<VmaAllocator>,
-                cinfo: &VkImageCubemapCreateInfo,
-        ) -> AnyResult<VkImage> {
-                let size = match cinfo.cubemap {
-                        Cubemap::Faces(faces) => {
-                                let size = faces[0].width;
-                                for f in faces {
-                                        assert_eq!(f.width, size);
-                                        assert_eq!(f.height, size);
-                                }
-                                size
-                        },
-                        Cubemap::Equirectangular(image) => {
-                                // We divide width by 4, as there are four horizontal faces.
-                                let size = image.width / 4;
-                                size
-                        },
-                };
-
-                let format = match cinfo.cubemap {
-                        Cubemap::Faces(faces) => {
-                                let format = vk_format_from_image_format_and_color_space(
-                                        faces[0].format,
-                                        faces[0].color_space,
-                                );
-
-                                for f in &faces[1..] {
-                                        assert_eq!(
-                                                format,
-                                                vk_format_from_image_format_and_color_space(f.format, f.color_space)
-                                        );
-                                }
-
-                                format
-                        },
-                        Cubemap::Equirectangular(image) => {
-                                vk_format_from_image_format_and_color_space(image.format, image.color_space)
-                        },
-                };
-
-                let mip_levels = cinfo.mip_levels.to_value(size, size);
+        pub unsafe fn new_cubemap(allocator: &Rc<VmaAllocator>, cinfo: &VkImageCubemapCreateInfo) -> VkResult<VkImage> {
+                let mip_levels = cinfo.mip_levels.to_value(cinfo.size, cinfo.size);
 
                 let image_cinfo = VkImageCreateInfo {
                         flags: vk::ImageCreateFlags::CUBE_COMPATIBLE,
                         image_type: vk::ImageType::TYPE_2D,
-                        format,
+                        format: cinfo.format,
                         extent: vk::Extent3D {
-                                width: size,
-                                height: size,
+                                width: cinfo.size,
+                                height: cinfo.size,
                                 depth: 1,
                         },
                         mip_levels,
@@ -360,141 +303,7 @@ impl VkImage {
                         preferred_flags: Default::default(),
                 };
 
-                let dst_image = Self::new(Rc::clone(allocator), &image_cinfo)?;
-
-                cinfo.setup_cmd_buffer.begin(device)?;
-
-                let cmd_buffer = **cinfo.setup_cmd_buffer;
-                let mut deletion_queue = vec![];
-
-                Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
-                        device,
-                        cmd_buffer,
-
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-
-                        image: *dst_image,
-                        base_mip_level: 0,
-                        mip_levels,
-                        base_array_layer: 0,
-                        layer_count: 6,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-
-                        src_access_mask: vk::AccessFlags::empty(),
-                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-
-                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
-                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                });
-
-                match cinfo.cubemap {
-                        Cubemap::Faces(faces) => {
-                                let faces_data = [
-                                        faces[0].pixels.as_slice(),
-                                        faces[1].pixels.as_slice(),
-                                        faces[2].pixels.as_slice(),
-                                        faces[3].pixels.as_slice(),
-                                        faces[4].pixels.as_slice(),
-                                        faces[5].pixels.as_slice(),
-                                ];
-
-                                Self::cmd_transfer_faces_into_cubemap(
-                                        device,
-                                        allocator,
-                                        cmd_buffer,
-                                        &mut deletion_queue,
-                                        faces_data,
-                                        *dst_image,
-                                        format,
-                                        size,
-                                )?;
-                        },
-                        Cubemap::Equirectangular(image) => {
-                                // Self::cmd_transfer_equirectangular_into_cubemap()?;
-                        },
-                };
-
-                Self::cmd_gen_mipmaps(&GenerateMipmapsInfo {
-                        instance,
-                        pdevice,
-                        device,
-                        cmd_buffer,
-                        image: *dst_image,
-                        image_format: format,
-                        width: size,
-                        height: size,
-                        mip_levels,
-                        base_array_layer: 0,
-                        layer_count: 6,
-                });
-
-                cinfo.setup_cmd_buffer
-                        .end_and_submit(device, cinfo.transfer_queue, &[], &[], &[])?;
-
-                cinfo.setup_cmd_buffer.wait(u64::MAX)?;
-
-                for o in deletion_queue {
-                        match o {
-                                VkObject::Buffer(b) => b.destroy(),
-                                VkObject::Image(i) => i.destroy(),
-                        };
-                }
-
-                Ok(dst_image)
-        }
-
-        // `dst_image` must have `format` format, and all byte arrays in `faces_data`
-        // must be compatible with `format`.
-        unsafe fn cmd_transfer_faces_into_cubemap(
-                device: &ash::Device,
-                allocator: &Rc<VmaAllocator>,
-                cmd_buffer: vk::CommandBuffer,
-                cmd_buffer_deletion_queue: &mut Vec<VkObject>,
-                faces_data: [&[u8]; 6],
-                dst_image: vk::Image,
-                format: vk::Format,
-                size: u32,
-        ) -> VkResult<()> {
-                let bytes_per_pixel = Self::get_bytes_per_pixel_for_vk_format(format);
-                let buffer_size = 6 * (size * size * bytes_per_pixel) as vk::DeviceSize;
-                let staging_buffer = VkBuffer::new_transfer_src(device, Rc::clone(&allocator), buffer_size)?;
-
-                let mut offset = 0;
-                for face_data in faces_data {
-                        staging_buffer.write_bytes_offsetted(face_data, offset)?;
-                        offset += face_data.len();
-                }
-                staging_buffer.unmap_memory();
-
-                Self::cmd_copy_buffer_to_image(
-                        device,
-                        cmd_buffer,
-                        size,
-                        size,
-                        6,
-                        *staging_buffer,
-                        dst_image,
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                );
-
-                cmd_buffer_deletion_queue.push(VkObject::Buffer(staging_buffer));
-
-                Ok(())
-        }
-
-        unsafe fn cmd_transfer_equirectangular_into_cubemap(
-                device: &VkDevice,
-                allocator: &Rc<VmaAllocator>,
-                cubemap_pipeline: vk::Pipeline,
-                cmd_buffer: vk::CommandBuffer,
-                cmd_buffer_deletion_queue: &mut Vec<VkObject>,
-                equirectangular_image: &Image,
-                dst_image: vk::Image,
-                format: vk::Format,
-                size: u32,
-        ) -> VkResult<()> {
-                Ok(())
+                Self::new(Rc::clone(allocator), &image_cinfo)
         }
 
         pub unsafe fn set_debug_name(&self, device: &VkDevice, debug_utils: &VkDebugUtils, name: &str) -> VkResult<()> {
@@ -586,7 +395,7 @@ impl VkImage {
                 device.cmd_blit_image2(cmd_buffer, &blit_image_info);
         }
 
-        fn cmd_copy_buffer_to_image(
+        pub fn cmd_copy_buffer_to_image(
                 device: &ash::Device,
                 cmd_buffer: vk::CommandBuffer,
                 width: u32,
@@ -625,7 +434,7 @@ impl VkImage {
                 }
         }
 
-        fn cmd_gen_mipmaps(minfo: &GenerateMipmapsInfo) {
+        pub fn cmd_gen_mipmaps(minfo: &GenerateMipmapsInfo) {
                 assert!(
                         unsafe {
                                 minfo.instance
@@ -757,16 +566,16 @@ pub struct TransitionImageLayoutInfo<'a> {
         pub new_layout: vk::ImageLayout,
 }
 
-struct GenerateMipmapsInfo<'a> {
-        instance: &'a ash::Instance,
-        pdevice: &'a vk::PhysicalDevice,
-        device: &'a ash::Device,
-        cmd_buffer: vk::CommandBuffer,
-        image: vk::Image,
-        image_format: vk::Format,
-        width: u32,
-        height: u32,
-        mip_levels: u32,
-        base_array_layer: u32,
-        layer_count: u32,
+pub struct GenerateMipmapsInfo<'a> {
+        pub instance: &'a ash::Instance,
+        pub pdevice: &'a vk::PhysicalDevice,
+        pub device: &'a ash::Device,
+        pub cmd_buffer: vk::CommandBuffer,
+        pub image: vk::Image,
+        pub image_format: vk::Format,
+        pub width: u32,
+        pub height: u32,
+        pub mip_levels: u32,
+        pub base_array_layer: u32,
+        pub layer_count: u32,
 }
