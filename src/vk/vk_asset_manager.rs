@@ -1318,7 +1318,7 @@ impl VkAssetManager {
                                 rotations[i].into_bytes_slice(),
                         );
 
-                        self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
+                        self.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
 
                         self.device.cmd_end_render_pass(cmd_buffer);
 

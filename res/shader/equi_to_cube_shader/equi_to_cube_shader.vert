@@ -7,9 +7,8 @@ layout (push_constant) uniform constants {
         mat4 rotation;
 } u_push_constants;
 
-const vec2 positions[6] = vec2[6](
-        vec2(-1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, -1.0),
-        vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0)
+const vec2 positions[3] = vec2[3](
+        vec2(-1.0, -1.0), vec2(-1.0, 3.0), vec2(3.0, -1.0)
 );
 
 void main() {
