@@ -612,4 +612,7 @@ impl_destroyable_expr!(VkShaderModule, vk::ShaderModule, |s: &VkShaderModule| s
 pub enum VkObject {
         Buffer(VkBuffer),
         Image(VkImage),
+        ImageView(VkImageView),
+        Sampler(VkSampler),
+        Framebuffer(VkFramebuffer),
 }

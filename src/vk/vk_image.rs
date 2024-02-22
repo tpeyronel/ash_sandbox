@@ -69,6 +69,7 @@ pub struct VkImageCubemapCreateInfo {
         pub format: vk::Format,
         pub size: u32,
         pub mip_levels: MipLevels,
+        pub additional_usage_flags: vk::ImageUsageFlags,
 }
 
 #[allow(dead_code)]
@@ -153,7 +154,7 @@ impl VkImage {
                 device: &ash::Device,
                 allocator: Rc<VmaAllocator>,
                 cinfo: &VkImageCreateFromDataInfo,
-        ) -> AnyResult<Self> {
+        ) -> VkResult<Self> {
                 let mip_levels = cinfo.mip_levels.to_value(cinfo.width, cinfo.height);
 
                 let final_format = match cinfo.format {
@@ -294,7 +295,8 @@ impl VkImage {
                         tiling: vk::ImageTiling::OPTIMAL,
                         usage: vk::ImageUsageFlags::TRANSFER_SRC // for creating mipmaps
                                 | vk::ImageUsageFlags::TRANSFER_DST
-                                | vk::ImageUsageFlags::SAMPLED,
+                                | vk::ImageUsageFlags::SAMPLED
+                                | cinfo.additional_usage_flags,
                         queue_family_indices: None,
                         initial_layout: vk::ImageLayout::UNDEFINED,
                         mem_usage: vma::MemoryUsage::GpuOnly,

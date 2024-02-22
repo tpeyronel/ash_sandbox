@@ -2,7 +2,6 @@ use std::{
         ffi::OsString,
         hash::Hash,
         marker::PhantomData,
-        mem::ManuallyDrop,
         ops::{Index, IndexMut},
         path::{Path, PathBuf},
         process::Command,
@@ -32,12 +31,13 @@ use crate::{
         shader_resource::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
         shader_resource_registry::ShaderResourceRegistry,
         shader_resources::{
-                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_CUBE_SHADOW_MAP, SHADER_RESOURCE_INPUT_FRAMEBUFFER,
-                SHADER_RESOURCE_MATERIAL_BASE_COLOR_TEXTURE, SHADER_RESOURCE_MATERIAL_DATA,
-                SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE, SHADER_RESOURCE_MATERIAL_METALLIC_ROUGHNESS_TEXTURE,
-                SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE, SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE,
-                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP,
-                SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
+                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_CUBE_SHADOW_MAP, SHADER_RESOURCE_EQUIRECTANGULAR_MAP,
+                SHADER_RESOURCE_INPUT_FRAMEBUFFER, SHADER_RESOURCE_MATERIAL_BASE_COLOR_TEXTURE,
+                SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE,
+                SHADER_RESOURCE_MATERIAL_METALLIC_ROUGHNESS_TEXTURE, SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE,
+                SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE, SHADER_RESOURCE_OBJECT_MATRICES,
+                SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX,
+                SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
         },
         util::default,
         vk::vk_renderer::{BillboardData, MaterialData, ObjectMatrices, WorldLights, WorldMatrices},
@@ -241,30 +241,28 @@ impl Image {
                                 path,
                                 |resolution, _| {
                                         let num_components = resolution.area() * 4;
-                                        let pixels: Vec<f16> = vec![f16::ZERO; num_components];
+                                        let pixels: Vec<f16> = Vec::with_capacity(num_components);
                                         pixels
                                 },
-                                |pixels, pos, (r, g, b, a): (f16, f16, f16, f16)| {
-                                        let first = pos.area() * 4;
-                                        pixels[first] = r;
-                                        pixels[first + 1] = g;
-                                        pixels[first + 2] = b;
-                                        pixels[first + 3] = a;
+                                |pixels, _, (r, g, b, a): (f16, f16, f16, f16)| {
+                                        pixels.push(r);
+                                        pixels.push(g);
+                                        pixels.push(b);
+                                        pixels.push(a);
                                 },
                         )?;
 
                         let width = image.layer_data.size.width() as u32;
                         let height = image.layer_data.size.height() as u32;
 
-                        let pixels = image.layer_data.channel_data.pixels;
+                        let mut pixels = image.layer_data.channel_data.pixels;
 
                         assert_eq!(pixels.len(), pixels.capacity());
-
-                        let length = pixels.len() * (std::mem::size_of::<f16>() / std::mem::size_of::<u8>());
-
-                        let mut pixels = ManuallyDrop::new(pixels);
                         let ptr: *mut u8 = pixels.as_mut_ptr() as *mut u8;
-                        let pixels = unsafe { Vec::from_raw_parts(ptr, length, length) };
+                        let len = pixels.len() * (std::mem::size_of::<f16>() / std::mem::size_of::<u8>());
+                        std::mem::forget(pixels);
+                        let pixels = unsafe { Vec::from_raw_parts(ptr, len, len) };
+                        // println!("hash: {:?}", sha2::Sha256::digest(&pixels));
 
                         Ok(Self {
                                 name: Some(image_name),
@@ -448,6 +446,7 @@ impl ShaderModule {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ShaderRenderStage {
+        EquirectangularConversion,
         PointShadowMapping,
         DirectionalShadowMapping,
         Drawing,
@@ -1141,6 +1140,12 @@ impl AssetManager {
                         id: SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE.clone(),
                         resource_type: ShaderResourceType::Image2D,
                         provider: ShaderResourceProvider::Material,
+                });
+
+                assets.shader_resources.register(ShaderResource {
+                        id: SHADER_RESOURCE_EQUIRECTANGULAR_MAP.clone(),
+                        resource_type: ShaderResourceType::Image2D,
+                        provider: ShaderResourceProvider::World,
                 });
 
                 assets.shader_resources.register(ShaderResource {

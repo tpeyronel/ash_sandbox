@@ -212,12 +212,13 @@ impl Application {
                         Image::from_file(Path::new("res/image/skybox/front.png"), ColorSpace::Srgb)?,
                         Image::from_file(Path::new("res/image/skybox/back.png"), ColorSpace::Srgb)?,
                 ]));
-                world.insert_resource(Skybox(skybox));
+                // world.insert_resource(Skybox(skybox));
 
-                // let wide_street_cubemap = asset_manager.insert_cubemap(Cubemap::Equirectangular(Image::from_file(
-                //         Path::new("res/image/wide_street.exr"),
-                //         ColorSpace::Linear,
-                // )?));
+                let wide_street_cubemap = asset_manager.insert_cubemap(Cubemap::Equirectangular(Image::from_file(
+                        Path::new("res/image/wide_street.exr"),
+                        ColorSpace::Linear,
+                )?));
+                world.insert_resource(Skybox(wide_street_cubemap));
 
                 world.insert_resource(asset_manager);
                 world.insert_resource(ShouldQuit(false));
@@ -354,6 +355,9 @@ impl Application {
                 //                 ],
                 //         },
                 // );
+
+                let _equi_to_cube_shader = asset_manager
+                        .load_shader_from_yaml(Path::new("res/shader/equi_to_cube_shader/equi_to_cube_shader.yaml"))?;
 
                 let _shadow_map_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/shadow_map/shadow_map.yaml"))?;

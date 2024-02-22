@@ -47,6 +47,7 @@ thiserror = "1.0.30"
 tps-counter = { git = "https://github.com/tpeyronel/tps-counter" }
 path-clean = "1.0.1"
 exr = "1.72.0"
+sha2 = "0.10.8"
 
 [profile.dev.package."*"]
 opt-level = 3

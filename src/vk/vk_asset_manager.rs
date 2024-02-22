@@ -23,11 +23,12 @@ use crate::{
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
         hashmap::GetOrInsert,
-        my_glm::{Vec2, Vec3, Vec4},
+        my_glm::{Mat4, Vec2, Vec3, Vec4},
         shader_preprocessor::{PreprocessedShaderStage, ShaderStageSourceBuilder},
         shader_resource::{ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
         shader_resource_registry::ShaderResourceRegistry,
-        util::RefIntoSlice,
+        shader_resources::SHADER_RESOURCE_EQUIRECTANGULAR_MAP,
+        util::{RefIntoBytesSlice, RefIntoSlice},
         vk::{
                 vk_buffer::{BufferData, VkBuffer, VkImmutableBufferCreateInfo},
                 vk_command_buffer::VkReusableCommandBuffer,
@@ -43,7 +44,10 @@ use super::{
         vk_descriptor_set_allocator::VkDescriptorSetAllocator,
         vk_image::{GenerateMipmapsInfo, TransitionImageLayoutInfo, VkImageCubemapCreateInfo},
         vk_util::{vk_format_from_image_format_and_color_space, BytesPerPixel},
-        vk_wrapper::{VkDebugUtils, VkInstance, VkObject, VkPipeline, VkPipelineLayout, VkShaderModule, VmaAllocator},
+        vk_wrapper::{
+                VkDebugUtils, VkFramebuffer, VkInstance, VkObject, VkPipeline, VkPipelineLayout, VkShaderModule,
+                VmaAllocator,
+        },
 };
 
 pub struct VkMesh {
@@ -128,6 +132,8 @@ pub struct VkAssetManager {
         concurrent_frames: usize,
 
         swapchain_samples: vk::SampleCountFlags,
+
+        equirectangular_conversion_render_pass: vk::RenderPass,
         render_pass: vk::RenderPass,
         cube_shadow_map_render_pass: vk::RenderPass,
         shadow_map_render_pass: vk::RenderPass,
@@ -150,6 +156,7 @@ impl VkAssetManager {
         pub fn new(
                 vk_context: &mut VkContext,
                 swapchain_samples: vk::SampleCountFlags,
+                equirectangular_conversion_render_pass: vk::RenderPass,
                 render_pass: vk::RenderPass,
                 cube_shadow_map_render_pass: vk::RenderPass,
                 shadow_map_render_pass: vk::RenderPass,
@@ -174,6 +181,7 @@ impl VkAssetManager {
                         concurrent_frames,
 
                         swapchain_samples,
+                        equirectangular_conversion_render_pass,
                         render_pass,
                         cube_shadow_map_render_pass,
                         shadow_map_render_pass,
@@ -556,6 +564,7 @@ impl VkAssetManager {
                 };
 
                 let render_pass = match shader.render_stage {
+                        ShaderRenderStage::EquirectangularConversion => self.equirectangular_conversion_render_pass,
                         ShaderRenderStage::PointShadowMapping => self.cube_shadow_map_render_pass,
                         ShaderRenderStage::DirectionalShadowMapping => self.shadow_map_render_pass,
                         ShaderRenderStage::Drawing => self.render_pass,
@@ -917,18 +926,70 @@ impl VkAssetManager {
 
                                 format
                         },
-                        Cubemap::Equirectangular(image) => {
-                                vk_format_from_image_format_and_color_space(image.format, image.color_space)
-                        },
+                        Cubemap::Equirectangular(_) => vk::Format::R16G16B16A16_SFLOAT,
+                };
+
+                let additional_usage_flags = match cubemap {
+                        Cubemap::Faces(_) => vk::ImageUsageFlags::empty(),
+                        Cubemap::Equirectangular(_) => vk::ImageUsageFlags::COLOR_ATTACHMENT,
                 };
 
                 let vk_cubemap_cinfo = VkImageCubemapCreateInfo {
                         format,
                         size,
                         mip_levels: MipLevels::Log2,
+                        additional_usage_flags,
                 };
 
                 let vk_image = unsafe { VkImage::new_cubemap(&self.allocator, &vk_cubemap_cinfo)? };
+
+                if ENABLE_VALIDATION_LAYERS {
+                        unsafe {
+                                vk_image.set_debug_name(
+                                        &self.device,
+                                        self.debug_utils.as_ref().unwrap(),
+                                        &format!("[cubemap] {:?}", cubemap_id),
+                                )?;
+                        }
+                }
+
+                let mut deletion_queue = vec![];
+
+                unsafe {
+                        match cubemap {
+                                Cubemap::Faces(faces) => {
+                                        self.cmd_transfer_faces_into_cubemap(faces, &vk_image, &mut deletion_queue)?;
+                                },
+                                Cubemap::Equirectangular(equirectangular) => {
+                                        self.cmd_transfer_equirectangular_into_cubemap(
+                                                asset_manager,
+                                                equirectangular,
+                                                &vk_image,
+                                                size,
+                                                &mut deletion_queue,
+                                        )?;
+                                },
+                        }
+                }
+
+                self.cmd_gen_mipmaps_for(&vk_image);
+
+                unsafe {
+                        self.cmd_buffer
+                                .end_and_submit(&self.device, self.transfer_queue, &[], &[], &[])?;
+
+                        self.cmd_buffer.wait(u64::MAX)?;
+
+                        for o in deletion_queue.into_iter().rev() {
+                                match o {
+                                        VkObject::Buffer(b) => b.destroy(),
+                                        VkObject::Image(i) => i.destroy(),
+                                        VkObject::ImageView(iv) => iv.destroy(),
+                                        VkObject::Sampler(s) => s.destroy(),
+                                        VkObject::Framebuffer(f) => f.destroy(),
+                                };
+                        }
+                }
 
                 let vk_image_view_cinfo = vk::ImageViewCreateInfo {
                         image: *vk_image,
@@ -946,56 +1007,6 @@ impl VkAssetManager {
                 };
 
                 let vk_image_view = unsafe { VkImageView::new(Rc::clone(&self.device), &vk_image_view_cinfo)? };
-
-                let mut deletion_queue = vec![];
-
-                unsafe { self.cmd_buffer.begin(&self.device)? };
-
-                VkImage::cmd_transition_img_layout(&TransitionImageLayoutInfo {
-                        device: &self.device,
-                        cmd_buffer: *self.cmd_buffer,
-
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-
-                        image: *vk_image,
-                        base_mip_level: 0,
-                        mip_levels: vk_image.mip_levels,
-                        base_array_layer: 0,
-                        layer_count: 6,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-
-                        src_access_mask: vk::AccessFlags::empty(),
-                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-
-                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
-                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                });
-
-                match cubemap {
-                        Cubemap::Faces(faces) => {
-                                self.cmd_transfer_faces_into_cubemap(faces, &vk_image, &mut deletion_queue)?;
-                        },
-                        Cubemap::Equirectangular(equirectangular) => {
-                                // self.cmd_transfer_equirectangular_into_cubemap(equirectangular, vk_image)?;
-                        },
-                }
-
-                self.cmd_gen_mipmaps_for(&vk_image);
-
-                unsafe {
-                        self.cmd_buffer
-                                .end_and_submit(&self.device, self.transfer_queue, &[], &[], &[])?;
-
-                        self.cmd_buffer.wait(u64::MAX)?;
-
-                        for o in deletion_queue.into_iter().rev() {
-                                match o {
-                                        VkObject::Buffer(b) => b.destroy(),
-                                        VkObject::Image(i) => i.destroy(),
-                                };
-                        }
-                }
 
                 let vk_sampler_cinfo = vk::SamplerCreateInfo {
                         mag_filter: vk::Filter::LINEAR,
@@ -1029,12 +1040,35 @@ impl VkAssetManager {
                 Ok(())
         }
 
-        fn cmd_transfer_faces_into_cubemap(
+        unsafe fn cmd_transfer_faces_into_cubemap(
                 &self,
                 faces: &[Image; 6],
                 cubemap: &VkImage,
                 cmd_buffer_deletion_queue: &mut Vec<VkObject>,
         ) -> VkResult<()> {
+                unsafe { self.cmd_buffer.begin(&self.device)? };
+
+                VkImage::cmd_transition_img_layout(&TransitionImageLayoutInfo {
+                        device: &self.device,
+                        cmd_buffer: *self.cmd_buffer,
+
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+
+                        image: **cubemap,
+                        base_mip_level: 0,
+                        mip_levels: cubemap.mip_levels,
+                        base_array_layer: 0,
+                        layer_count: 6,
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+
+                        src_access_mask: vk::AccessFlags::empty(),
+                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+
+                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
+                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                });
+
                 let buffer_size =
                         6 * (cubemap.width * cubemap.height * cubemap.format.bytes_per_pixel()) as vk::DeviceSize;
                 let staging_buffer = VkBuffer::new_transfer_src(&self.device, Rc::clone(&self.allocator), buffer_size)?;
@@ -1063,59 +1097,237 @@ impl VkAssetManager {
                 Ok(())
         }
 
-        // fn cmd_transfer_equirectangular_into_cubemap(&self) -> VkResult<()> {
-        //         // let indices = [0u32, 1, 2, 1, 3, 2];
+        /// `cubemap_image` must be in vk::Format::R16G16B16A16_SFLOAT format
+        unsafe fn cmd_transfer_equirectangular_into_cubemap(
+                &self,
+                asset_manager: &AssetManager,
+                equirectangular_image: &Image,
+                cubemap_image: &VkImage,
+                size: u32,
+                deletion_queue: &mut Vec<VkObject>,
+        ) -> VkResult<()> {
+                assert_eq!(cubemap_image.format, vk::Format::R16G16B16A16_SFLOAT);
 
-        //         // let vk_buffer_cinfo = VkImmutableBufferCreateInfo {
-        //         //         device,
-        //         //         allocator: Rc::clone(&allocator),
-        //         //         cmd_buffer,
-        //         //         transfer_queue,
-        //         //         buffer_usage: vk::BufferUsageFlags::INDEX_BUFFER,
-        //         //         data: BufferData::FullSlice(&indices),
-        //         // };
+                let equirectangular_cinfo = VkImageCreateFromDataInfo {
+                        data: &equirectangular_image.pixels,
+                        width: equirectangular_image.width,
+                        height: equirectangular_image.height,
+                        format: vk_format_from_image_format_and_color_space(
+                                equirectangular_image.format,
+                                equirectangular_image.color_space,
+                        ),
+                        mip_levels: MipLevels::N(1),
+                        samples: vk::SampleCountFlags::TYPE_1,
+                        setup_cmd_buffer: &self.cmd_buffer,
+                        transfer_queue: self.transfer_queue,
+                };
 
-        //         // let index_buffer = VkBuffer::new_immutable(vk_buffer_cinfo)?;
+                let equirectangular_vk_image = VkImage::from_data(
+                        &self.instance,
+                        &self.pdevice,
+                        &self.device,
+                        Rc::clone(&self.allocator),
+                        &equirectangular_cinfo,
+                )?;
 
-        //         // device.cmd_bind_index_buffer(**cmd_buffer, *index_buffer, 0, vk::IndexType::UINT32);
+                let equirectangular_vk_image_view_cinfo = vk::ImageViewCreateInfo {
+                        image: *equirectangular_vk_image,
+                        view_type: vk::ImageViewType::TYPE_2D,
+                        format: equirectangular_vk_image.format,
+                        components: Default::default(),
+                        subresource_range: vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: equirectangular_vk_image.mip_levels,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                        },
+                        ..Default::default()
+                };
 
-        //         let rotations = [
-        //                 Mat3::from_rotation_y(-std::f32::consts::TAU / 4.0),
-        //                 Mat3::from_rotation_y(std::f32::consts::TAU / 4.0),
-        //                 Mat3::from_rotation_x(std::f32::consts::TAU / 4.0),
-        //                 Mat3::from_rotation_x(-std::f32::consts::TAU / 4.0),
-        //                 Mat3::IDENTITY,
-        //                 Mat3::from_rotation_y(std::f32::consts::TAU / 2.0),
-        //         ];
+                let equirectangular_vk_image_view =
+                        unsafe { VkImageView::new(Rc::clone(&self.device), &equirectangular_vk_image_view_cinfo)? };
 
-        //         for i in 0..6 {
-        //                 let attachment = vk::RenderingAttachmentInfo::builder()
-        //                 .image_view()
-        //                 let rendering_info = vk::RenderingInfo::builder()
-        //                 .render_area(vk::Rect2D {
-        //                         offset: vk::Offset2D { x: 0, y: 0 },
-        //                         extent: vk::Extent2D {
-        //                                 width: size,
-        //                                 height: size,
-        //                         },
-        //                 }).layer_count(1)
-        //                 .color_attachments(&[attachment])
+                let equirectangular_vk_sampler_cinfo = vk::SamplerCreateInfo {
+                        mag_filter: vk::Filter::LINEAR,
+                        min_filter: vk::Filter::LINEAR,
+                        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                        address_mode_u: vk::SamplerAddressMode::REPEAT,
+                        address_mode_v: vk::SamplerAddressMode::REPEAT,
+                        address_mode_w: vk::SamplerAddressMode::REPEAT,
+                        mip_lod_bias: 0.0,
+                        anisotropy_enable: ENABLE_ANISOTROPY as u32,
+                        max_anisotropy: 1.0,
+                        compare_enable: vk::FALSE,
+                        compare_op: vk::CompareOp::NEVER,
+                        min_lod: 0.0,
+                        max_lod: LOD_CLAMP_NONE,
+                        border_color: vk::BorderColor::INT_OPAQUE_WHITE,
+                        unnormalized_coordinates: vk::FALSE,
+                        ..Default::default()
+                };
 
-        //                 device.cmd_begin_rendering(**cmd_buffer, rendering_info)
+                let equirectangular_vk_sampler =
+                        unsafe { VkSampler::new(Rc::clone(&self.device), &equirectangular_vk_sampler_cinfo)? };
 
-        //                 device.cmd_push_constants(
-        //                         **cmd_buffer,
-        //                         *equi_to_cube_shader.graphics_pipeline_layout,
-        //                         vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-        //                         0,
-        //                         rotations[i].into_bytes_slice(),
-        //                 );
+                let equi_to_cube_shader_id = asset_manager.shader_names()["equi-to-cube-shader"];
+                let equi_to_cube_vk_shader = &self.shaders[equi_to_cube_shader_id];
 
-        //                 device.cmd_draw(**cmd_buffer, 6, 1, 0, 0);
-        //         }
+                let equirectangular_binding = equi_to_cube_vk_shader
+                        .shader_resource_bindings
+                        .get(&SHADER_RESOURCE_EQUIRECTANGULAR_MAP)
+                        .unwrap();
 
-        //         Ok(())
-        // }
+                let image_info = vk::DescriptorImageInfo {
+                        sampler: *equirectangular_vk_sampler,
+                        image_view: *equirectangular_vk_image_view,
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                };
+
+                deletion_queue.push(VkObject::Image(equirectangular_vk_image));
+                deletion_queue.push(VkObject::ImageView(equirectangular_vk_image_view));
+                deletion_queue.push(VkObject::Sampler(equirectangular_vk_sampler));
+
+                let write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .dst_set(equi_to_cube_vk_shader.world_dst_set[0])
+                        .dst_binding(equirectangular_binding.binding)
+                        .dst_array_element(0)
+                        .image_info(image_info.ref_into_slice())
+                        .build();
+
+                self.device.update_descriptor_sets(&[write], &[]);
+
+                let rotations = [
+                        Mat4::from_rotation_y(std::f32::consts::TAU / 4.0),
+                        Mat4::from_rotation_y(-std::f32::consts::TAU / 4.0),
+                        Mat4::from_rotation_x(std::f32::consts::TAU / 4.0),
+                        Mat4::from_rotation_x(-std::f32::consts::TAU / 4.0),
+                        Mat4::IDENTITY,
+                        Mat4::from_rotation_y(std::f32::consts::TAU / 2.0),
+                ];
+
+                unsafe { self.cmd_buffer.begin(&self.device)? };
+                let cmd_buffer = *self.cmd_buffer;
+
+                // transition all mips of cubemap_image into TRANSFER_DST_OPTIMAL layout.
+                // note: the transition for the 0th mip is unnecessary, as the transition
+                // could be done implicitly by the render pass.
+                VkImage::cmd_transition_img_layout(&TransitionImageLayoutInfo {
+                        device: &self.device,
+                        cmd_buffer: *self.cmd_buffer,
+
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+
+                        image: **cubemap_image,
+                        base_mip_level: 0,
+                        mip_levels: cubemap_image.mip_levels,
+                        base_array_layer: 0,
+                        layer_count: 6,
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+
+                        src_access_mask: vk::AccessFlags::empty(),
+                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+
+                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
+                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                });
+
+                self.device.cmd_bind_descriptor_sets(
+                        cmd_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        *equi_to_cube_vk_shader.graphics_pipeline_layout,
+                        0,
+                        &[equi_to_cube_vk_shader.world_dst_set[0]],
+                        &[],
+                );
+
+                let scissor = vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D {
+                                width: size,
+                                height: size,
+                        },
+                };
+
+                let viewport = vk::Viewport {
+                        x: 0.0,
+                        y: 0.0,
+                        width: size as f32,
+                        height: size as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                };
+
+                self.device.cmd_set_scissor(cmd_buffer, 0, scissor.ref_into_slice());
+                self.device.cmd_set_viewport(cmd_buffer, 0, viewport.ref_into_slice());
+
+                self.device.cmd_bind_pipeline(
+                        cmd_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        *equi_to_cube_vk_shader.graphics_pipeline,
+                );
+
+                for i in 0..6usize {
+                        let face_image_view_cinfo = vk::ImageViewCreateInfo::builder()
+                                .image(**cubemap_image)
+                                .view_type(vk::ImageViewType::TYPE_2D)
+                                .format(vk::Format::R16G16B16A16_SFLOAT)
+                                .components(Default::default())
+                                .subresource_range(vk::ImageSubresourceRange {
+                                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                                        base_mip_level: 0,
+                                        level_count: 1,
+                                        base_array_layer: i as u32,
+                                        layer_count: 1,
+                                });
+
+                        let face_image_view = VkImageView::new(Rc::clone(&self.device), &face_image_view_cinfo)?;
+
+                        let attachments = [*face_image_view];
+
+                        let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
+                                .render_pass(self.equirectangular_conversion_render_pass)
+                                .width(size)
+                                .height(size)
+                                .layers(1)
+                                .attachments(&attachments);
+
+                        let framebuffer = VkFramebuffer::new(&self.device, &framebuffer_cinfo)?;
+
+                        let render_pass_binfo = vk::RenderPassBeginInfo::builder()
+                                .render_pass(self.equirectangular_conversion_render_pass)
+                                .framebuffer(*framebuffer)
+                                .render_area(vk::Rect2D {
+                                        offset: vk::Offset2D { x: 0, y: 0 },
+                                        extent: vk::Extent2D {
+                                                width: size,
+                                                height: size,
+                                        },
+                                });
+
+                        self.device
+                                .cmd_begin_render_pass(cmd_buffer, &render_pass_binfo, vk::SubpassContents::INLINE);
+
+                        self.device.cmd_push_constants(
+                                cmd_buffer,
+                                *equi_to_cube_vk_shader.graphics_pipeline_layout,
+                                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                0,
+                                rotations[i].into_bytes_slice(),
+                        );
+
+                        self.device.cmd_draw(cmd_buffer, 6, 1, 0, 0);
+
+                        self.device.cmd_end_render_pass(cmd_buffer);
+
+                        deletion_queue.push(VkObject::ImageView(face_image_view));
+                        deletion_queue.push(VkObject::Framebuffer(framebuffer));
+                }
+
+                Ok(())
+        }
 
         fn cmd_gen_mipmaps_for(&self, image: &VkImage) {
                 VkImage::cmd_gen_mipmaps(&GenerateMipmapsInfo {

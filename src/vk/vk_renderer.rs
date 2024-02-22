@@ -57,6 +57,7 @@ pub struct VkRenderer {
 
         resolve_sampler: VkSampler,
 
+        equirectangular_conversion_render_pass: VkRenderPass,
         cube_shadow_map_render_pass: VkRenderPass,
         shadow_map_render_pass: VkRenderPass,
         render_pass: VkRenderPass,
@@ -119,6 +120,10 @@ impl VkRenderer {
                         swapchain.depth_format,
                 )?;
                 trace!("Created VkRenderPass");
+
+                let equirectangular_conversion_render_pass =
+                        Self::create_equirectangular_conversion_render_pass(&vk_context.device)?;
+                trace!("Created equirectangular conversion VkRenderPass");
 
                 let shadow_map_depth_format = swapchain.depth_format;
 
@@ -209,6 +214,7 @@ impl VkRenderer {
                 let vk_asset_manager = VkAssetManager::new(
                         &mut vk_context,
                         swapchain.samples,
+                        *equirectangular_conversion_render_pass,
                         *render_pass,
                         *cube_shadow_map_render_pass,
                         *shadow_map_render_pass,
@@ -247,6 +253,7 @@ impl VkRenderer {
 
                         resolve_sampler,
 
+                        equirectangular_conversion_render_pass,
                         cube_shadow_map_render_pass,
                         shadow_map_render_pass,
                         render_pass,
@@ -551,6 +558,7 @@ impl Renderer for VkRenderer {
                         self.framebuffer.destroy();
                         self.shadow_map_render_pass.destroy();
                         self.cube_shadow_map_render_pass.destroy();
+                        self.equirectangular_conversion_render_pass.destroy();
                         self.resolve_sampler.destroy();
                         self.render_pass.destroy();
                         self.postprocess_render_pass.destroy();
@@ -809,6 +817,40 @@ impl VkRenderer {
                         .attachments(&attachments)
                         .subpasses(&subpass_descriptions)
                         .dependencies(&subpass_dependencies);
+
+                unsafe { VkRenderPass::new(device, &render_pass_cinfo) }
+        }
+
+        fn create_equirectangular_conversion_render_pass(device: &Rc<VkDevice>) -> VkResult<VkRenderPass> {
+                let attachments = [vk::AttachmentDescription {
+                        flags: vk::AttachmentDescriptionFlags::empty(),
+                        format: vk::Format::R16G16B16A16_SFLOAT,
+                        samples: vk::SampleCountFlags::TYPE_1,
+                        load_op: vk::AttachmentLoadOp::DONT_CARE,
+                        store_op: vk::AttachmentStoreOp::STORE,
+                        stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+                        stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+                        initial_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        final_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                }];
+
+                let face_attachment_ref = vk::AttachmentReference {
+                        attachment: 0,
+                        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                };
+
+                let subpass_descriptions = [vk::SubpassDescription::builder()
+                        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+                        //.input_attachments(&[])
+                        .color_attachments(face_attachment_ref.ref_into_slice())
+                        // .depth_stencil_attachment(&[])
+                        // .resolve_attachments(&[])
+                        //.preserve_attachments(&[])
+                        .build()];
+
+                let render_pass_cinfo = vk::RenderPassCreateInfo::builder()
+                        .attachments(&attachments)
+                        .subpasses(&subpass_descriptions);
 
                 unsafe { VkRenderPass::new(device, &render_pass_cinfo) }
         }
