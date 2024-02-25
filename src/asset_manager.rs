@@ -205,6 +205,8 @@ pub enum ImageFormat {
         R8G8B8,
         R8G8B8A8,
         R16G16B16A16, // f16
+        R32G32B32,    // f32
+        R32G32B32A32, // f32
 }
 
 impl ImageFormat {
@@ -233,62 +235,24 @@ pub struct Image {
 impl Image {
         pub fn from_file(path: &Path, color_space: ColorSpace) -> AnyResult<Self> {
                 let image_name = path.to_string_lossy().to_string();
+                let image = image::open(path)?;
 
-                if path.extension().map_or(false, |e| e == "exr") {
-                        assert_eq!(color_space, ColorSpace::Linear);
+                let format = match image {
+                        image::DynamicImage::ImageRgb8(_) => ImageFormat::R8G8B8,
+                        image::DynamicImage::ImageRgba8(_) => ImageFormat::R8G8B8A8,
+                        image::DynamicImage::ImageRgb32F(_) => ImageFormat::R32G32B32,
+                        image::DynamicImage::ImageRgba32F(_) => ImageFormat::R32G32B32A32,
+                        _ => panic!("Unsupported image format! {:?}", image),
+                };
 
-                        let image = exr::prelude::read_first_rgba_layer_from_file(
-                                path,
-                                |resolution, _| {
-                                        let num_components = resolution.area() * 4;
-                                        let pixels: Vec<f16> = Vec::with_capacity(num_components);
-                                        pixels
-                                },
-                                |pixels, _, (r, g, b, a): (f16, f16, f16, f16)| {
-                                        pixels.push(r);
-                                        pixels.push(g);
-                                        pixels.push(b);
-                                        pixels.push(a);
-                                },
-                        )?;
-
-                        let width = image.layer_data.size.width() as u32;
-                        let height = image.layer_data.size.height() as u32;
-
-                        let mut pixels = image.layer_data.channel_data.pixels;
-
-                        assert_eq!(pixels.len(), pixels.capacity());
-                        let ptr: *mut u8 = pixels.as_mut_ptr() as *mut u8;
-                        let len = pixels.len() * (std::mem::size_of::<f16>() / std::mem::size_of::<u8>());
-                        std::mem::forget(pixels);
-                        let pixels = unsafe { Vec::from_raw_parts(ptr, len, len) };
-                        // println!("hash: {:?}", sha2::Sha256::digest(&pixels));
-
-                        Ok(Self {
-                                name: Some(image_name),
-                                width,
-                                height,
-                                pixels,
-                                format: ImageFormat::R16G16B16A16,
-                                color_space,
-                        })
-                } else {
-                        let image = image::open(path)?;
-
-                        match image {
-                                image::DynamicImage::ImageRgba8(_) => (),
-                                _ => panic!("Unsupported image format! {:?}", image),
-                        }
-
-                        Ok(Self {
-                                name: Some(image_name),
-                                width: image.width(),
-                                height: image.height(),
-                                pixels: image.into_bytes(),
-                                format: ImageFormat::R8G8B8A8,
-                                color_space,
-                        })
-                }
+                Ok(Self {
+                        name: Some(image_name),
+                        width: image.width(),
+                        height: image.height(),
+                        pixels: image.into_bytes(),
+                        format,
+                        color_space,
+                })
         }
 }
 

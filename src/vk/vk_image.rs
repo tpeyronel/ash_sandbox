@@ -8,19 +8,20 @@ use ash::{
 use log::{debug, error, info, trace, warn};
 use vk_mem::Alloc;
 
-use crate::AnyResult;
+use crate::{asset_manager::Image, util::RefIntoBytesSlice};
 
 use super::{
         vk_buffer::VkBuffer,
         vk_command_buffer::VkReusableCommandBuffer,
-        vk_util::BytesPerPixel,
+        vk_util::{vk_format_from_image_format_and_color_space, BytesPerPixel},
         vk_wrapper::{
-                impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkDebugUtils, VkDevice,
+                impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkDebugUtils, VkDevice, VkObject,
                 VmaAllocator,
         },
 };
 
 #[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
 pub enum MipLevels {
         Log2,
         N(u32),
@@ -54,13 +55,20 @@ pub struct VkImageCreateInfo {
         pub preferred_flags: vk::MemoryPropertyFlags,
 }
 
+pub struct VkImageCreateFromImageInfo<'a> {
+        pub image: &'a Image,
+        pub mip_levels: MipLevels,
+        pub setup_cmd_buffer: &'a VkReusableCommandBuffer,
+        pub transfer_queue: vk::Queue,
+}
+
 pub struct VkImageCreateFromDataInfo<'a> {
         pub data: &'a [u8],
+        pub data_format: vk::Format,
         pub width: u32,
         pub height: u32,
         pub format: vk::Format,
         pub mip_levels: MipLevels,
-        pub samples: vk::SampleCountFlags,
         pub setup_cmd_buffer: &'a VkReusableCommandBuffer,
         pub transfer_queue: vk::Queue,
 }
@@ -148,54 +156,53 @@ impl VkImage {
                 })
         }
 
+        pub unsafe fn from_image(
+                instance: &ash::Instance,
+                pdevice: vk::PhysicalDevice,
+                device: &ash::Device,
+                allocator: Rc<VmaAllocator>,
+                cinfo: &VkImageCreateFromImageInfo,
+        ) -> VkResult<Self> {
+                let data_format =
+                        vk_format_from_image_format_and_color_space(cinfo.image.format, cinfo.image.color_space);
+
+                let format = match data_format {
+                        vk::Format::R8G8B8_SRGB => vk::Format::R8G8B8A8_SRGB,
+                        vk::Format::R8G8B8_UNORM => vk::Format::R8G8B8A8_UNORM,
+                        vk::Format::R16G16B16_SFLOAT => vk::Format::R16G16B16A16_SFLOAT,
+                        vk::Format::R32G32B32_SFLOAT => vk::Format::R32G32B32A32_SFLOAT,
+                        f => f,
+                };
+
+                let vk_image_cinfo = VkImageCreateFromDataInfo {
+                        data: &cinfo.image.pixels,
+                        data_format,
+                        width: cinfo.image.width,
+                        height: cinfo.image.height,
+                        format,
+                        mip_levels: cinfo.mip_levels,
+                        setup_cmd_buffer: cinfo.setup_cmd_buffer,
+                        transfer_queue: cinfo.transfer_queue,
+                };
+
+                Self::from_data(instance, pdevice, device, allocator, &vk_image_cinfo)
+        }
+
         pub unsafe fn from_data(
                 instance: &ash::Instance,
-                pdevice: &vk::PhysicalDevice,
+                pdevice: vk::PhysicalDevice,
                 device: &ash::Device,
                 allocator: Rc<VmaAllocator>,
                 cinfo: &VkImageCreateFromDataInfo,
         ) -> VkResult<Self> {
+                let src_format = cinfo.data_format;
+                let dst_format = cinfo.format;
                 let mip_levels = cinfo.mip_levels.to_value(cinfo.width, cinfo.height);
 
-                let final_format = match cinfo.format {
-                        vk::Format::R8_UNORM
-                        | vk::Format::R8G8B8A8_SRGB
-                        | vk::Format::R8G8B8A8_UNORM
-                        | vk::Format::R16G16B16A16_SFLOAT => cinfo.format,
-                        vk::Format::R8G8B8_SRGB => vk::Format::R8G8B8A8_SRGB,
-                        vk::Format::R8G8B8_UNORM => vk::Format::R8G8B8A8_UNORM,
-                        _ => panic!("Unsupported vk::Format! {:?}", cinfo.format),
-                };
-
-                let buffer_size = (cinfo.width * cinfo.height * final_format.bytes_per_pixel()) as vk::DeviceSize;
-                let staging_buffer = VkBuffer::new_transfer_src(device, Rc::clone(&allocator), buffer_size)?;
-
-                match (cinfo.format, final_format) {
-                        (i, f) if i == f => {
-                                staging_buffer.write_bytes(cinfo.data)?;
-                        },
-                        (vk::Format::R8G8B8_SRGB, vk::Format::R8G8B8A8_SRGB)
-                        | (vk::Format::R8G8B8_UNORM, vk::Format::R8G8B8A8_UNORM) => {
-                                assert_eq!(cinfo.data.len() % 3, 0);
-                                warn!("slow format: {:?}", cinfo.format);
-
-                                for (i, rgb) in cinfo.data.chunks(3).enumerate() {
-                                        staging_buffer
-                                                .write_bytes_offsetted(&[rgb[0], rgb[1], rgb[2], u8::MAX], i * 4)?;
-                                }
-                        },
-                        _ => panic!(
-                                "unsupported (initial, final) vk::Format pair ({:?}, {:?})",
-                                cinfo.format, final_format
-                        ),
-                }
-                staging_buffer.unmap_memory();
-
-                let format = final_format;
                 let vk_img_cinfo = VkImageCreateInfo {
                         flags: Default::default(),
                         image_type: vk::ImageType::TYPE_2D,
-                        format,
+                        format: dst_format,
                         extent: vk::Extent3D {
                                 width: cinfo.width,
                                 height: cinfo.height,
@@ -203,7 +210,7 @@ impl VkImage {
                         },
                         mip_levels,
                         array_layers: 1,
-                        samples: cinfo.samples,
+                        samples: vk::SampleCountFlags::TYPE_1,
                         tiling: vk::ImageTiling::OPTIMAL,
                         usage: vk::ImageUsageFlags::TRANSFER_SRC
                                 | vk::ImageUsageFlags::TRANSFER_DST
@@ -216,11 +223,13 @@ impl VkImage {
                         preferred_flags: Default::default(),
                 };
 
-                let vk_img = VkImage::new(allocator, &vk_img_cinfo)?;
+                let vk_img = VkImage::new(Rc::clone(&allocator), &vk_img_cinfo)?;
 
-                let cmd_buffer = **cinfo.setup_cmd_buffer;
+                let load_strategy = Self::figure_load_strategy(instance, pdevice, src_format, dst_format);
 
+                let mut deletion_queue = vec![];
                 cinfo.setup_cmd_buffer.begin(device)?;
+                let cmd_buffer = **cinfo.setup_cmd_buffer;
 
                 Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
                         device,
@@ -243,16 +252,111 @@ impl VkImage {
                         dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
                 });
 
-                Self::cmd_copy_buffer_to_image(
-                        device,
-                        cmd_buffer,
-                        cinfo.width,
-                        cinfo.height,
-                        1,
-                        *staging_buffer,
-                        *vk_img,
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                );
+                match load_strategy {
+                        VkLoadStrategy::StagingBufferDirect | VkLoadStrategy::StagingBufferConvert => {
+                                let buffer_size =
+                                        (cinfo.width * cinfo.height * dst_format.bytes_per_pixel()) as vk::DeviceSize;
+                                let staging_buffer =
+                                        VkBuffer::new_transfer_src(device, Rc::clone(&allocator), buffer_size)?;
+
+                                if load_strategy == VkLoadStrategy::StagingBufferDirect {
+                                        staging_buffer.write_bytes(cinfo.data)?;
+                                } else {
+                                        match (src_format, dst_format) {
+                                                (vk::Format::R8G8B8_SRGB, vk::Format::R8G8B8A8_SRGB)
+                                                | (vk::Format::R8G8B8_UNORM, vk::Format::R8G8B8A8_UNORM) => {
+                                                        assert_eq!(cinfo.data.len() % 3, 0);
+                                                        warn!("slow format: {:?}", src_format);
+
+                                                        for (i, rgb) in cinfo.data.chunks(3).enumerate() {
+                                                                staging_buffer.write_bytes_offsetted(
+                                                                        &[rgb[0], rgb[1], rgb[2], u8::MAX],
+                                                                        i * 4,
+                                                                )?;
+                                                        }
+                                                },
+                                                (vk::Format::R32G32B32_SFLOAT, vk::Format::R32G32B32A32_SFLOAT) => {
+                                                        assert_eq!(cinfo.data.len() % 12, 0);
+                                                        warn!("slow format: {:?}", src_format);
+
+                                                        let onef = 1.0f32;
+                                                        let onef_bytes = onef.into_bytes_slice();
+
+                                                        for (i, rgb) in cinfo.data.chunks(12).enumerate() {
+                                                                staging_buffer.write_bytes_offsetted(
+                                                                        &[
+                                                                                rgb[0],
+                                                                                rgb[1],
+                                                                                rgb[2],
+                                                                                rgb[3],
+                                                                                rgb[4],
+                                                                                rgb[5],
+                                                                                rgb[6],
+                                                                                rgb[7],
+                                                                                rgb[8],
+                                                                                rgb[9],
+                                                                                rgb[10],
+                                                                                rgb[11],
+                                                                                onef_bytes[0],
+                                                                                onef_bytes[1],
+                                                                                onef_bytes[2],
+                                                                                onef_bytes[3],
+                                                                        ],
+                                                                        i * 16,
+                                                                )?;
+                                                        }
+                                                },
+                                                _ => panic!(
+                                                        "unsupported (initial, final) vk::Format pair ({:?}, {:?})",
+                                                        src_format, dst_format
+                                                ),
+                                        }
+                                }
+                                staging_buffer.unmap_memory();
+
+                                Self::cmd_copy_buffer_to_image(
+                                        device,
+                                        cmd_buffer,
+                                        cinfo.width,
+                                        cinfo.height,
+                                        1,
+                                        *staging_buffer,
+                                        *vk_img,
+                                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                );
+
+                                deletion_queue.push(VkObject::Buffer(staging_buffer));
+                        },
+                        VkLoadStrategy::LinearImage => {
+                                todo!()
+                                // let src_vk_img_cinfo = VkImageCreateInfo {
+                                //         flags: Default::default(),
+                                //         image_type: vk::ImageType::TYPE_2D,
+                                //         format: dst_format,
+                                //         extent: vk::Extent3D {
+                                //                 width: cinfo.width,
+                                //                 height: cinfo.height,
+                                //                 depth: 1,
+                                //         },
+                                //         mip_levels,
+                                //         array_layers: 1,
+                                //         samples: vk::SampleCountFlags::TYPE_1,
+                                //         tiling: vk::ImageTiling::LINEAR,
+                                //         usage: vk::ImageUsageFlags::TRANSFER_SRC,
+                                //         queue_family_indices: None,
+                                //         initial_layout: vk::ImageLayout::UNDEFINED,
+                                //         mem_usage: vma::MemoryUsage::CpuToGpu,
+                                //         alloc_cflags: vma::AllocationCreateFlags::empty(),
+                                //         required_flags: vk::MemoryPropertyFlags::empty(),
+                                //         preferred_flags: vk::MemoryPropertyFlags::empty(),
+                                // };
+
+                                // let src_vk_img = VkImage::new(allocator, &src_vk_img_cinfo)?;
+
+                                // let src_vk_img_map = allocator.map_memory(src_vk_img.alloc)?;
+                                // d
+                        },
+                }
 
                 Self::cmd_gen_mipmaps(&GenerateMipmapsInfo {
                         instance,
@@ -260,7 +364,7 @@ impl VkImage {
                         device,
                         cmd_buffer,
                         image: *vk_img,
-                        image_format: format,
+                        image_format: dst_format,
                         width: cinfo.width,
                         height: cinfo.height,
                         mip_levels,
@@ -272,9 +376,38 @@ impl VkImage {
                         .end_and_submit(device, cinfo.transfer_queue, &[], &[], &[])?;
 
                 cinfo.setup_cmd_buffer.wait(u64::MAX)?;
-                staging_buffer.destroy();
+                for o in deletion_queue.into_iter().rev() {
+                        o.destroy();
+                }
 
                 Ok(vk_img)
+        }
+
+        #[rustfmt::skip]
+        unsafe fn figure_load_strategy(
+                instance: &ash::Instance,
+                pdevice: vk::PhysicalDevice,
+                src_fmt: vk::Format,
+                dst_fmt: vk::Format,
+        ) -> VkLoadStrategy {
+                let src_fmt_props = instance.get_physical_device_format_properties(pdevice, src_fmt);
+                let dst_fmt_props = instance.get_physical_device_format_properties(pdevice, dst_fmt);
+
+                if src_fmt == dst_fmt && dst_fmt_props.optimal_tiling_features.contains(vk::FormatFeatureFlags::TRANSFER_DST) {
+                        return VkLoadStrategy::StagingBufferDirect;
+                }
+
+                // if src_fmt_props.linear_tiling_features.contains(vk::FormatFeatureFlags::BLIT_SRC)
+                //         && dst_fmt_props.optimal_tiling_features.contains(vk::FormatFeatureFlags::BLIT_DST)
+                // {
+                //         return VkLoadStrategy::LinearImage;
+                // }
+
+                if dst_fmt_props.optimal_tiling_features.contains(vk::FormatFeatureFlags::TRANSFER_DST) {
+                        return VkLoadStrategy::StagingBufferConvert;
+                }
+
+                panic!("no suitable load strategy from {:?} to {:?}", src_fmt, dst_fmt);
         }
 
         pub unsafe fn new_cubemap(allocator: &Rc<VmaAllocator>, cinfo: &VkImageCubemapCreateInfo) -> VkResult<VkImage> {
@@ -440,7 +573,7 @@ impl VkImage {
                 assert!(
                         unsafe {
                                 minfo.instance
-                                        .get_physical_device_format_properties(*minfo.pdevice, minfo.image_format)
+                                        .get_physical_device_format_properties(minfo.pdevice, minfo.image_format)
                                         .optimal_tiling_features
                                         .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR)
                         },
@@ -570,7 +703,7 @@ pub struct TransitionImageLayoutInfo<'a> {
 
 pub struct GenerateMipmapsInfo<'a> {
         pub instance: &'a ash::Instance,
-        pub pdevice: &'a vk::PhysicalDevice,
+        pub pdevice: vk::PhysicalDevice,
         pub device: &'a ash::Device,
         pub cmd_buffer: vk::CommandBuffer,
         pub image: vk::Image,
@@ -580,4 +713,11 @@ pub struct GenerateMipmapsInfo<'a> {
         pub mip_levels: u32,
         pub base_array_layer: u32,
         pub layer_count: u32,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum VkLoadStrategy {
+        StagingBufferDirect,
+        StagingBufferConvert,
+        LinearImage,
 }

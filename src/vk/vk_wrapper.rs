@@ -616,3 +616,15 @@ pub enum VkObject {
         Sampler(VkSampler),
         Framebuffer(VkFramebuffer),
 }
+
+impl VkObject {
+        pub unsafe fn destroy(&self) {
+                match self {
+                        VkObject::Buffer(b) => b.destroy(),
+                        VkObject::Image(i) => i.destroy(),
+                        VkObject::ImageView(iv) => iv.destroy(),
+                        VkObject::Sampler(s) => s.destroy(),
+                        VkObject::Framebuffer(f) => f.destroy(),
+                }
+        }
+}

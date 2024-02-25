@@ -32,7 +32,7 @@ use crate::{
         vk::{
                 vk_buffer::{BufferData, VkBuffer, VkImmutableBufferCreateInfo},
                 vk_command_buffer::VkReusableCommandBuffer,
-                vk_image::{MipLevels, VkImage, VkImageCreateFromDataInfo},
+                vk_image::{MipLevels, VkImage},
                 vk_wrapper::{VkDevice, VkImageView, VkPhysicalDevice, VkSampler},
         },
         AnyResult,
@@ -42,7 +42,9 @@ use super::{
         vk_buffer::VkDynamicUniformBuffer,
         vk_context::{VkContext, ENABLE_VALIDATION_LAYERS},
         vk_descriptor_set_allocator::VkDescriptorSetAllocator,
-        vk_image::{GenerateMipmapsInfo, TransitionImageLayoutInfo, VkImageCubemapCreateInfo},
+        vk_image::{
+                GenerateMipmapsInfo, TransitionImageLayoutInfo, VkImageCreateFromImageInfo, VkImageCubemapCreateInfo,
+        },
         vk_util::{vk_format_from_image_format_and_color_space, BytesPerPixel},
         vk_wrapper::{
                 VkDebugUtils, VkFramebuffer, VkInstance, VkObject, VkPipeline, VkPipelineLayout, VkShaderModule,
@@ -981,13 +983,7 @@ impl VkAssetManager {
                         self.cmd_buffer.wait(u64::MAX)?;
 
                         for o in deletion_queue.into_iter().rev() {
-                                match o {
-                                        VkObject::Buffer(b) => b.destroy(),
-                                        VkObject::Image(i) => i.destroy(),
-                                        VkObject::ImageView(iv) => iv.destroy(),
-                                        VkObject::Sampler(s) => s.destroy(),
-                                        VkObject::Framebuffer(f) => f.destroy(),
-                                };
+                                o.destroy();
                         }
                 }
 
@@ -1108,23 +1104,16 @@ impl VkAssetManager {
         ) -> VkResult<()> {
                 assert_eq!(cubemap_image.format, vk::Format::R16G16B16A16_SFLOAT);
 
-                let equirectangular_cinfo = VkImageCreateFromDataInfo {
-                        data: &equirectangular_image.pixels,
-                        width: equirectangular_image.width,
-                        height: equirectangular_image.height,
-                        format: vk_format_from_image_format_and_color_space(
-                                equirectangular_image.format,
-                                equirectangular_image.color_space,
-                        ),
+                let equirectangular_cinfo = VkImageCreateFromImageInfo {
+                        image: equirectangular_image,
                         mip_levels: MipLevels::N(1),
-                        samples: vk::SampleCountFlags::TYPE_1,
                         setup_cmd_buffer: &self.cmd_buffer,
                         transfer_queue: self.transfer_queue,
                 };
 
-                let equirectangular_vk_image = VkImage::from_data(
+                let equirectangular_vk_image = VkImage::from_image(
                         &self.instance,
-                        &self.pdevice,
+                        **self.pdevice,
                         &self.device,
                         Rc::clone(&self.allocator),
                         &equirectangular_cinfo,
@@ -1332,7 +1321,7 @@ impl VkAssetManager {
         fn cmd_gen_mipmaps_for(&self, image: &VkImage) {
                 VkImage::cmd_gen_mipmaps(&GenerateMipmapsInfo {
                         instance: &self.instance,
-                        pdevice: &self.pdevice,
+                        pdevice: **self.pdevice,
                         device: &self.device,
                         cmd_buffer: *self.cmd_buffer,
                         image: image.handle,
@@ -1411,21 +1400,17 @@ impl VkAssetManager {
                         None => return Ok(None),
                 };
 
-                let vk_image_cinfo = VkImageCreateFromDataInfo {
-                        data: &image.pixels,
-                        width: image.width,
-                        height: image.height,
-                        format: vk_format_from_image_format_and_color_space(image.format, image.color_space),
+                let vk_image_cinfo = VkImageCreateFromImageInfo {
+                        image,
                         mip_levels: MipLevels::Log2,
-                        samples: vk::SampleCountFlags::TYPE_1,
                         setup_cmd_buffer: &self.cmd_buffer,
                         transfer_queue: self.transfer_queue,
                 };
 
                 let vk_image = unsafe {
-                        VkImage::from_data(
+                        VkImage::from_image(
                                 &self.instance,
-                                &self.pdevice,
+                                **self.pdevice,
                                 &self.device,
                                 Rc::clone(&self.allocator),
                                 &vk_image_cinfo,

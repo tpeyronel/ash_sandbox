@@ -42,6 +42,8 @@ pub fn vk_format_from_image_format_and_color_space(img_format: ImageFormat, colo
                 // (ImageFormat::R16G16B16, ColorSpace::Linear) => vk::Format::R16G16B16_UINT,
                 // (ImageFormat::R16G16B16A16, ColorSpace::Linear) => vk::Format::R16G16B16A16_UINT,
                 (ImageFormat::R16G16B16A16, ColorSpace::Linear) => vk::Format::R16G16B16A16_SFLOAT,
+                (ImageFormat::R32G32B32, ColorSpace::Linear) => vk::Format::R32G32B32_SFLOAT,
+                (ImageFormat::R32G32B32A32, ColorSpace::Linear) => vk::Format::R32G32B32A32_SFLOAT,
                 _ => panic!(
                         "unsupported (image format, color space) pair ({:?}, {:?})",
                         img_format, color_space
@@ -63,6 +65,7 @@ impl BytesPerPixel for vk::Format {
                         (vk::Format::R8G8B8_UNORM, vk::Format::B8G8R8_SRGB, 3),
                         (vk::Format::R8G8B8A8_UNORM, vk::Format::A2B10G10R10_SINT_PACK32, 4),
                         (vk::Format::R16G16B16A16_UNORM, vk::Format::R16G16B16A16_SFLOAT, 8),
+                        (vk::Format::R32G32B32A32_UINT, vk::Format::R32G32B32A32_SFLOAT, 16),
                 ];
 
                 for range in &ranges {
