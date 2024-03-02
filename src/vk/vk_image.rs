@@ -270,7 +270,7 @@ impl VkImage {
                                                 warn!("slow format: {:?}", src_format);
 
                                                 let onef = 1.0f32;
-                                                let onef_bytes = onef.into_bytes_slice();
+                                                let onef_bytes = onef.as_bytes();
 
                                                 for (i, rgb) in data.chunks(12).enumerate() {
                                                         let bytes = [rgb, onef_bytes].concat();
@@ -457,7 +457,7 @@ impl VkImage {
                                                         warn!("slow format: {:?}", src_format);
 
                                                         let onef = 1.0f32;
-                                                        let onef_bytes = onef.into_bytes_slice();
+                                                        let onef_bytes = onef.as_bytes();
 
                                                         for (i, rgb) in cinfo.data.chunks(12).enumerate() {
                                                                 staging_buffer.write_bytes_offsetted(

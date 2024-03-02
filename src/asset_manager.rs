@@ -41,7 +41,7 @@ use crate::{
                 SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX,
                 SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
         },
-        util::{self, default},
+        util::{self, default, RefIntoBytesSlice},
         vk::vk_renderer::{BillboardData, MaterialData, ObjectMatrices, WorldLights, WorldMatrices},
         AnyResult,
 };
@@ -154,14 +154,7 @@ impl Material {
                                         ),
                                 };
 
-                                let bytes = unsafe {
-                                        ::core::slice::from_raw_parts(
-                                                (&data as *const MaterialData) as *const u8,
-                                                ::core::mem::size_of::<MaterialData>(),
-                                        )
-                                };
-
-                                f(Some(ShaderResourceData::StructData(bytes)))
+                                f(Some(ShaderResourceData::StructData(unsafe { data.as_bytes() })))
                         },
                         _ => f(None),
                 }

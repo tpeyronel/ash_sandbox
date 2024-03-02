@@ -1986,7 +1986,7 @@ impl VkRenderer {
                                 *cube_shadow_map_shader.graphics_pipeline_layout,
                                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                                 0,
-                                (i as u32).into_bytes_slice(),
+                                (i as u32).as_bytes(),
                         );
 
                         self.vk_context.device.cmd_bind_descriptor_sets(

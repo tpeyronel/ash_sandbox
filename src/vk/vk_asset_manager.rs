@@ -1308,7 +1308,7 @@ impl VkAssetManager {
                                 *equi_to_cube_vk_shader.graphics_pipeline_layout,
                                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                                 0,
-                                rotations[i].into_bytes_slice(),
+                                rotations[i].as_bytes(),
                         );
 
                         self.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
