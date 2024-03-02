@@ -897,14 +897,7 @@ impl VkAssetManager {
                 };
 
                 let size = match cubemap {
-                        Cubemap::Faces(faces) => {
-                                let size = faces[0].width;
-                                for f in faces {
-                                        assert_eq!(f.width, size);
-                                        assert_eq!(f.height, size);
-                                }
-                                size
-                        },
+                        Cubemap::Faces(faces) => faces.width,
                         Cubemap::Equirectangular(image) => {
                                 // We divide width by 4, as there are four horizontal faces.
                                 let size = image.width / 4;
@@ -914,19 +907,7 @@ impl VkAssetManager {
 
                 let format = match cubemap {
                         Cubemap::Faces(faces) => {
-                                let format = vk_format_from_image_format_and_color_space(
-                                        faces[0].format,
-                                        faces[0].color_space,
-                                );
-
-                                for f in &faces[1..] {
-                                        assert_eq!(
-                                                format,
-                                                vk_format_from_image_format_and_color_space(f.format, f.color_space)
-                                        );
-                                }
-
-                                format
+                                vk_format_from_image_format_and_color_space(faces.format, faces.color_space)
                         },
                         Cubemap::Equirectangular(_) => vk::Format::R16G16B16A16_SFLOAT,
                 };
@@ -936,14 +917,61 @@ impl VkAssetManager {
                         Cubemap::Equirectangular(_) => vk::ImageUsageFlags::COLOR_ATTACHMENT,
                 };
 
-                let vk_cubemap_cinfo = VkImageCubemapCreateInfo {
-                        format,
-                        size,
-                        mip_levels: MipLevels::Log2,
-                        additional_usage_flags,
-                };
+                let mut deletion_queue = vec![];
 
-                let vk_image = unsafe { VkImage::new_cubemap(&self.allocator, &vk_cubemap_cinfo)? };
+                let vk_image = unsafe {
+                        match cubemap {
+                                Cubemap::Faces(faces) => {
+                                        // self.cmd_transfer_faces_into_cubemap(faces, &vk_image, &mut deletion_queue)?;
+                                        let cinfo = VkImageCreateFromImageInfo {
+                                                image: faces,
+                                                mip_levels: MipLevels::Log2,
+                                                setup_cmd_buffer: &self.cmd_buffer,
+                                                transfer_queue: self.transfer_queue,
+                                        };
+
+                                        VkImage::from_image(
+                                                &self.instance,
+                                                **self.pdevice,
+                                                &self.device,
+                                                Rc::clone(&self.allocator),
+                                                &cinfo,
+                                        )?
+                                },
+                                Cubemap::Equirectangular(equirectangular) => {
+                                        let vk_cubemap_cinfo = VkImageCubemapCreateInfo {
+                                                format,
+                                                size,
+                                                mip_levels: MipLevels::Log2,
+                                                additional_usage_flags,
+                                        };
+
+                                        let vk_image = VkImage::new_cubemap(&self.allocator, &vk_cubemap_cinfo)?;
+
+                                        self.cmd_transfer_equirectangular_into_cubemap(
+                                                asset_manager,
+                                                equirectangular,
+                                                &vk_image,
+                                                size,
+                                                &mut deletion_queue,
+                                        )?;
+
+                                        self.cmd_gen_mipmaps_for(&vk_image);
+
+                                        self.cmd_buffer.end_and_submit(
+                                                &self.device,
+                                                self.transfer_queue,
+                                                &[],
+                                                &[],
+                                                &[],
+                                        )?;
+
+                                        self.cmd_buffer.wait(u64::MAX)?;
+
+                                        vk_image
+                                },
+                        }
+                };
 
                 if ENABLE_VALIDATION_LAYERS {
                         unsafe {
@@ -955,33 +983,9 @@ impl VkAssetManager {
                         }
                 }
 
-                let mut deletion_queue = vec![];
+                // self.cmd_gen_mipmaps_for(&vk_image);
 
                 unsafe {
-                        match cubemap {
-                                Cubemap::Faces(faces) => {
-                                        self.cmd_transfer_faces_into_cubemap(faces, &vk_image, &mut deletion_queue)?;
-                                },
-                                Cubemap::Equirectangular(equirectangular) => {
-                                        self.cmd_transfer_equirectangular_into_cubemap(
-                                                asset_manager,
-                                                equirectangular,
-                                                &vk_image,
-                                                size,
-                                                &mut deletion_queue,
-                                        )?;
-                                },
-                        }
-                }
-
-                self.cmd_gen_mipmaps_for(&vk_image);
-
-                unsafe {
-                        self.cmd_buffer
-                                .end_and_submit(&self.device, self.transfer_queue, &[], &[], &[])?;
-
-                        self.cmd_buffer.wait(u64::MAX)?;
-
                         for o in deletion_queue.into_iter().rev() {
                                 o.destroy();
                         }
@@ -1036,62 +1040,62 @@ impl VkAssetManager {
                 Ok(())
         }
 
-        unsafe fn cmd_transfer_faces_into_cubemap(
-                &self,
-                faces: &[Image; 6],
-                cubemap: &VkImage,
-                cmd_buffer_deletion_queue: &mut Vec<VkObject>,
-        ) -> VkResult<()> {
-                unsafe { self.cmd_buffer.begin(&self.device)? };
+        // unsafe fn cmd_transfer_faces_into_cubemap(
+        //         &self,
+        //         faces: &[Image; 6],
+        //         cubemap: &VkImage,
+        //         cmd_buffer_deletion_queue: &mut Vec<VkObject>,
+        // ) -> VkResult<()> {
+        //         unsafe { self.cmd_buffer.begin(&self.device)? };
 
-                VkImage::cmd_transition_img_layout(&TransitionImageLayoutInfo {
-                        device: &self.device,
-                        cmd_buffer: *self.cmd_buffer,
+        //         VkImage::cmd_transition_img_layout(&TransitionImageLayoutInfo {
+        //                 device: &self.device,
+        //                 cmd_buffer: *self.cmd_buffer,
 
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        //                 old_layout: vk::ImageLayout::UNDEFINED,
+        //                 new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
 
-                        image: **cubemap,
-                        base_mip_level: 0,
-                        mip_levels: cubemap.mip_levels,
-                        base_array_layer: 0,
-                        layer_count: 6,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
+        //                 image: **cubemap,
+        //                 base_mip_level: 0,
+        //                 mip_levels: cubemap.mip_levels,
+        //                 base_array_layer: 0,
+        //                 layer_count: 6,
+        //                 aspect_mask: vk::ImageAspectFlags::COLOR,
 
-                        src_access_mask: vk::AccessFlags::empty(),
-                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+        //                 src_access_mask: vk::AccessFlags::empty(),
+        //                 dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
 
-                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
-                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                });
+        //                 src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
+        //                 dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
+        //         });
 
-                let buffer_size =
-                        6 * (cubemap.width * cubemap.height * cubemap.format.bytes_per_pixel()) as vk::DeviceSize;
-                let staging_buffer = VkBuffer::new_transfer_src(&self.device, Rc::clone(&self.allocator), buffer_size)?;
+        //         let buffer_size =
+        //                 6 * (cubemap.width * cubemap.height * cubemap.format.bytes_per_pixel()) as vk::DeviceSize;
+        //         let staging_buffer = VkBuffer::new_transfer_src(&self.device, Rc::clone(&self.allocator), buffer_size)?;
 
-                let mut offset = 0;
-                for face in faces {
-                        let face_data = face.pixels.as_slice();
-                        staging_buffer.write_bytes_offsetted(face_data, offset)?;
-                        offset += face_data.len();
-                }
-                staging_buffer.unmap_memory();
+        //         let mut offset = 0;
+        //         for face in faces {
+        //                 let face_data = face.data.as_slice();
+        //                 staging_buffer.write_bytes_offsetted(face_data, offset)?;
+        //                 offset += face_data.len();
+        //         }
+        //         staging_buffer.unmap_memory();
 
-                VkImage::cmd_copy_buffer_to_image(
-                        &self.device,
-                        *self.cmd_buffer,
-                        cubemap.width,
-                        cubemap.height,
-                        6,
-                        *staging_buffer,
-                        **cubemap,
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                );
+        //         VkImage::cmd_copy_buffer_to_image(
+        //                 &self.device,
+        //                 *self.cmd_buffer,
+        //                 cubemap.width,
+        //                 cubemap.height,
+        //                 6,
+        //                 *staging_buffer,
+        //                 **cubemap,
+        //                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        //         );
 
-                cmd_buffer_deletion_queue.push(VkObject::Buffer(staging_buffer));
+        //         cmd_buffer_deletion_queue.push(VkObject::Buffer(staging_buffer));
 
-                Ok(())
-        }
+        //         Ok(())
+        // }
 
         /// `cubemap_image` must be in vk::Format::R16G16B16A16_SFLOAT format
         unsafe fn cmd_transfer_equirectangular_into_cubemap(
@@ -1141,9 +1145,9 @@ impl VkAssetManager {
                         mag_filter: vk::Filter::LINEAR,
                         min_filter: vk::Filter::LINEAR,
                         mipmap_mode: vk::SamplerMipmapMode::LINEAR,
-                        address_mode_u: vk::SamplerAddressMode::REPEAT,
-                        address_mode_v: vk::SamplerAddressMode::REPEAT,
-                        address_mode_w: vk::SamplerAddressMode::REPEAT,
+                        address_mode_u: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        address_mode_v: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        address_mode_w: vk::SamplerAddressMode::CLAMP_TO_EDGE,
                         mip_lod_bias: 0.0,
                         anisotropy_enable: ENABLE_ANISOTROPY as u32,
                         max_anisotropy: 1.0,

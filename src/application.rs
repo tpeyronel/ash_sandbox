@@ -204,18 +204,28 @@ impl Application {
 
                 let (mut asset_manager, asset_manager_event_rx) = Self::init_asset_manager()?;
 
-                let skybox = asset_manager.insert_cubemap(Cubemap::Faces([
-                        Image::from_file(Path::new("res/image/skybox/right.png"), ColorSpace::Srgb)?,
-                        Image::from_file(Path::new("res/image/skybox/left.png"), ColorSpace::Srgb)?,
-                        Image::from_file(Path::new("res/image/skybox/up.png"), ColorSpace::Srgb)?,
-                        Image::from_file(Path::new("res/image/skybox/down.png"), ColorSpace::Srgb)?,
-                        Image::from_file(Path::new("res/image/skybox/front.png"), ColorSpace::Srgb)?,
-                        Image::from_file(Path::new("res/image/skybox/back.png"), ColorSpace::Srgb)?,
-                ]));
+                let skybox = asset_manager.insert_cubemap(Cubemap::Faces(Image::from_files_cubemap(
+                        Some("skybox".into()),
+                        [
+                                Path::new("res/image/skybox/right.png"),
+                                Path::new("res/image/skybox/left.png"),
+                                Path::new("res/image/skybox/up.png"),
+                                Path::new("res/image/skybox/down.png"),
+                                Path::new("res/image/skybox/front.png"),
+                                Path::new("res/image/skybox/back.png"),
+                        ],
+                        ColorSpace::Srgb,
+                )?));
                 // world.insert_resource(Skybox(skybox));
 
+                // asset_manager.add_image(Image::from_file(
+                //         Path::new("res/image/results/wide_street.DDS"),
+                //         ColorSpace::Linear,
+                // )?);
+
                 let wide_street_cubemap = asset_manager.insert_cubemap(Cubemap::Equirectangular(Image::from_file(
-                        Path::new("res/image/wide_street.exr"),
+                        // Path::new("res/image/wide_street.exr"),
+                        Path::new("res/image/results/wide_street.DDS"),
                         ColorSpace::Linear,
                 )?));
                 world.insert_resource(Skybox(wide_street_cubemap));

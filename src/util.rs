@@ -51,3 +51,28 @@ impl<T: 'static> RefIntoBytesSlice for T {
                 unsafe { std::slice::from_raw_parts(data, len) }
         }
 }
+
+pub fn compute_image_stride(width: u32, height: u32, block_size: u32, block_extent: (u32, u32)) -> u32 {
+        let (block_width, block_height) = block_extent;
+
+        let block_rows = (width + (block_width - 1)) / block_width;
+        let block_cols = (height + (block_height - 1)) / block_height;
+
+        block_rows * block_cols * block_size
+}
+
+pub fn compute_image_stride_with_mipmaps(
+        mut width: u32,
+        mut height: u32,
+        block_size: u32,
+        block_extent: (u32, u32),
+        mipmaps: u32,
+) -> u32 {
+        let mut stride = 0;
+        for _ in 0..mipmaps {
+                stride += compute_image_stride(width, height, block_size, block_extent);
+                width = 1.max(width / 2);
+                height = 1.max(height / 2);
+        }
+        stride
+}

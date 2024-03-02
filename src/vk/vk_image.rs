@@ -8,11 +8,15 @@ use ash::{
 use log::{debug, error, info, trace, warn};
 use vk_mem::Alloc;
 
-use crate::{asset_manager::Image, util::RefIntoBytesSlice};
+use crate::{
+        asset_manager::{Image, ImageFlags},
+        util::RefIntoBytesSlice,
+};
 
 use super::{
         vk_buffer::VkBuffer,
         vk_command_buffer::VkReusableCommandBuffer,
+        vk_format::VkFormatProperties,
         vk_util::{vk_format_from_image_format_and_color_space, BytesPerPixel},
         vk_wrapper::{
                 impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkDebugUtils, VkDevice, VkObject,
@@ -163,10 +167,10 @@ impl VkImage {
                 allocator: Rc<VmaAllocator>,
                 cinfo: &VkImageCreateFromImageInfo,
         ) -> VkResult<Self> {
-                let data_format =
-                        vk_format_from_image_format_and_color_space(cinfo.image.format, cinfo.image.color_space);
+                let image = cinfo.image;
 
-                let format = match data_format {
+                let src_format = vk_format_from_image_format_and_color_space(image.format, image.color_space);
+                let dst_format = match src_format {
                         vk::Format::R8G8B8_SRGB => vk::Format::R8G8B8A8_SRGB,
                         vk::Format::R8G8B8_UNORM => vk::Format::R8G8B8A8_UNORM,
                         vk::Format::R16G16B16_SFLOAT => vk::Format::R16G16B16A16_SFLOAT,
@@ -174,18 +178,191 @@ impl VkImage {
                         f => f,
                 };
 
-                let vk_image_cinfo = VkImageCreateFromDataInfo {
-                        data: &cinfo.image.pixels,
-                        data_format,
-                        width: cinfo.image.width,
-                        height: cinfo.image.height,
-                        format,
-                        mip_levels: cinfo.mip_levels,
-                        setup_cmd_buffer: cinfo.setup_cmd_buffer,
-                        transfer_queue: cinfo.transfer_queue,
+                // let mip_levels = cinfo.mip_levels.to_value(image.width, image.height);
+                let mip_levels = image.mipmaps;
+
+                let mut flags = vk::ImageCreateFlags::empty();
+                if image.flags.contains(ImageFlags::CUBEMAP) {
+                        flags |= vk::ImageCreateFlags::CUBE_COMPATIBLE;
+                }
+
+                let vk_image = {
+                        let vk_image_cinfo = VkImageCreateInfo {
+                                flags,
+                                image_type: vk::ImageType::TYPE_2D,
+                                format: dst_format,
+                                extent: vk::Extent3D {
+                                        width: image.width,
+                                        height: image.height,
+                                        depth: 1,
+                                },
+                                mip_levels,
+                                array_layers: image.layers,
+                                samples: vk::SampleCountFlags::TYPE_1,
+                                tiling: vk::ImageTiling::OPTIMAL,
+                                usage: vk::ImageUsageFlags::TRANSFER_SRC
+                                        | vk::ImageUsageFlags::TRANSFER_DST
+                                        | vk::ImageUsageFlags::SAMPLED,
+                                queue_family_indices: None,
+                                initial_layout: vk::ImageLayout::UNDEFINED,
+                                mem_usage: vma::MemoryUsage::GpuOnly,
+                                alloc_cflags: vma::AllocationCreateFlags::DEDICATED_MEMORY,
+                                required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                                preferred_flags: Default::default(),
+                        };
+
+                        VkImage::new(Rc::clone(&allocator), &vk_image_cinfo)?
                 };
 
-                Self::from_data(instance, pdevice, device, allocator, &vk_image_cinfo)
+                let mut deletion_queue = vec![];
+                cinfo.setup_cmd_buffer.begin(device)?;
+                let cmd_buffer = **cinfo.setup_cmd_buffer;
+
+                Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
+                        device,
+                        cmd_buffer,
+
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+
+                        image: *vk_image,
+                        base_mip_level: 0,
+                        mip_levels,
+                        base_array_layer: 0,
+                        layer_count: image.layers,
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+
+                        src_access_mask: vk::AccessFlags::empty(),
+                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+
+                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
+                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                });
+
+                let dst_layer_stride = dst_format.compute_stride_with_mipmaps(image.width, image.height, mip_levels);
+                let buffer_size = (image.layers * dst_layer_stride) as vk::DeviceSize;
+                let staging_buffer = VkBuffer::new_transfer_src(device, Rc::clone(&allocator), buffer_size)?;
+
+                let mut offset = 0;
+                let mut copies = vec![];
+                for layer in 0..image.layers {
+                        let mut width = image.width;
+                        let mut height = image.height;
+                        for mipmap in 0..image.mipmaps {
+                                let data = image.get_data(layer, mipmap);
+
+                                match (src_format, dst_format) {
+                                        (src, dst) if src == dst => {
+                                                staging_buffer.write_bytes_offsetted(data, offset)?;
+                                        },
+                                        (vk::Format::R8G8B8_SRGB, vk::Format::R8G8B8A8_SRGB)
+                                        | (vk::Format::R8G8B8_UNORM, vk::Format::R8G8B8A8_UNORM) => {
+                                                warn!("slow format: {:?}", src_format);
+
+                                                for (i, rgb) in data.chunks(3).enumerate() {
+                                                        staging_buffer.write_bytes_offsetted(
+                                                                &[rgb[0], rgb[1], rgb[2], u8::MAX],
+                                                                i * 4,
+                                                        )?;
+                                                }
+                                        },
+                                        (vk::Format::R32G32B32_SFLOAT, vk::Format::R32G32B32A32_SFLOAT) => {
+                                                warn!("slow format: {:?}", src_format);
+
+                                                let onef = 1.0f32;
+                                                let onef_bytes = onef.into_bytes_slice();
+
+                                                for (i, rgb) in data.chunks(12).enumerate() {
+                                                        let bytes = [rgb, onef_bytes].concat();
+
+                                                        staging_buffer.write_bytes_offsetted(&bytes, i * 16)?;
+                                                }
+                                        },
+                                        _ => panic!(
+                                                "unsupported format transcoding: {:?} to {:?}",
+                                                src_format, dst_format
+                                        ),
+                                }
+
+                                copies.push(vk::BufferImageCopy {
+                                        buffer_offset: offset as vk::DeviceSize,
+                                        buffer_row_length: 0,
+                                        buffer_image_height: 0,
+                                        image_subresource: vk::ImageSubresourceLayers {
+                                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                                mip_level: mipmap,
+                                                base_array_layer: layer,
+                                                layer_count: 1,
+                                        },
+                                        image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+                                        image_extent: vk::Extent3D {
+                                                width,
+                                                height,
+                                                depth: 1,
+                                        },
+                                });
+
+                                offset += data.len();
+                                width = 1.max(width / 2);
+                                height = 1.max(height / 2);
+                        }
+                }
+                staging_buffer.unmap_memory();
+
+                device.cmd_copy_buffer_to_image(
+                        cmd_buffer,
+                        *staging_buffer,
+                        *vk_image,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        &copies,
+                );
+
+                deletion_queue.push(VkObject::Buffer(staging_buffer));
+
+                Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
+                        device,
+                        cmd_buffer,
+
+                        old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+
+                        image: *vk_image,
+                        base_mip_level: 0,
+                        mip_levels,
+                        base_array_layer: 0,
+                        layer_count: image.layers,
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+
+                        src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                        dst_access_mask: vk::AccessFlags::SHADER_READ,
+
+                        src_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                        dst_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
+                });
+
+                // Self::cmd_gen_mipmaps(&GenerateMipmapsInfo {
+                //         instance,
+                //         pdevice,
+                //         device,
+                //         cmd_buffer,
+                //         image: *vk_img,
+                //         image_format: dst_format,
+                //         width: cinfo.width,
+                //         height: cinfo.height,
+                //         mip_levels,
+                //         base_array_layer: 0,
+                //         layer_count: 1,
+                // });
+
+                cinfo.setup_cmd_buffer
+                        .end_and_submit(device, cinfo.transfer_queue, &[], &[], &[])?;
+
+                cinfo.setup_cmd_buffer.wait(u64::MAX)?;
+                for o in deletion_queue.into_iter().rev() {
+                        o.destroy();
+                }
+
+                Ok(vk_image)
         }
 
         pub unsafe fn from_data(

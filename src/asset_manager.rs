@@ -1,15 +1,17 @@
 use std::{
         ffi::OsString,
         hash::Hash,
+        io::BufReader,
         marker::PhantomData,
         ops::{Index, IndexMut},
         path::{Path, PathBuf},
         process::Command,
+        u32,
 };
 
 use bitflags::bitflags;
 use crossbeam_channel::Receiver;
-use exr::prelude::f16;
+use ddsfile::DxgiFormat;
 use gltf::accessor::{DataType, Dimensions};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
@@ -39,7 +41,7 @@ use crate::{
                 SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX,
                 SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
         },
-        util::default,
+        util::{self, default},
         vk::vk_renderer::{BillboardData, MaterialData, ObjectMatrices, WorldLights, WorldMatrices},
         AnyResult,
 };
@@ -199,6 +201,7 @@ pub struct Texture {
         pub sampler: SamplerId,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageFormat {
         R8,
@@ -207,6 +210,16 @@ pub enum ImageFormat {
         R16G16B16A16, // f16
         R32G32B32,    // f32
         R32G32B32A32, // f32
+        BC1_UNORM,    // rgba
+        BC2_UNORM,    // rgba
+        BC3_UNORM,    // rgba
+        BC4_UNORM,    // r
+        BC4_SNORM,    // r
+        BC5_UNORM,    // rg
+        BC5_SNORM,    // rg
+        BC6H_UFLOAT,  // rgb hdr
+        BC6H_SFLOAT,  // rgb hdr
+        BC7_UNORM,    // rgb/rgba
 }
 
 impl ImageFormat {
@@ -218,23 +231,156 @@ impl ImageFormat {
                         _ => return None,
                 })
         }
+
+        fn compute_stride(&self, width: u32, height: u32) -> u32 {
+                util::compute_image_stride(width, height, self.block_size(), self.block_extent())
+        }
+
+        fn block_extent(&self) -> (u32, u32) {
+                match self {
+                        ImageFormat::R8
+                        | ImageFormat::R8G8B8
+                        | ImageFormat::R8G8B8A8
+                        | ImageFormat::R16G16B16A16
+                        | ImageFormat::R32G32B32
+                        | ImageFormat::R32G32B32A32 => (1, 1),
+
+                        ImageFormat::BC1_UNORM
+                        | ImageFormat::BC2_UNORM
+                        | ImageFormat::BC3_UNORM
+                        | ImageFormat::BC4_UNORM
+                        | ImageFormat::BC4_SNORM
+                        | ImageFormat::BC5_UNORM
+                        | ImageFormat::BC5_SNORM
+                        | ImageFormat::BC6H_UFLOAT
+                        | ImageFormat::BC6H_SFLOAT
+                        | ImageFormat::BC7_UNORM => (4, 4),
+                }
+        }
+
+        fn block_size(&self) -> u32 {
+                match self {
+                        ImageFormat::R8 => 1,
+                        ImageFormat::R8G8B8 => 3,
+                        ImageFormat::R8G8B8A8 => 4,
+                        ImageFormat::R16G16B16A16 => 8,
+                        ImageFormat::R32G32B32 => 12,
+                        ImageFormat::R32G32B32A32 => 16,
+                        ImageFormat::BC1_UNORM => 8,
+                        ImageFormat::BC2_UNORM => 16,
+                        ImageFormat::BC3_UNORM => 16,
+                        ImageFormat::BC4_UNORM => 8,
+                        ImageFormat::BC4_SNORM => 8,
+                        ImageFormat::BC5_UNORM => 16,
+                        ImageFormat::BC5_SNORM => 16,
+                        ImageFormat::BC6H_UFLOAT => 16,
+                        ImageFormat::BC6H_SFLOAT => 16,
+                        ImageFormat::BC7_UNORM => 16,
+                }
+        }
 }
 
 slotmap::new_key_type! { pub struct ImageId; }
 
+#[derive(Debug, Clone, Error)]
+pub enum LoadImageError {
+        #[error("dxgi format {0:?} is not supported")]
+        UnsupportedDxgiFormat(DxgiFormat),
+        #[error("d3d format {0:?} is not supported")]
+        UnsupportedD3DFormat(ddsfile::D3DFormat),
+        #[error("pixel format {0:?} is not supported")]
+        UnsupportedPixelFormat(ddsfile::PixelFormat),
+}
+
+bitflags! {
+        pub struct ImageFlags: u32 {
+                const CUBEMAP = 1 << 0;
+        }
+}
+
 #[derive(Debug, Clone)]
 pub struct Image {
         pub name: Option<String>,
-        pub pixels: Vec<u8>, // pixels as raw bytes. `format` must be used to correctly interpret these values.
+        pub flags: ImageFlags,
+        data: Vec<u8>, // pixel data as raw bytes. `format` must be used to correctly interpret these values.
         pub width: u32,
         pub height: u32,
+        pub mipmaps: u32, // amount of mip levels. Must be at least 1
+        pub layers: u32,  // amount of array layers
         pub format: ImageFormat,
         pub color_space: ColorSpace,
+
+        mipmap_strides: Vec<u32>, // how many bytes each mipmap takes.
+        layer_stride: u32,        // how many bytes a layer with all mipmaps takes.
 }
 
 impl Image {
+        #[allow(dead_code)]
+        pub fn from_rgb(name: Option<String>, rgb: [u8; 3], width: u32, height: u32, color_space: ColorSpace) -> Self {
+                Self::from_data(name, rgb.to_vec(), width, height, ImageFormat::R8G8B8, color_space)
+        }
+
+        #[allow(dead_code)]
+        pub fn from_rgb_1x1(name: Option<String>, rgb: [u8; 3], color_space: ColorSpace) -> Self {
+                Self::from_rgb(name, rgb, 1, 1, color_space)
+        }
+
+        #[allow(dead_code)]
+        pub fn from_rgba(
+                name: Option<String>,
+                rgba: [u8; 4],
+                width: u32,
+                height: u32,
+                color_space: ColorSpace,
+        ) -> Self {
+                Self::from_data(name, rgba.to_vec(), width, height, ImageFormat::R8G8B8A8, color_space)
+        }
+
+        #[allow(dead_code)]
+        pub fn from_rgba_1x1(name: Option<String>, rgba: [u8; 4], color_space: ColorSpace) -> Self {
+                Self::from_rgba(name, rgba, 1, 1, color_space)
+        }
+
+        pub fn from_data(
+                name: Option<String>,
+                data: Vec<u8>,
+                width: u32,
+                height: u32,
+                format: ImageFormat,
+                color_space: ColorSpace,
+        ) -> Self {
+                let mipmaps = 1;
+                let layers = 1;
+
+                let stride = format.compute_stride(width, height);
+                assert_eq!(data.len() as u32, stride);
+
+                let mipmap_strides = vec![stride];
+                let layer_stride = stride;
+
+                Image {
+                        name,
+                        data,
+                        flags: ImageFlags::empty(),
+                        width,
+                        height,
+                        mipmaps,
+                        layers,
+                        format,
+                        color_space,
+                        mipmap_strides,
+                        layer_stride,
+                }
+        }
+
         pub fn from_file(path: &Path, color_space: ColorSpace) -> AnyResult<Self> {
                 let image_name = path.to_string_lossy().to_string();
+
+                if path.extension().unwrap().eq_ignore_ascii_case("dds") {
+                        // FIXME: we ignore color_space in this case.
+                        return Self::from_dds_file(path, image_name);
+                }
+
                 let image = image::open(path)?;
 
                 let format = match image {
@@ -245,14 +391,197 @@ impl Image {
                         _ => panic!("Unsupported image format! {:?}", image),
                 };
 
+                let width = image.width();
+                let height = image.height();
+                let data = image.into_bytes();
+                let mipmaps = 1;
+                let layers = 1;
+                let mipmap_strides = vec![data.len() as u32];
+                let layer_stride = data.len() as u32;
+
                 Ok(Self {
                         name: Some(image_name),
-                        width: image.width(),
-                        height: image.height(),
-                        pixels: image.into_bytes(),
+                        data,
+                        flags: ImageFlags::empty(),
+                        width,
+                        height,
+                        mipmaps,
+                        layers,
                         format,
                         color_space,
+                        mipmap_strides,
+                        layer_stride,
                 })
+        }
+
+        pub fn from_files(
+                name: Option<String>,
+                paths: &[&Path],
+                flags: ImageFlags,
+                color_space: ColorSpace,
+        ) -> AnyResult<Self> {
+                assert!(!paths.is_empty());
+
+                let images = paths
+                        .into_iter()
+                        .map(|p| Self::from_file(p, color_space))
+                        .collect::<AnyResult<Vec<Self>>>()?;
+
+                for image in &images {
+                        assert_eq!(1, image.layers);
+                }
+
+                let data_len = images[0].data.len();
+                let width = images[0].width;
+                let height = images[0].height;
+                let format = images[0].format;
+                let mipmaps = images[0].mipmaps;
+                let layer_stride = images[0].layer_stride;
+                let mipmap_strides = &images[0].mipmap_strides;
+
+                for image in &images[1..] {
+                        assert_eq!(width, image.width);
+                        assert_eq!(height, image.height);
+                        assert_eq!(format, image.format);
+                        assert_eq!(mipmaps, image.mipmaps);
+                        assert_eq!(layer_stride, image.layer_stride);
+                        assert_eq!(mipmap_strides, &image.mipmap_strides);
+                }
+
+                for image in &images {
+                        assert_eq!(layer_stride as usize, image.data.len());
+                }
+
+                let mut data = Vec::with_capacity(data_len * images.len());
+                for image in &images {
+                        data.extend_from_slice(&image.data);
+                }
+
+                let layers = images.len() as u32;
+
+                let merged = Self {
+                        name,
+                        data,
+                        flags,
+                        width,
+                        height,
+                        mipmaps,
+                        layers,
+                        format,
+                        color_space,
+                        mipmap_strides: mipmap_strides.clone(),
+                        layer_stride,
+                };
+
+                Ok(merged)
+        }
+
+        pub fn from_files_cubemap(name: Option<String>, paths: [&Path; 6], color_space: ColorSpace) -> AnyResult<Self> {
+                Self::from_files(name, &paths, ImageFlags::CUBEMAP, color_space)
+        }
+
+        pub fn get_data(&self, layer: u32, mipmap: u32) -> &[u8] {
+                let layer_offset = layer as usize * self.layer_stride as usize;
+                let mipmap_offset = self.mipmap_strides[0..mipmap as usize].iter().sum::<u32>() as usize;
+                let offset = layer_offset + mipmap_offset;
+                let mipmap_stride = self.mipmap_strides[mipmap as usize] as usize;
+
+                &self.data[offset..offset + mipmap_stride]
+        }
+
+        fn from_dds_file(path: &Path, image_name: String) -> AnyResult<Self> {
+                let file = std::fs::File::open(path)?;
+                let reader = BufReader::new(file);
+                let dds = ddsfile::Dds::read(reader)?;
+
+                let width = dds.get_width();
+                let height = dds.get_height();
+                let mipmaps = dds.get_num_mipmap_levels();
+                let layers = if let Some(h10) = &dds.header10 {
+                        if dds.header.caps2.contains(ddsfile::Caps2::CUBEMAP) {
+                                h10.array_size * 6
+                        } else {
+                                h10.array_size
+                        }
+                } else {
+                        1
+                };
+                let (format, color_space) = Self::try_format_and_color_space_from_dds(&dds)?;
+
+                let mipmap_strides = {
+                        let format = dds.get_format().expect("couldn't extract format from dds");
+                        let mut curr_width = dds.get_width();
+                        let mut curr_height = dds.get_height();
+
+                        let mut mipmap_strides = vec![];
+                        for _ in 0..mipmaps {
+                                let stride = compute_dds_mipmap_stride(curr_width, curr_height, &format);
+                                mipmap_strides.push(stride);
+                                curr_width = 1.max(curr_width / 2);
+                                curr_height = 1.max(curr_height / 2);
+                        }
+                        mipmap_strides
+                };
+
+                let layer_stride = dds.get_array_stride().expect("unsupported format");
+
+                let mut flags = ImageFlags::empty();
+                if let Some(h10) = dds.header10 {
+                        if h10.misc_flag.contains(ddsfile::MiscFlag::TEXTURECUBE) {
+                                flags.insert(ImageFlags::CUBEMAP)
+                        }
+                }
+
+                let data = dds.data;
+
+                Ok(Self {
+                        name: Some(image_name),
+                        data,
+                        flags,
+                        width,
+                        height,
+                        mipmaps,
+                        layers,
+                        format,
+                        color_space,
+                        mipmap_strides,
+                        layer_stride,
+                })
+        }
+
+        fn try_format_and_color_space_from_dds(
+                dds: &ddsfile::Dds,
+        ) -> Result<(ImageFormat, ColorSpace), LoadImageError> {
+                let format_color_space = if let Some(dxgi_format) = dds.get_dxgi_format() {
+                        match dxgi_format {
+                                DxgiFormat::R32G32B32A32_Float => (ImageFormat::R32G32B32A32, ColorSpace::Linear),
+                                DxgiFormat::R16G16B16A16_Float => (ImageFormat::R16G16B16A16, ColorSpace::Linear),
+                                DxgiFormat::R8G8B8A8_UNorm => (ImageFormat::R8G8B8A8, ColorSpace::Linear),
+                                DxgiFormat::R8G8B8A8_UNorm_sRGB => (ImageFormat::R8G8B8A8, ColorSpace::Srgb),
+                                DxgiFormat::R8_UNorm => (ImageFormat::R8, ColorSpace::Linear),
+                                DxgiFormat::BC1_UNorm => (ImageFormat::BC1_UNORM, ColorSpace::Linear),
+                                DxgiFormat::BC1_UNorm_sRGB => (ImageFormat::BC1_UNORM, ColorSpace::Srgb),
+                                DxgiFormat::BC2_UNorm => (ImageFormat::BC2_UNORM, ColorSpace::Linear),
+                                DxgiFormat::BC2_UNorm_sRGB => (ImageFormat::BC2_UNORM, ColorSpace::Srgb),
+                                DxgiFormat::BC3_UNorm => (ImageFormat::BC3_UNORM, ColorSpace::Linear),
+                                DxgiFormat::BC3_UNorm_sRGB => (ImageFormat::BC3_UNORM, ColorSpace::Srgb),
+                                DxgiFormat::BC4_UNorm => (ImageFormat::BC4_UNORM, ColorSpace::Linear),
+                                DxgiFormat::BC4_SNorm => (ImageFormat::BC4_SNORM, ColorSpace::Linear),
+                                DxgiFormat::BC5_UNorm => (ImageFormat::BC5_UNORM, ColorSpace::Linear),
+                                DxgiFormat::BC5_SNorm => (ImageFormat::BC5_SNORM, ColorSpace::Linear),
+                                DxgiFormat::BC6H_UF16 => (ImageFormat::BC6H_UFLOAT, ColorSpace::Linear),
+                                DxgiFormat::BC6H_SF16 => (ImageFormat::BC6H_SFLOAT, ColorSpace::Linear),
+                                DxgiFormat::BC7_UNorm => (ImageFormat::BC7_UNORM, ColorSpace::Linear),
+                                DxgiFormat::BC7_UNorm_sRGB => (ImageFormat::BC7_UNORM, ColorSpace::Srgb),
+                                f => return Err(LoadImageError::UnsupportedDxgiFormat(f)),
+                        }
+                } else if let Some(d3d_format) = dds.get_d3d_format() {
+                        return Err(LoadImageError::UnsupportedD3DFormat(d3d_format));
+                } else {
+                        return Err(LoadImageError::UnsupportedPixelFormat(dds.header.spf.clone()));
+                };
+
+                Ok(format_color_space)
         }
 }
 
@@ -503,8 +832,8 @@ slotmap::new_key_type! { pub struct CubemapId; }
 
 #[derive(Debug, Clone)]
 pub enum Cubemap {
-        Faces([Image; 6]),
-        Equirectangular(Image),
+        Faces(Image),           // image must be a cubemap
+        Equirectangular(Image), // image must be a equirectangular image
 }
 
 /* pub struct AssetManagerBuilder {
@@ -577,6 +906,8 @@ impl AssetBundle {
                 image_usages: &Vec<ImageUsage>,
                 out_images: &mut ObservableSlotMap<ImageId, Image, AssetManagerEvent>,
         ) -> Result<Vec<ImageId>, GLTFImportError> {
+                // TODO: load images ourselves
+
                 image_data
                         .into_iter()
                         .zip(image_usages)
@@ -605,13 +936,24 @@ impl AssetBundle {
 
                                 let color_space = Self::color_space_from_usage(*image_usage);
 
+                                let width = image.width;
+                                let height = image.height;
+                                let data = image.pixels;
+                                let mipmap_strides = vec![data.len() as u32];
+                                let layer_stride = data.len() as u32;
+
                                 let image_id = out_images.insert(Image {
                                         name: Some(relative_path.to_string_lossy().to_string()),
-                                        pixels: image.pixels,
-                                        width: image.width,
-                                        height: image.height,
+                                        data,
+                                        flags: ImageFlags::empty(),
+                                        width,
+                                        height,
+                                        mipmaps: 1,
+                                        layers: 1,
                                         format,
                                         color_space,
+                                        mipmap_strides,
+                                        layer_stride,
                                 });
 
                                 Ok(image_id)
@@ -1144,14 +1486,11 @@ impl AssetManager {
                         wrap_t: WrappingMode::Repeat,
                 });
 
-                let default_diffuse_image = assets.images.insert(Image {
-                        name: Some("default-diffuse-image".into()),
-                        pixels: vec![u8::MAX; 4],
-                        width: 1,
-                        height: 1,
-                        format: ImageFormat::R8G8B8A8,
-                        color_space: ColorSpace::Srgb,
-                });
+                let default_diffuse_image = assets.images.insert(Image::from_rgba_1x1(
+                        Some("default-diffuse-image".into()),
+                        [u8::MAX; 4],
+                        ColorSpace::Srgb,
+                ));
 
                 let default_diffuse_texture = assets.textures.insert(Texture {
                         name: Some("default-diffuse-texture".into()),
@@ -1159,14 +1498,11 @@ impl AssetManager {
                         sampler: default_sampler,
                 });
 
-                let default_specular_image = assets.images.insert(Image {
-                        name: Some("default-specular-image".into()),
-                        pixels: vec![u8::MAX; 4],
-                        width: 1,
-                        height: 1,
-                        format: ImageFormat::R8G8B8A8,
-                        color_space: ColorSpace::Linear,
-                });
+                let default_specular_image = assets.images.insert(Image::from_rgba_1x1(
+                        Some("default-specular-image".into()),
+                        [u8::MAX; 4],
+                        ColorSpace::Linear,
+                ));
 
                 let default_specular_texture = assets.textures.insert(Texture {
                         name: Some("default-specular-texture".into()),
@@ -1174,14 +1510,11 @@ impl AssetManager {
                         sampler: default_sampler,
                 });
 
-                let default_normal_image = assets.images.insert(Image {
-                        name: Some("default-normal-image".into()),
-                        pixels: vec![u8::MAX / 2, u8::MAX / 2, u8::MAX, 0],
-                        width: 1,
-                        height: 1,
-                        format: ImageFormat::R8G8B8A8,
-                        color_space: ColorSpace::Linear,
-                });
+                let default_normal_image = assets.images.insert(Image::from_rgba_1x1(
+                        Some("default-normal-image".into()),
+                        [u8::MAX / 2, u8::MAX / 2, u8::MAX, 0],
+                        ColorSpace::Linear,
+                ));
 
                 let default_normal_texture = assets.textures.insert(Texture {
                         name: Some("default-normal-texture".into()),
@@ -1790,4 +2123,13 @@ impl From<ObservableEvent<ShaderResourceId>> for AssetManagerEvent {
                         ObservableEvent::Removed(id) => AssetManagerEvent::ShaderResourceRemoved(id),
                 }
         }
+}
+
+fn compute_dds_mipmap_stride(width: u32, height: u32, format: &Box<dyn ddsfile::DataFormat>) -> u32 {
+        let pitch = format.get_pitch(width).expect("format does not provide pitch");
+        let pitch_height = format.get_pitch_height();
+        // round up to align with pitch height
+        let rows = (height + (pitch_height - 1)) / pitch_height;
+
+        rows * pitch
 }
