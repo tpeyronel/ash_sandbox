@@ -6,4 +6,4 @@ uniforms: []
 vertex-inputs: []
 push-constants-size: 64
 cull-mode: "back"
-render-stage: "equirectangular-conversion"
+render-stage: "skybox-mapping"

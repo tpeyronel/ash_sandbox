@@ -729,10 +729,10 @@ impl ShaderModule {
         }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Enum, Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ShaderRenderStage {
-        EquirectangularConversion,
+        SkyboxMapping,
         PointShadowMapping,
         DirectionalShadowMapping,
         Drawing,

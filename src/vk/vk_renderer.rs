@@ -1,4 +1,5 @@
 use ash::{prelude::VkResult, vk};
+use enum_map::EnumMap;
 use slotmap::SecondaryMap;
 use std::{rc::Rc, slice, time::Instant};
 
@@ -22,7 +23,9 @@ use super::{
 };
 use crate::{
         application::{InterpGlobalTransform, ShaderSettings},
-        asset_manager::{AssetManager, AssetManagerEvent, MaterialId, MaterialMesh, MeshId, ShaderId},
+        asset_manager::{
+                AssetManager, AssetManagerEvent, MaterialId, MaterialMesh, MeshId, ShaderId, ShaderRenderStage,
+        },
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE, SHADOW_MAP_HEIGHT, SHADOW_MAP_WIDTH},
         hashmap::HashMap,
@@ -57,11 +60,7 @@ pub struct VkRenderer {
 
         resolve_sampler: VkSampler,
 
-        equirectangular_conversion_render_pass: VkRenderPass,
-        cube_shadow_map_render_pass: VkRenderPass,
-        shadow_map_render_pass: VkRenderPass,
-        render_pass: VkRenderPass,
-        postprocess_render_pass: VkRenderPass,
+        render_passes: EnumMap<ShaderRenderStage, VkRenderPass>,
 
         framebuffer: VkFramebuffer,
         postprocess_framebuffers: [VkFramebuffer; 2],
@@ -121,8 +120,7 @@ impl VkRenderer {
                 )?;
                 trace!("Created VkRenderPass");
 
-                let equirectangular_conversion_render_pass =
-                        Self::create_equirectangular_conversion_render_pass(&vk_context.device)?;
+                let skybox_mapping_render_pass = Self::create_skybox_mapping_render_pass(&vk_context.device)?;
                 trace!("Created equirectangular conversion VkRenderPass");
 
                 let shadow_map_depth_format = swapchain.depth_format;
@@ -147,9 +145,18 @@ impl VkRenderer {
                         Self::create_postprocess_render_pass(&vk_context.device, swapchain.color_format)?;
                 trace!("Created postprocess VkRenderPass");
 
+                let render_passes = [
+                        skybox_mapping_render_pass,
+                        cube_shadow_map_render_pass,
+                        shadow_map_render_pass,
+                        render_pass,
+                        postprocess_render_pass,
+                ];
+                let render_passes: EnumMap<ShaderRenderStage, VkRenderPass> = EnumMap::from_array(render_passes);
+
                 let framebuffer = Self::create_framebuffer(
                         &vk_context.device,
-                        *render_pass,
+                        *render_passes[ShaderRenderStage::Drawing],
                         *swapchain.color_img_view,
                         *swapchain.depth_img_view,
                         *swapchain.resolve_img_views[0],
@@ -159,7 +166,7 @@ impl VkRenderer {
 
                 let postprocess_framebuffers = Self::create_postprocess_framebuffers(
                         &vk_context.device,
-                        *postprocess_render_pass,
+                        *render_passes[ShaderRenderStage::Postprocessing],
                         &swapchain.resolve_img_views,
                         swapchain.extent,
                 )?;
@@ -173,7 +180,7 @@ impl VkRenderer {
 
                 let shadow_map_framebuffer = Self::create_shadow_map_framebuffer(
                         &vk_context.device,
-                        *shadow_map_render_pass,
+                        *render_passes[ShaderRenderStage::DirectionalShadowMapping],
                         *shadow_map_img_view,
                 )?;
 
@@ -195,7 +202,7 @@ impl VkRenderer {
 
                 let cube_shadow_map_framebuffers = Self::create_cube_shadow_map_framebuffers(
                         &vk_context.device,
-                        *cube_shadow_map_render_pass,
+                        *render_passes[ShaderRenderStage::PointShadowMapping],
                         &cube_shadow_map_img_views,
                         *cube_shadow_map_depth_img_view,
                 )?;
@@ -214,11 +221,7 @@ impl VkRenderer {
                 let vk_asset_manager = VkAssetManager::new(
                         &mut vk_context,
                         swapchain.samples,
-                        *equirectangular_conversion_render_pass,
-                        *render_pass,
-                        *cube_shadow_map_render_pass,
-                        *shadow_map_render_pass,
-                        *postprocess_render_pass,
+                        EnumMap::from_fn(|rs| *render_passes[rs]),
                         max_concurrent_frames,
                 )?;
                 trace!("Created VkAssetManager");
@@ -236,7 +239,7 @@ impl VkRenderer {
                         (**vk_context.device).clone(),
                         vk_context.queues.graphics,
                         **vk_context.cmd_pool,
-                        *postprocess_render_pass,
+                        *render_passes[ShaderRenderStage::Postprocessing],
                         imguic,
                         Some(imgui_renderer_options),
                 )?);
@@ -253,11 +256,7 @@ impl VkRenderer {
 
                         resolve_sampler,
 
-                        equirectangular_conversion_render_pass,
-                        cube_shadow_map_render_pass,
-                        shadow_map_render_pass,
-                        render_pass,
-                        postprocess_render_pass,
+                        render_passes,
 
                         framebuffer,
                         postprocess_framebuffers,
@@ -556,12 +555,10 @@ impl Renderer for VkRenderer {
                         self.shadow_map_img_view.destroy();
                         self.shadow_map_img.destroy();
                         self.framebuffer.destroy();
-                        self.shadow_map_render_pass.destroy();
-                        self.cube_shadow_map_render_pass.destroy();
-                        self.equirectangular_conversion_render_pass.destroy();
+                        self.render_passes.iter().for_each(|(_, rp)| {
+                                rp.destroy();
+                        });
                         self.resolve_sampler.destroy();
-                        self.render_pass.destroy();
-                        self.postprocess_render_pass.destroy();
                         self.swapchain.destroy();
                         self.vk_asset_manager.destroy();
                         self.vk_context.destroy();
@@ -594,37 +591,37 @@ impl VkRenderer {
 
                 unsafe { self.vk_context.device.device_wait_idle()? };
 
-                let srecreation_info = self.swapchain.recreate()?;
+                let _srecreation_info = self.swapchain.recreate()?;
 
-                let mut recreate_render_pass: bool = false;
-                let mut recreate_pipeline: bool = false;
+                // let mut recreate_render_pass: bool = false;
+                // let mut recreate_pipeline: bool = false;
 
-                if srecreation_info.present_format_changed || srecreation_info.samples_changed {
-                        recreate_render_pass = true;
-                }
+                // if srecreation_info.present_format_changed || srecreation_info.samples_changed {
+                //         recreate_render_pass = true;
+                // }
 
-                if recreate_render_pass {
-                        trace!("Recreating VkRenderPass...");
+                // if recreate_render_pass {
+                //         trace!("Recreating VkRenderPass...");
 
-                        self.render_pass = Self::create_render_pass(
-                                &self.vk_context.device,
-                                self.swapchain.samples,
-                                self.swapchain.color_format,
-                                self.swapchain.depth_format,
-                        )?;
+                //         self.render_passes[ShaderRenderStage::Drawing] = Self::create_render_pass(
+                //                 &self.vk_context.device,
+                //                 self.swapchain.samples,
+                //                 self.swapchain.color_format,
+                //                 self.swapchain.depth_format,
+                //         )?;
 
-                        // self.imgui_renderer
-                        //         .as_mut()
-                        //         .unwrap()
-                        //         .set_render_pass(*self.render_pass)?;
+                //         // self.imgui_renderer
+                //         //         .as_mut()
+                //         //         .unwrap()
+                //         //         .set_render_pass(*self.render_pass)?;
 
-                        recreate_pipeline = true;
-                }
+                //         recreate_pipeline = true;
+                // }
 
                 unsafe { self.framebuffer.destroy() };
                 self.framebuffer = Self::create_framebuffer(
                         &self.vk_context.device,
-                        *self.render_pass,
+                        *self.render_passes[ShaderRenderStage::Drawing],
                         *self.swapchain.color_img_view,
                         *self.swapchain.depth_img_view,
                         *self.swapchain.resolve_img_views[0],
@@ -634,25 +631,25 @@ impl VkRenderer {
                 unsafe { self.postprocess_framebuffers.iter().for_each(|x| x.destroy()) };
                 self.postprocess_framebuffers = Self::create_postprocess_framebuffers(
                         &self.vk_context.device,
-                        *self.postprocess_render_pass,
+                        *self.render_passes[ShaderRenderStage::Postprocessing],
                         &self.swapchain.resolve_img_views,
                         self.swapchain.extent,
                 )?;
 
-                if recreate_pipeline {
-                        trace!("Recreating VkGraphicsPipeline...");
-                        // TODO: recreate pipelines in VkAssetManager
-                        // let new_graphics_pipeline = Self::create_graphics_pipeline(
-                        //         &self.vk_asset_manager.shaders[self.basic_shader_id],
-                        //         &self.vk_context.device,
-                        //         self.swapchain.samples,
-                        //         *self.render_pass,
-                        //         &self.graphics_pipeline_layout,
-                        // )?;
-                        // let old_graphics_pipeline =
-                        // std::mem::replace(&mut self.graphics_pipeline, new_graphics_pipeline);
-                        // unsafe { old_graphics_pipeline.destroy() };
-                }
+                // if recreate_pipeline {
+                // trace!("Recreating VkGraphicsPipeline...");
+                // // TODO: recreate pipelines in VkAssetManager
+                // let new_graphics_pipeline = Self::create_graphics_pipeline(
+                //         &self.vk_asset_manager.shaders[self.basic_shader_id],
+                //         &self.vk_context.device,
+                //         self.swapchain.samples,
+                //         *self.render_pass,
+                //         &self.graphics_pipeline_layout,
+                // )?;
+                // let old_graphics_pipeline =
+                // std::mem::replace(&mut self.graphics_pipeline, new_graphics_pipeline);
+                // unsafe { old_graphics_pipeline.destroy() };
+                // }
 
                 self.swapchain_outdated_causes = VkSwapchainOutdatedCauseFlags::NONE;
 
@@ -821,7 +818,7 @@ impl VkRenderer {
                 unsafe { VkRenderPass::new(device, &render_pass_cinfo) }
         }
 
-        fn create_equirectangular_conversion_render_pass(device: &Rc<VkDevice>) -> VkResult<VkRenderPass> {
+        fn create_skybox_mapping_render_pass(device: &Rc<VkDevice>) -> VkResult<VkRenderPass> {
                 let attachments = [vk::AttachmentDescription {
                         flags: vk::AttachmentDescriptionFlags::empty(),
                         format: vk::Format::R16G16B16A16_SFLOAT,
@@ -1477,7 +1474,7 @@ impl VkRenderer {
                 ];
 
                 let render_pass_binfo = vk::RenderPassBeginInfo::builder()
-                        .render_pass(*self.render_pass)
+                        .render_pass(*self.render_passes[ShaderRenderStage::Drawing])
                         .framebuffer(*self.framebuffer)
                         .render_area(self.swapchain.scissor)
                         .clear_values(&clear_values);
@@ -1649,7 +1646,7 @@ impl VkRenderer {
                 let cmd_buffer = *frame_data.draw_cmd_buffer;
 
                 let postprocess_render_pass_binfo = vk::RenderPassBeginInfo::builder()
-                        .render_pass(*self.postprocess_render_pass)
+                        .render_pass(*self.render_passes[ShaderRenderStage::Postprocessing])
                         .framebuffer(*self.postprocess_framebuffers[1])
                         .render_area(self.swapchain.scissor);
 
@@ -1953,7 +1950,7 @@ impl VkRenderer {
                         let framebuffer = *self.cube_shadow_map_framebuffers[i];
 
                         let render_pass_binfo = vk::RenderPassBeginInfo::builder()
-                                .render_pass(*self.cube_shadow_map_render_pass)
+                                .render_pass(*self.render_passes[ShaderRenderStage::PointShadowMapping])
                                 .framebuffer(framebuffer)
                                 .render_area(shadow_map_rect)
                                 .clear_values(&clear_values);
@@ -2046,7 +2043,7 @@ impl VkRenderer {
                 };
 
                 let render_pass_binfo = vk::RenderPassBeginInfo::builder()
-                        .render_pass(*self.shadow_map_render_pass)
+                        .render_pass(*self.render_passes[ShaderRenderStage::DirectionalShadowMapping])
                         .framebuffer(*self.shadow_map_framebuffer)
                         .render_area(shadow_map_rect)
                         .clear_values(&clear_values);
@@ -2141,8 +2138,8 @@ impl VkRenderer {
                 Self::write_image_resource(
                         vk_asset_manager,
                         &SHADER_RESOURCE_SKYBOX,
-                        *skybox.image_view,
-                        *skybox.sampler,
+                        *skybox.environment_image_view,
+                        *skybox.environment_sampler,
                         world_shader_resource_descriptors_data,
                 );
         }

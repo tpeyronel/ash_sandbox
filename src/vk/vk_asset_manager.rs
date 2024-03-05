@@ -117,9 +117,12 @@ pub struct VkShaderResourceBindingDescription {
 }
 
 pub struct VkCubemap {
-        pub image: VkImage,
-        pub image_view: VkImageView,
-        pub sampler: VkSampler,
+        pub environment_image: VkImage, // cubemap
+        pub environment_image_view: VkImageView,
+        pub environment_sampler: VkSampler,
+        // pub irradiance_image: VkImage, // cubemap
+        // pub irradiance_image_view: VkImageView,
+        // pub irradiance_sampler: VkSampler,
 }
 
 pub struct VkAssetManager {
@@ -135,11 +138,7 @@ pub struct VkAssetManager {
 
         swapchain_samples: vk::SampleCountFlags,
 
-        equirectangular_conversion_render_pass: vk::RenderPass,
-        render_pass: vk::RenderPass,
-        cube_shadow_map_render_pass: vk::RenderPass,
-        shadow_map_render_pass: vk::RenderPass,
-        postprocess_render_pass: vk::RenderPass,
+        render_passes: EnumMap<ShaderRenderStage, vk::RenderPass>,
 
         pub meshes: SecondaryMap<MeshId, VkMesh>,
         pub images: SecondaryMap<ImageId, VkModelImage>,
@@ -158,11 +157,7 @@ impl VkAssetManager {
         pub fn new(
                 vk_context: &mut VkContext,
                 swapchain_samples: vk::SampleCountFlags,
-                equirectangular_conversion_render_pass: vk::RenderPass,
-                render_pass: vk::RenderPass,
-                cube_shadow_map_render_pass: vk::RenderPass,
-                shadow_map_render_pass: vk::RenderPass,
-                postprocess_render_pass: vk::RenderPass,
+                render_passes: EnumMap<ShaderRenderStage, vk::RenderPass>,
                 concurrent_frames: usize,
         ) -> AnyResult<Self> {
                 assert!(concurrent_frames > 0, "Frames in flight must be greater to zero");
@@ -183,11 +178,7 @@ impl VkAssetManager {
                         concurrent_frames,
 
                         swapchain_samples,
-                        equirectangular_conversion_render_pass,
-                        render_pass,
-                        cube_shadow_map_render_pass,
-                        shadow_map_render_pass,
-                        postprocess_render_pass,
+                        render_passes,
 
                         meshes: SecondaryMap::new(),
                         images: SecondaryMap::new(),
@@ -268,9 +259,9 @@ impl VkAssetManager {
                 });
 
                 self.cubemaps.drain().for_each(|(_, cubemap)| unsafe {
-                        cubemap.image.destroy();
-                        cubemap.image_view.destroy();
-                        cubemap.sampler.destroy();
+                        cubemap.environment_image.destroy();
+                        cubemap.environment_image_view.destroy();
+                        cubemap.environment_sampler.destroy();
                 });
 
                 self.shaders
@@ -565,13 +556,7 @@ impl VkAssetManager {
                         _ => vk::SampleCountFlags::TYPE_1,
                 };
 
-                let render_pass = match shader.render_stage {
-                        ShaderRenderStage::EquirectangularConversion => self.equirectangular_conversion_render_pass,
-                        ShaderRenderStage::PointShadowMapping => self.cube_shadow_map_render_pass,
-                        ShaderRenderStage::DirectionalShadowMapping => self.shadow_map_render_pass,
-                        ShaderRenderStage::Drawing => self.render_pass,
-                        ShaderRenderStage::Postprocessing => self.postprocess_render_pass,
-                };
+                let render_pass = self.render_passes[shader.render_stage];
 
                 let graphics_pipeline = Self::create_graphics_pipeline_for_vk_shader(
                         &self.device,
@@ -1029,10 +1014,17 @@ impl VkAssetManager {
 
                 let vk_sampler = unsafe { VkSampler::new(Rc::clone(&self.device), &vk_sampler_cinfo)? };
 
+                // let irradiance_image = self.create_irradiance_image_for(vk_image)?;
+                // let irradiance_image_view = self.create_irradiance_image_view_for(irradiance_image)?;
+                // let irradiance_sampler = self.create_irradiance_sampler(vk_image)?;
+
                 let vk_cubemap = VkCubemap {
-                        image: vk_image,
-                        image_view: vk_image_view,
-                        sampler: vk_sampler,
+                        environment_image: vk_image,
+                        environment_image_view: vk_image_view,
+                        environment_sampler: vk_sampler,
+                        // irradiance_image,
+                        // irradiance_image_view,
+                        // irradiance_sampler,
                 };
 
                 self.cubemaps.insert(cubemap_id, vk_cubemap);
@@ -1279,9 +1271,10 @@ impl VkAssetManager {
                         let face_image_view = VkImageView::new(Rc::clone(&self.device), &face_image_view_cinfo)?;
 
                         let attachments = [*face_image_view];
+                        let render_pass = self.render_passes[ShaderRenderStage::SkyboxMapping];
 
                         let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
-                                .render_pass(self.equirectangular_conversion_render_pass)
+                                .render_pass(render_pass)
                                 .width(size)
                                 .height(size)
                                 .layers(1)
@@ -1290,7 +1283,7 @@ impl VkAssetManager {
                         let framebuffer = VkFramebuffer::new(&self.device, &framebuffer_cinfo)?;
 
                         let render_pass_binfo = vk::RenderPassBeginInfo::builder()
-                                .render_pass(self.equirectangular_conversion_render_pass)
+                                .render_pass(render_pass)
                                 .framebuffer(*framebuffer)
                                 .render_area(vk::Rect2D {
                                         offset: vk::Offset2D { x: 0, y: 0 },
