@@ -27,7 +27,7 @@ use crate::{
         shader_preprocessor::{PreprocessedShaderStage, ShaderStageSourceBuilder},
         shader_resource::{ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
         shader_resource_registry::ShaderResourceRegistry,
-        shader_resources::SHADER_RESOURCE_EQUIRECTANGULAR_MAP,
+        shader_resources::{SHADER_RESOURCE_ENVIRONMENT_MAP, SHADER_RESOURCE_EQUIRECTANGULAR_MAP},
         util::{RefIntoBytesSlice, RefIntoSlice},
         vk::{
                 vk_buffer::{BufferData, VkBuffer, VkImmutableBufferCreateInfo},
@@ -120,9 +120,9 @@ pub struct VkCubemap {
         pub environment_image: VkImage, // cubemap
         pub environment_image_view: VkImageView,
         pub environment_sampler: VkSampler,
-        // pub irradiance_image: VkImage, // cubemap
-        // pub irradiance_image_view: VkImageView,
-        // pub irradiance_sampler: VkSampler,
+        pub irradiance_image: VkImage, // cubemap
+        pub irradiance_image_view: VkImageView,
+        pub irradiance_sampler: VkSampler,
 }
 
 pub struct VkAssetManager {
@@ -259,9 +259,12 @@ impl VkAssetManager {
                 });
 
                 self.cubemaps.drain().for_each(|(_, cubemap)| unsafe {
-                        cubemap.environment_image.destroy();
-                        cubemap.environment_image_view.destroy();
+                        cubemap.irradiance_sampler.destroy();
+                        cubemap.irradiance_image_view.destroy();
+                        cubemap.irradiance_image.destroy();
                         cubemap.environment_sampler.destroy();
+                        cubemap.environment_image_view.destroy();
+                        cubemap.environment_image.destroy();
                 });
 
                 self.shaders
@@ -970,12 +973,6 @@ impl VkAssetManager {
 
                 // self.cmd_gen_mipmaps_for(&vk_image);
 
-                unsafe {
-                        for o in deletion_queue.into_iter().rev() {
-                                o.destroy();
-                        }
-                }
-
                 let vk_image_view_cinfo = vk::ImageViewCreateInfo {
                         image: *vk_image,
                         view_type: vk::ImageViewType::CUBE,
@@ -1014,17 +1011,82 @@ impl VkAssetManager {
 
                 let vk_sampler = unsafe { VkSampler::new(Rc::clone(&self.device), &vk_sampler_cinfo)? };
 
-                // let irradiance_image = self.create_irradiance_image_for(vk_image)?;
-                // let irradiance_image_view = self.create_irradiance_image_view_for(irradiance_image)?;
-                // let irradiance_sampler = self.create_irradiance_sampler(vk_image)?;
+                let irradiance_image;
+
+                unsafe {
+                        self.cmd_buffer.begin(&self.device)?;
+
+                        irradiance_image = self.gen_irrandiace_map_for(
+                                asset_manager,
+                                &vk_image,
+                                &vk_image_view,
+                                &mut deletion_queue,
+                        )?;
+
+                        if ENABLE_VALIDATION_LAYERS {
+                                irradiance_image.set_debug_name(
+                                        &self.device,
+                                        self.debug_utils.as_ref().unwrap(),
+                                        &format!("[cubemap] {:?} (irradiance)", cubemap_id),
+                                )?;
+                        }
+
+                        self.cmd_buffer
+                                .end_and_submit(&self.device, self.transfer_queue, &[], &[], &[])?;
+
+                        self.cmd_buffer.wait(u64::MAX)?;
+
+                        for o in deletion_queue.into_iter().rev() {
+                                o.destroy();
+                        }
+                }
+
+                let irradiance_image_view_cinfo = vk::ImageViewCreateInfo {
+                        image: *irradiance_image,
+                        view_type: vk::ImageViewType::CUBE,
+                        format: irradiance_image.format,
+                        components: Default::default(),
+                        subresource_range: vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: irradiance_image.mip_levels,
+                                base_array_layer: 0,
+                                layer_count: 6,
+                        },
+                        ..Default::default()
+                };
+
+                let irradiance_image_view =
+                        unsafe { VkImageView::new(Rc::clone(&self.device), &irradiance_image_view_cinfo)? };
+
+                let irradiance_sampler_cinfo = vk::SamplerCreateInfo {
+                        mag_filter: vk::Filter::LINEAR,
+                        min_filter: vk::Filter::LINEAR,
+                        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                        address_mode_u: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        address_mode_v: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        address_mode_w: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        mip_lod_bias: 0.0,
+                        anisotropy_enable: ENABLE_ANISOTROPY as u32,
+                        max_anisotropy: 1.0,
+                        compare_enable: vk::FALSE,
+                        compare_op: vk::CompareOp::NEVER,
+                        min_lod: 0.0,
+                        max_lod: LOD_CLAMP_NONE,
+                        border_color: vk::BorderColor::INT_OPAQUE_WHITE,
+                        unnormalized_coordinates: vk::FALSE,
+                        ..Default::default()
+                };
+
+                let irradiance_sampler = unsafe { VkSampler::new(Rc::clone(&self.device), &irradiance_sampler_cinfo)? };
 
                 let vk_cubemap = VkCubemap {
                         environment_image: vk_image,
                         environment_image_view: vk_image_view,
                         environment_sampler: vk_sampler,
-                        // irradiance_image,
-                        // irradiance_image_view,
-                        // irradiance_sampler,
+                        irradiance_image,
+                        irradiance_image_view,
+                        irradiance_sampler,
                 };
 
                 self.cubemaps.insert(cubemap_id, vk_cubemap);
@@ -1186,8 +1248,8 @@ impl VkAssetManager {
                 let rotations = [
                         Mat4::from_rotation_y(std::f32::consts::TAU / 4.0),
                         Mat4::from_rotation_y(-std::f32::consts::TAU / 4.0),
-                        Mat4::from_rotation_x(std::f32::consts::TAU / 4.0),
                         Mat4::from_rotation_x(-std::f32::consts::TAU / 4.0),
+                        Mat4::from_rotation_x(std::f32::consts::TAU / 4.0),
                         Mat4::IDENTITY,
                         Mat4::from_rotation_y(std::f32::consts::TAU / 2.0),
                 ];
@@ -1329,6 +1391,220 @@ impl VkAssetManager {
                         base_array_layer: 0,
                         layer_count: image.array_layers,
                 });
+        }
+
+        unsafe fn gen_irrandiace_map_for(
+                &self,
+                asset_manager: &AssetManager,
+                environment_image: &VkImage,
+                environment_image_view: &VkImageView,
+                deletion_queue: &mut Vec<VkObject>,
+        ) -> VkResult<VkImage> {
+                let format = vk::Format::R16G16B16A16_SFLOAT;
+                assert_eq!(environment_image.width, environment_image.height);
+                let size = 32;
+
+                // NOTE: we generate a new sampler for the environment map due to the problem described in max_lod
+                let environment_sampler = {
+                        let environment_sampler_cinfo = vk::SamplerCreateInfo {
+                                mag_filter: vk::Filter::LINEAR,
+                                min_filter: vk::Filter::LINEAR,
+                                mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                                address_mode_u: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                                address_mode_v: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                                address_mode_w: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                                mip_lod_bias: 0.0,
+                                anisotropy_enable: ENABLE_ANISOTROPY as u32,
+                                max_anisotropy: 1.0,
+                                compare_enable: vk::FALSE,
+                                compare_op: vk::CompareOp::NEVER,
+                                min_lod: 0.0,
+                                // NOTE: for some reason using mipmaps when calculating the irradiance
+                                // map produces ugly artifacts. Because of this we only use mip 0.
+                                // Maybe we shouldn't even generate mipmaps for the environment map?
+                                max_lod: 0.0,
+                                border_color: vk::BorderColor::INT_OPAQUE_WHITE,
+                                unnormalized_coordinates: vk::FALSE,
+                                ..Default::default()
+                        };
+
+                        unsafe { VkSampler::new(Rc::clone(&self.device), &environment_sampler_cinfo)? }
+                };
+
+                let irradiance_image_cinfo = VkImageCubemapCreateInfo {
+                        format,
+                        size,
+                        mip_levels: MipLevels::Log2,
+                        additional_usage_flags: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                };
+
+                let irradiance_image = VkImage::new_cubemap(&self.allocator, &irradiance_image_cinfo)?;
+
+                let irradiance_shader_id = asset_manager.shader_names()["irradiance-shader"];
+                let irradiance_shader = &self.shaders[irradiance_shader_id];
+
+                let environment_map_binding = irradiance_shader
+                        .shader_resource_bindings
+                        .get(&SHADER_RESOURCE_ENVIRONMENT_MAP)
+                        .unwrap();
+
+                let image_info = vk::DescriptorImageInfo {
+                        sampler: *environment_sampler,
+                        image_view: **environment_image_view,
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                };
+
+                deletion_queue.push(VkObject::Sampler(environment_sampler));
+
+                let write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .dst_set(irradiance_shader.world_dst_set[0])
+                        .dst_binding(environment_map_binding.binding)
+                        .dst_array_element(0)
+                        .image_info(image_info.ref_into_slice())
+                        .build();
+
+                self.device.update_descriptor_sets(&[write], &[]);
+
+                let cmd_buffer = *self.cmd_buffer;
+
+                VkImage::cmd_transition_img_layout(&TransitionImageLayoutInfo {
+                        device: &self.device,
+                        cmd_buffer: *self.cmd_buffer,
+
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+
+                        image: *irradiance_image,
+                        base_mip_level: 0,
+                        mip_levels: irradiance_image.mip_levels,
+                        base_array_layer: 0,
+                        layer_count: 6,
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+
+                        src_access_mask: vk::AccessFlags::empty(),
+                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+
+                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
+                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                });
+
+                self.device.cmd_bind_descriptor_sets(
+                        cmd_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        *irradiance_shader.graphics_pipeline_layout,
+                        0,
+                        &[irradiance_shader.world_dst_set[0]],
+                        &[],
+                );
+
+                self.cmd_render_cubemap(cmd_buffer, irradiance_shader, &irradiance_image, deletion_queue)?;
+
+                self.cmd_gen_mipmaps_for(&irradiance_image);
+
+                Ok(irradiance_image)
+        }
+
+        unsafe fn cmd_render_cubemap(
+                &self,
+                cmd_buffer: vk::CommandBuffer,
+                shader: &VkShader,
+                target: &VkImage,
+                deletion_queue: &mut Vec<VkObject>,
+        ) -> VkResult<()> {
+                let size = target.width;
+
+                let scissor = vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D {
+                                width: size,
+                                height: size,
+                        },
+                };
+
+                let viewport = vk::Viewport {
+                        x: 0.0,
+                        y: 0.0,
+                        width: size as f32,
+                        height: size as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                };
+
+                self.device.cmd_set_scissor(cmd_buffer, 0, scissor.ref_into_slice());
+                self.device.cmd_set_viewport(cmd_buffer, 0, viewport.ref_into_slice());
+
+                self.device
+                        .cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, *shader.graphics_pipeline);
+
+                let rotations = [
+                        Mat4::from_rotation_y(std::f32::consts::TAU / 4.0),  // +X (right)
+                        Mat4::from_rotation_y(-std::f32::consts::TAU / 4.0), // -X (left)
+                        Mat4::from_rotation_x(-std::f32::consts::TAU / 4.0), // +Y (up)
+                        Mat4::from_rotation_x(std::f32::consts::TAU / 4.0),  // -Y (down)
+                        Mat4::IDENTITY,                                      // +Z (forward)
+                        Mat4::from_rotation_y(std::f32::consts::TAU / 2.0),  // -Z (backward)
+                ];
+
+                for i in 0..6usize {
+                        let face_image_view_cinfo = vk::ImageViewCreateInfo::builder()
+                                .image(**target)
+                                .view_type(vk::ImageViewType::TYPE_2D)
+                                .format(target.format)
+                                .components(Default::default())
+                                .subresource_range(vk::ImageSubresourceRange {
+                                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                                        base_mip_level: 0,
+                                        level_count: 1,
+                                        base_array_layer: i as u32,
+                                        layer_count: 1,
+                                });
+
+                        let face_image_view = VkImageView::new(Rc::clone(&self.device), &face_image_view_cinfo)?;
+
+                        let render_pass = self.render_passes[ShaderRenderStage::SkyboxMapping];
+                        let attachments = [*face_image_view];
+
+                        let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
+                                .render_pass(render_pass)
+                                .width(size)
+                                .height(size)
+                                .layers(1)
+                                .attachments(&attachments);
+
+                        let framebuffer = VkFramebuffer::new(&self.device, &framebuffer_cinfo)?;
+
+                        let render_pass_binfo = vk::RenderPassBeginInfo::builder()
+                                .render_pass(render_pass)
+                                .framebuffer(*framebuffer)
+                                .render_area(vk::Rect2D {
+                                        offset: vk::Offset2D { x: 0, y: 0 },
+                                        extent: vk::Extent2D {
+                                                width: size,
+                                                height: size,
+                                        },
+                                });
+
+                        self.device
+                                .cmd_begin_render_pass(cmd_buffer, &render_pass_binfo, vk::SubpassContents::INLINE);
+
+                        self.device.cmd_push_constants(
+                                cmd_buffer,
+                                *shader.graphics_pipeline_layout,
+                                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                                0,
+                                rotations[i].as_bytes(),
+                        );
+
+                        self.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
+
+                        self.device.cmd_end_render_pass(cmd_buffer);
+
+                        deletion_queue.push(VkObject::ImageView(face_image_view));
+                        deletion_queue.push(VkObject::Framebuffer(framebuffer));
+                }
+
+                Ok(())
         }
 
         fn create_vk_mesh(&mut self, asset_manager: &AssetManager, mesh_id: MeshId) -> AnyResult<()> {

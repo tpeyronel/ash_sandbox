@@ -1,0 +1,9 @@
+---
+name: "irradiance-shader"
+vertex-shader: "irradiance_shader.vert"
+fragment-shader: "irradiance_shader.frag"
+uniforms: []
+vertex-inputs: []
+push-constants-size: 64
+cull-mode: "back"
+render-stage: "skybox-mapping"

@@ -10,9 +10,10 @@ layout (location = 0) out vec4 o_output;
 
 const vec2 inv_atan = vec2(1.0 / (2.0 * PI), 1.0 / PI);
 vec2 sample_equirectangular_map(vec3 pos) {
-        vec2 uv = vec2(atan(pos.z, pos.x), asin(pos.y));
+        vec2 uv = vec2(atan(pos.z, pos.x), asin(-pos.y));
         uv *= inv_atan;
         uv += 0.5;
+        uv.x = 1.0 - uv.x;
         return uv;
 }
 

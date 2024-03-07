@@ -10,7 +10,7 @@ layout (location = 0) out vec3 o_uvw;
 
 void main() {
         o_uvw = i_pos;
-        o_uvw.x *= -1.0;
+        o_uvw.z *= -1.0;
 
         gl_Position = u_object_matrices.mvp * vec4(i_pos, 1.0);
 }

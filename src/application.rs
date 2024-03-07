@@ -369,6 +369,9 @@ impl Application {
                 let _equi_to_cube_shader = asset_manager
                         .load_shader_from_yaml(Path::new("res/shader/equi_to_cube_shader/equi_to_cube_shader.yaml"))?;
 
+                let _irradiance_shader = asset_manager
+                        .load_shader_from_yaml(Path::new("res/shader/irradiance_shader/irradiance_shader.yaml"))?;
+
                 let _shadow_map_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/shadow_map/shadow_map.yaml"))?;
 
