@@ -35,9 +35,9 @@ use crate::{
         shader_resource::ShaderResourceId,
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_CUBE_SHADOW_MAP, SHADER_RESOURCE_INPUT_FRAMEBUFFER,
-                SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SHADER_SETTINGS,
-                SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS,
-                SHADER_RESOURCE_WORLD_MATRICES,
+                SHADER_RESOURCE_IRRADIANCE_MAP, SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_OBJECT_MATRICES,
+                SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX,
+                SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
         },
         skybox::Skybox,
         util::{RefIntoBytesSlice, RefIntoSlice},
@@ -2140,6 +2140,14 @@ impl VkRenderer {
                         &SHADER_RESOURCE_SKYBOX,
                         *skybox.environment_image_view,
                         *skybox.environment_sampler,
+                        world_shader_resource_descriptors_data,
+                );
+
+                Self::write_image_resource(
+                        vk_asset_manager,
+                        &SHADER_RESOURCE_IRRADIANCE_MAP,
+                        *skybox.irradiance_image_view,
+                        *skybox.irradiance_sampler,
                         world_shader_resource_descriptors_data,
                 );
         }

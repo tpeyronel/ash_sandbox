@@ -4,6 +4,7 @@
 #define PI 3.14159265358979323846264338327950288
 
 #resource samplerCube u_cube_shadow_map : CUBE_SHADOW_MAP;
+#resource samplerCube u_irradiance_map : IRRADIANCE_MAP;
 #resource sampler2D u_shadow_map : SHADOW_MAP;
 #resource ShaderSettings u_settings : SHADER_SETTINGS;
 #resource WorldMatrices u_world_matrices : WORLD_MATRICES;
@@ -183,6 +184,10 @@ vec3 fresnel_schlick(float cos_theta, vec3 f_0) {
         return f_0 + ((1.0 - f_0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0));
 }
 
+vec3 fresnel_schlick_roughness(float cos_theta, vec3 f_0, float roughness) {
+        return f_0 + (max(vec3(1.0 - roughness), f_0) - f_0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+}
+
 float distribution_ggx(vec3 normal, vec3 halfway, float roughness) {
         float alpha = roughness * roughness;
         float alpha_squared = alpha * alpha;
@@ -221,50 +226,69 @@ void main() {
         // float metallic = 0.2;
         // float roughness = 0.1;
 
+        // calculate reflectance at normal incidence; if dia-electric (like plastic) use f_0
+        // of 0.04 and if it's a metal, use the albedo color as f_0 (metallic workflow)
+        vec3 f_0 = mix(vec3(0.04), albedo, metallic);
 
         // aka n
         vec3 normal = fetch_normal();
 
-        vec3 frag_to_view_raw = u_lights.point_light.pos.xyz - i_frag_world_pos;
         // aka v
-        vec3 frag_to_view = normalize(frag_to_view_raw);
+        vec3 frag_to_view = normalize(u_world_matrices.view_pos.xyz - i_frag_world_pos);
 
-        // aka l
-        vec3 frag_to_light = normalize(u_lights.point_light.pos.xyz - i_frag_world_pos);
+        vec3 total_radiance = vec3(0.0);
 
-        // aka h
-        vec3 halfway = normalize(frag_to_view + frag_to_light);
+        // point light
+        {
+                vec3 frag_to_light_raw = u_lights.point_light.pos.xyz - i_frag_world_pos;
+                // aka l
+                vec3 frag_to_light = normalize(u_lights.point_light.pos.xyz - i_frag_world_pos);
 
-        float distance_squared = dot(frag_to_view_raw, frag_to_view_raw);
-        float attenuation = 1.0 / distance_squared;
+                // aka h
+                vec3 halfway = normalize(frag_to_view + frag_to_light);
 
-        vec3 radiance = u_lights.point_light.color.rgb * attenuation;
+                float distance_squared = dot(frag_to_light_raw, frag_to_light_raw);
+                float attenuation = 1.0 / distance_squared;
 
-        float ndf = distribution_ggx(normal, halfway, roughness);
+                vec3 radiance = u_lights.point_light.color.rgb * attenuation;
 
-        float n_dot_v = max(dot(normal, frag_to_view), 0.0);
-        float n_dot_l = max(dot(normal, frag_to_light), 0.0);
-        float geometry = geometry_smith(n_dot_v, n_dot_l, roughness);
+                float ndf = distribution_ggx(normal, halfway, roughness);
 
-        float cos_theta = dot(halfway, frag_to_view);
-        vec3 f_0 = mix(vec3(0.04), albedo, metallic);
-        vec3 fresnel = fresnel_schlick(cos_theta, f_0);
+                float n_dot_v = max(dot(normal, frag_to_view), 0.0);
+                float n_dot_l = max(dot(normal, frag_to_light), 0.0);
+                float geometry = geometry_smith(n_dot_v, n_dot_l, roughness);
 
-        vec3 numerator = ndf * geometry * fresnel;
-        float denominator = max(4.0 * n_dot_v * n_dot_l, 0.0001);
-        vec3 specular = numerator / denominator;
+                float cos_theta = dot(halfway, frag_to_view);
+                vec3 fresnel = fresnel_schlick(cos_theta, f_0);
 
-        vec3 k_s = fresnel;
-        vec3 k_d = (vec3(1.0) - k_s) * (1.0 - metallic);
+                vec3 numerator = ndf * geometry * fresnel;
+                float denominator = max(4.0 * n_dot_v * n_dot_l, 0.0001);
+                vec3 specular = numerator / denominator;
 
-        radiance = (k_d * albedo * (1.0 / PI) + specular) * radiance * n_dot_l;
+                vec3 k_s = fresnel;
+                vec3 k_d = (vec3(1.0) - k_s) * (1.0 - metallic);
 
-        vec3 total_radiance = radiance;
+                total_radiance += (k_d * albedo * (1.0 / PI) + specular) * radiance * n_dot_l;
+        }
 
+        // ambient lighting
+        {
+                // vec3 f_0 = vec3(0.04);
+                // float roughness = 0.5;
+                // float metallic = 0.0;
+                // vec3 albedo = vec3(1.0);
 
+                float cos_theta = dot(normal, frag_to_view);
+                vec3 fresnel = fresnel_schlick_roughness(cos_theta, f_0, roughness);
+                vec3 k_s = fresnel;
+                vec3 k_d = (vec3(1.0) - k_s) * (1.0 - metallic);
 
+                vec3 ambient_irradiance = texture(u_irradiance_map, vec3(normal.x, normal.y, -normal.z)).rgb;
+                vec3 ambient_diffuse = ambient_irradiance * albedo;
+                vec3 ambient = k_d * ambient_diffuse /* * ao */;
 
-
+                total_radiance += ambient;
+        }
 
         vec3 output_color = vec3(0.0);
 

@@ -34,7 +34,7 @@ use crate::{
         shader_resource_registry::ShaderResourceRegistry,
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_CUBE_SHADOW_MAP, SHADER_RESOURCE_ENVIRONMENT_MAP,
-                SHADER_RESOURCE_EQUIRECTANGULAR_MAP, SHADER_RESOURCE_INPUT_FRAMEBUFFER,
+                SHADER_RESOURCE_EQUIRECTANGULAR_MAP, SHADER_RESOURCE_INPUT_FRAMEBUFFER, SHADER_RESOURCE_IRRADIANCE_MAP,
                 SHADER_RESOURCE_MATERIAL_BASE_COLOR_TEXTURE, SHADER_RESOURCE_MATERIAL_DATA,
                 SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE, SHADER_RESOURCE_MATERIAL_METALLIC_ROUGHNESS_TEXTURE,
                 SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE, SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE,
@@ -1449,6 +1449,12 @@ impl AssetManager {
 
                 assets.shader_resources.register(ShaderResource {
                         id: SHADER_RESOURCE_ENVIRONMENT_MAP.clone(),
+                        resource_type: ShaderResourceType::ImageCube,
+                        provider: ShaderResourceProvider::World,
+                });
+
+                assets.shader_resources.register(ShaderResource {
+                        id: SHADER_RESOURCE_IRRADIANCE_MAP.clone(),
                         resource_type: ShaderResourceType::ImageCube,
                         provider: ShaderResourceProvider::World,
                 });
