@@ -232,6 +232,8 @@ void main() {
 
         // aka n
         vec3 normal = fetch_normal();
+        // normal used for addressing cubemaps
+        vec3 normal_lh = vec3(normal.xy, -normal.z);
 
         // aka v
         vec3 frag_to_view = normalize(u_world_matrices.view_pos.xyz - i_frag_world_pos);
@@ -283,7 +285,7 @@ void main() {
                 vec3 k_s = fresnel;
                 vec3 k_d = (vec3(1.0) - k_s) * (1.0 - metallic);
 
-                vec3 ambient_irradiance = texture(u_irradiance_map, vec3(normal.x, normal.y, -normal.z)).rgb;
+                vec3 ambient_irradiance = texture(u_irradiance_map, normal_lh).rgb;
                 vec3 ambient_diffuse = ambient_irradiance * albedo;
                 vec3 ambient = k_d * ambient_diffuse /* * ao */;
 
