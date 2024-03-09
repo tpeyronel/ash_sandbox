@@ -372,6 +372,9 @@ impl Application {
                 let _irradiance_shader = asset_manager
                         .load_shader_from_yaml(Path::new("res/shader/irradiance_shader/irradiance_shader.yaml"))?;
 
+                let _prefilter_shader = asset_manager
+                        .load_shader_from_yaml(Path::new("res/shader/prefilter_shader/prefilter_shader.yaml"))?;
+
                 let _shadow_map_shader =
                         asset_manager.load_shader_from_yaml(Path::new("res/shader/shadow_map/shadow_map.yaml"))?;
 
@@ -1264,6 +1267,7 @@ fn register_event<T: Resource>(world: &mut World, schedule: &mut Schedule) {
 pub struct ShaderSettings {
         pub alt_normals: Vec2u,
         pub gamma_and_exposure: Vec2,
+        pub skybox_lod: Vec2,
 }
 
 impl Default for ShaderSettings {
@@ -1271,6 +1275,7 @@ impl Default for ShaderSettings {
                 Self {
                         alt_normals: Vec2u::new(0, 0),
                         gamma_and_exposure: Vec2::new(2.2, 1.0),
+                        skybox_lod: Vec2::new(0.0, 0.0),
                 }
         }
 }

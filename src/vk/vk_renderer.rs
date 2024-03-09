@@ -300,6 +300,8 @@ impl Renderer for VkRenderer {
                         return Ok(());
                 }
 
+                self.vk_asset_manager.notify_new_frame(self.framei)?;
+
                 let imagei = match unsafe { self.begin_frame()? } {
                         BeginFrameResult::Draw { imagei } => imagei,
                         BeginFrameResult::Skip => return Ok(()),

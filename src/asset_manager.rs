@@ -29,6 +29,7 @@ use crate::{
         },
         hashmap::HashMap,
         my_glm::*,
+        renderer::PrefilterParams,
         shader_preprocessor::{PreprocessedShaderStage, ShaderPreprocessor},
         shader_resource::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
         shader_resource_registry::ShaderResourceRegistry,
@@ -38,8 +39,9 @@ use crate::{
                 SHADER_RESOURCE_MATERIAL_BASE_COLOR_TEXTURE, SHADER_RESOURCE_MATERIAL_DATA,
                 SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE, SHADER_RESOURCE_MATERIAL_METALLIC_ROUGHNESS_TEXTURE,
                 SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE, SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE,
-                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP,
-                SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
+                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_PREFILTER_PARAMS, SHADER_RESOURCE_SHADER_SETTINGS,
+                SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS,
+                SHADER_RESOURCE_WORLD_MATRICES,
         },
         util::{self, default, RefIntoBytesSlice},
         vk::vk_renderer::{BillboardData, MaterialData, ObjectMatrices, WorldLights, WorldMatrices},
@@ -1458,6 +1460,11 @@ impl AssetManager {
                         resource_type: ShaderResourceType::ImageCube,
                         provider: ShaderResourceProvider::World,
                 });
+
+                assets.shader_resources.register_struct::<PrefilterParams>(
+                        SHADER_RESOURCE_PREFILTER_PARAMS.clone(),
+                        ShaderResourceProvider::RenderPass,
+                );
 
                 assets.shader_resources.register(ShaderResource {
                         id: SHADER_RESOURCE_SKYBOX.clone(),

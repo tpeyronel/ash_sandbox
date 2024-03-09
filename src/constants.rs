@@ -17,3 +17,5 @@ pub const DEFAULT_MAG_FILTER: MagFilter = MagFilter::Linear;
 pub const DEFAULT_MIN_FILTER: MinFilter = MinFilter::LinearMipmapLinear;
 pub const SHADOW_MAP_WIDTH: u32 = 4096;
 pub const SHADOW_MAP_HEIGHT: u32 = 4096;
+
+pub const PREFILTER_MAP_SIZE: u32 = 128;

@@ -216,4 +216,8 @@ pub fn shader_settings(ui: &imgui::Ui, shader_settings: &mut ShaderSettings) {
         ui.slider_config("exposure", 0.0, 10.0)
                 .flags(imgui::SliderFlags::LOGARITHMIC)
                 .build(&mut shader_settings.gamma_and_exposure.y);
+
+        imgui::Drag::new("skybox lod")
+                .speed(0.05)
+                .build(ui, &mut shader_settings.skybox_lod.x);
 }

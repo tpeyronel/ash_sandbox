@@ -12,6 +12,7 @@ lazy_static! {
         pub static ref SHADER_RESOURCE_EQUIRECTANGULAR_MAP: ShaderResourceId = "EQUIRECTANGULAR_MAP".into();
         pub static ref SHADER_RESOURCE_ENVIRONMENT_MAP: ShaderResourceId = "ENVIRONMENT_MAP".into();
         pub static ref SHADER_RESOURCE_IRRADIANCE_MAP: ShaderResourceId = "IRRADIANCE_MAP".into();
+        pub static ref SHADER_RESOURCE_PREFILTER_PARAMS: ShaderResourceId = "PREFILTER_PARAMS".into();
         pub static ref SHADER_RESOURCE_MATERIAL_DATA: ShaderResourceId = "MATERIAL_DATA".into();
         pub static ref SHADER_RESOURCE_MATERIAL_BASE_COLOR_TEXTURE: ShaderResourceId = "MATERIAL_BASE_COLOR_TEXTURE".into();
         pub static ref SHADER_RESOURCE_MATERIAL_METALLIC_ROUGHNESS_TEXTURE: ShaderResourceId = "MATERIAL_METALLIC_ROUGHNESS_TEXTURE".into();

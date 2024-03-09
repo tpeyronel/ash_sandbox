@@ -21,13 +21,16 @@ use crate::{
                 MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule, ShaderRenderStage,
                 ShaderResourceData, WrappingMode,
         },
-        constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE},
+        constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE, PREFILTER_MAP_SIZE},
         hashmap::GetOrInsert,
         my_glm::{Mat4, Vec2, Vec3, Vec4},
+        renderer::PrefilterParams,
         shader_preprocessor::{PreprocessedShaderStage, ShaderStageSourceBuilder},
         shader_resource::{ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
         shader_resource_registry::ShaderResourceRegistry,
-        shader_resources::{SHADER_RESOURCE_ENVIRONMENT_MAP, SHADER_RESOURCE_EQUIRECTANGULAR_MAP},
+        shader_resources::{
+                SHADER_RESOURCE_ENVIRONMENT_MAP, SHADER_RESOURCE_EQUIRECTANGULAR_MAP, SHADER_RESOURCE_PREFILTER_PARAMS,
+        },
         util::{RefIntoBytesSlice, RefIntoSlice},
         vk::{
                 vk_buffer::{BufferData, VkBuffer, VkImmutableBufferCreateInfo},
@@ -86,9 +89,7 @@ pub struct VkShader {
         pub world_dst_set: Vec<vk::DescriptorSet>, // One per concurrent frame
         pub mesh_dst_set: Vec<vk::DescriptorSet>,  // One per concurrent frame
 
-        pub world_dst_set_layout: vk::DescriptorSetLayout,
-        pub material_dst_set_layout: vk::DescriptorSetLayout,
-        pub mesh_dst_set_layout: vk::DescriptorSetLayout,
+        pub dst_set_layouts: EnumMap<VkDescriptorSetIndex, vk::DescriptorSetLayout>,
 
         pub graphics_pipeline_layout: VkPipelineLayout,
         pub graphics_pipeline: VkPipeline,
@@ -100,9 +101,9 @@ impl VkShader {
                         self.graphics_pipeline.destroy();
                         self.graphics_pipeline_layout.destroy();
 
-                        device.destroy_descriptor_set_layout(self.mesh_dst_set_layout, None);
-                        device.destroy_descriptor_set_layout(self.material_dst_set_layout, None);
-                        device.destroy_descriptor_set_layout(self.world_dst_set_layout, None);
+                        for (_, &dst_set_layout) in &self.dst_set_layouts {
+                                device.destroy_descriptor_set_layout(dst_set_layout, None);
+                        }
 
                         self.frag_module.as_ref().map(|x| x.destroy());
                         self.vert_module.destroy();
@@ -123,6 +124,9 @@ pub struct VkCubemap {
         pub irradiance_image: VkImage, // cubemap
         pub irradiance_image_view: VkImageView,
         pub irradiance_sampler: VkSampler,
+        pub prefiltered_image: VkImage, // cubemap
+        pub prefiltered_image_view: VkImageView,
+        pub prefiltered_sampler: VkSampler,
 }
 
 pub struct VkAssetManager {
@@ -132,7 +136,10 @@ pub struct VkAssetManager {
         debug_utils: Option<Rc<VkDebugUtils>>,
         allocator: Rc<VmaAllocator>,
         transfer_queue: vk::Queue,
+        // dst set allocator that is never reset. Used for permanent descriptor sets.
         dst_set_allocator: VkDescriptorSetAllocator,
+        // dst set allocators (one per concurrent frame) that are reset every frame. Used for temporary descriptor sets.
+        frame_dst_set_allocators: Vec<VkDescriptorSetAllocator>,
         cmd_buffer: VkReusableCommandBuffer,
         concurrent_frames: usize,
 
@@ -163,6 +170,10 @@ impl VkAssetManager {
                 assert!(concurrent_frames > 0, "Frames in flight must be greater to zero");
 
                 let dst_set_allocator = VkDescriptorSetAllocator::new(Rc::clone(&vk_context.device))?;
+                let mut frame_dst_set_allocators = vec![];
+                for _ in 0..concurrent_frames {
+                        frame_dst_set_allocators.push(VkDescriptorSetAllocator::new(Rc::clone(&vk_context.device))?);
+                }
                 let cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
 
@@ -174,6 +185,7 @@ impl VkAssetManager {
                         allocator: Rc::clone(&vk_context.allocator),
                         transfer_queue: vk_context.queues.graphics,
                         dst_set_allocator,
+                        frame_dst_set_allocators,
                         cmd_buffer,
                         concurrent_frames,
 
@@ -247,6 +259,12 @@ impl VkAssetManager {
                 Ok(())
         }
 
+        pub fn notify_new_frame(&mut self, framei: usize) -> VkResult<()> {
+                unsafe { self.frame_dst_set_allocators[framei].reset_pools()? };
+
+                Ok(())
+        }
+
         pub fn destroy(&mut self) {
                 self.shader_resource_dynamic_buffers
                         .drain()
@@ -259,6 +277,9 @@ impl VkAssetManager {
                 });
 
                 self.cubemaps.drain().for_each(|(_, cubemap)| unsafe {
+                        cubemap.prefiltered_sampler.destroy();
+                        cubemap.prefiltered_image_view.destroy();
+                        cubemap.prefiltered_image.destroy();
                         cubemap.irradiance_sampler.destroy();
                         cubemap.irradiance_image_view.destroy();
                         cubemap.irradiance_image.destroy();
@@ -295,6 +316,9 @@ impl VkAssetManager {
                 });
 
                 unsafe { self.cmd_buffer.destroy() };
+                for dst_set_allocator in &mut self.frame_dst_set_allocators {
+                        unsafe { dst_set_allocator.destroy() };
+                }
                 unsafe { self.dst_set_allocator.destroy() };
         }
 
@@ -432,6 +456,15 @@ impl VkAssetManager {
                                 VkShaderResourceType::CombinedImageSampler
                         },
                         (ShaderResourceType::ImageCube, ShaderResourceProvider::Mesh) => todo!(),
+                        (ShaderResourceType::Struct(_), ShaderResourceProvider::RenderPass) => {
+                                VkShaderResourceType::UniformBuffer
+                        },
+                        (ShaderResourceType::Image2D, ShaderResourceProvider::RenderPass) => {
+                                VkShaderResourceType::CombinedImageSampler
+                        },
+                        (ShaderResourceType::ImageCube, ShaderResourceProvider::RenderPass) => {
+                                VkShaderResourceType::CombinedImageSampler
+                        },
                 };
 
                 let vk_shader_resource = VkShaderResource {
@@ -550,7 +583,7 @@ impl VkAssetManager {
 
                 let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
                         &self.device,
-                        &[world_dst_set_layout, material_dst_set_layout, mesh_dst_set_layout],
+                        dst_set_layouts.as_slice(),
                         shader.push_constants_size,
                 )?;
 
@@ -584,9 +617,7 @@ impl VkAssetManager {
                         world_dst_set,
                         mesh_dst_set,
 
-                        world_dst_set_layout,
-                        material_dst_set_layout,
-                        mesh_dst_set_layout,
+                        dst_set_layouts,
 
                         graphics_pipeline_layout,
                         graphics_pipeline,
@@ -646,6 +677,7 @@ impl VkAssetManager {
 
                         let set = match resource.provider {
                                 ShaderResourceProvider::World => VkDescriptorSetIndex::World,
+                                ShaderResourceProvider::RenderPass => VkDescriptorSetIndex::RenderPass,
                                 ShaderResourceProvider::Material => VkDescriptorSetIndex::Material,
                                 ShaderResourceProvider::Mesh => VkDescriptorSetIndex::Mesh,
                         };
@@ -1012,6 +1044,7 @@ impl VkAssetManager {
                 let vk_sampler = unsafe { VkSampler::new(Rc::clone(&self.device), &vk_sampler_cinfo)? };
 
                 let irradiance_image;
+                let prefiltered_image;
 
                 unsafe {
                         self.cmd_buffer.begin(&self.device)?;
@@ -1023,11 +1056,24 @@ impl VkAssetManager {
                                 &mut deletion_queue,
                         )?;
 
+                        prefiltered_image = self.gen_prefiltered_map_for(
+                                asset_manager,
+                                &vk_image,
+                                &vk_image_view,
+                                &mut deletion_queue,
+                        )?;
+
                         if ENABLE_VALIDATION_LAYERS {
                                 irradiance_image.set_debug_name(
                                         &self.device,
                                         self.debug_utils.as_ref().unwrap(),
                                         &format!("[cubemap] {:?} (irradiance)", cubemap_id),
+                                )?;
+
+                                prefiltered_image.set_debug_name(
+                                        &self.device,
+                                        self.debug_utils.as_ref().unwrap(),
+                                        &format!("[cubemap] {:?} (prefiltered)", cubemap_id),
                                 )?;
                         }
 
@@ -1080,6 +1126,46 @@ impl VkAssetManager {
 
                 let irradiance_sampler = unsafe { VkSampler::new(Rc::clone(&self.device), &irradiance_sampler_cinfo)? };
 
+                let prefiltered_image_view_cinfo = vk::ImageViewCreateInfo {
+                        image: *prefiltered_image,
+                        view_type: vk::ImageViewType::CUBE,
+                        format: prefiltered_image.format,
+                        components: Default::default(),
+                        subresource_range: vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: prefiltered_image.mip_levels,
+                                base_array_layer: 0,
+                                layer_count: 6,
+                        },
+                        ..Default::default()
+                };
+
+                let prefiltered_image_view =
+                        unsafe { VkImageView::new(Rc::clone(&self.device), &prefiltered_image_view_cinfo)? };
+
+                let prefiltered_sampler_cinfo = vk::SamplerCreateInfo {
+                        mag_filter: vk::Filter::LINEAR,
+                        min_filter: vk::Filter::LINEAR,
+                        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                        address_mode_u: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        address_mode_v: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        address_mode_w: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                        mip_lod_bias: 0.0,
+                        anisotropy_enable: ENABLE_ANISOTROPY as u32,
+                        max_anisotropy: 1.0,
+                        compare_enable: vk::FALSE,
+                        compare_op: vk::CompareOp::NEVER,
+                        min_lod: 0.0,
+                        max_lod: LOD_CLAMP_NONE,
+                        border_color: vk::BorderColor::INT_OPAQUE_WHITE,
+                        unnormalized_coordinates: vk::FALSE,
+                        ..Default::default()
+                };
+
+                let prefiltered_sampler =
+                        unsafe { VkSampler::new(Rc::clone(&self.device), &prefiltered_sampler_cinfo)? };
+
                 let vk_cubemap = VkCubemap {
                         environment_image: vk_image,
                         environment_image_view: vk_image_view,
@@ -1087,6 +1173,9 @@ impl VkAssetManager {
                         irradiance_image,
                         irradiance_image_view,
                         irradiance_sampler,
+                        prefiltered_image,
+                        prefiltered_image_view,
+                        prefiltered_sampler,
                 };
 
                 self.cubemaps.insert(cubemap_id, vk_cubemap);
@@ -1285,7 +1374,7 @@ impl VkAssetManager {
                         cmd_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
                         *equi_to_cube_vk_shader.graphics_pipeline_layout,
-                        0,
+                        VkDescriptorSetIndex::World.value(),
                         &[equi_to_cube_vk_shader.world_dst_set[0]],
                         &[],
                 );
@@ -1493,16 +1582,198 @@ impl VkAssetManager {
                         cmd_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
                         *irradiance_shader.graphics_pipeline_layout,
-                        0,
+                        VkDescriptorSetIndex::World.value(),
                         &[irradiance_shader.world_dst_set[0]],
                         &[],
                 );
 
-                self.cmd_render_cubemap(cmd_buffer, irradiance_shader, &irradiance_image, deletion_queue)?;
+                self.cmd_render_cubemap(cmd_buffer, irradiance_shader, &irradiance_image, 0, deletion_queue)?;
 
                 self.cmd_gen_mipmaps_for(&irradiance_image);
 
                 Ok(irradiance_image)
+        }
+
+        unsafe fn gen_prefiltered_map_for(
+                &mut self,
+                asset_manager: &AssetManager,
+                environment_image: &VkImage,
+                environment_image_view: &VkImageView,
+                deletion_queue: &mut Vec<VkObject>,
+        ) -> VkResult<VkImage> {
+                let format = vk::Format::R16G16B16A16_SFLOAT;
+                assert_eq!(environment_image.width, environment_image.height);
+                let size = PREFILTER_MAP_SIZE;
+
+                let environment_sampler = {
+                        let environment_sampler_cinfo = vk::SamplerCreateInfo {
+                                mag_filter: vk::Filter::LINEAR,
+                                min_filter: vk::Filter::LINEAR,
+                                mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                                address_mode_u: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                                address_mode_v: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                                address_mode_w: vk::SamplerAddressMode::CLAMP_TO_EDGE,
+                                mip_lod_bias: 0.0,
+                                anisotropy_enable: ENABLE_ANISOTROPY as u32,
+                                max_anisotropy: 1.0,
+                                compare_enable: vk::FALSE,
+                                compare_op: vk::CompareOp::NEVER,
+                                min_lod: 0.0,
+                                // we manually specify LOD in shader, therefore this doesn't
+                                // causes the problems mentioned for irradiance maps
+                                max_lod: vk::LOD_CLAMP_NONE,
+                                border_color: vk::BorderColor::INT_OPAQUE_WHITE,
+                                unnormalized_coordinates: vk::FALSE,
+                                ..Default::default()
+                        };
+
+                        unsafe { VkSampler::new(Rc::clone(&self.device), &environment_sampler_cinfo)? }
+                };
+
+                let prefiltered_image_cinfo = VkImageCubemapCreateInfo {
+                        format,
+                        size,
+                        mip_levels: MipLevels::Log2, // As many mip levels as possible
+                        additional_usage_flags: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                };
+
+                let prefiltered_image = VkImage::new_cubemap(&self.allocator, &prefiltered_image_cinfo)?;
+
+                let prefilter_shader_id = asset_manager.shader_names()["prefilter-shader"];
+                let prefilter_shader = &self.shaders[prefilter_shader_id];
+
+                let environment_map_binding = prefilter_shader
+                        .shader_resource_bindings
+                        .get(&SHADER_RESOURCE_ENVIRONMENT_MAP)
+                        .unwrap();
+
+                let prefilter_params_binding = prefilter_shader
+                        .shader_resource_bindings
+                        .get(&SHADER_RESOURCE_PREFILTER_PARAMS)
+                        .unwrap();
+
+                let image_info = vk::DescriptorImageInfo {
+                        sampler: *environment_sampler,
+                        image_view: **environment_image_view,
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                };
+
+                deletion_queue.push(VkObject::Sampler(environment_sampler));
+
+                let write = vk::WriteDescriptorSet::builder()
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .dst_set(prefilter_shader.world_dst_set[0])
+                        .dst_binding(environment_map_binding.binding)
+                        .dst_array_element(0)
+                        .image_info(image_info.ref_into_slice())
+                        .build();
+
+                self.device.update_descriptor_sets(&[write], &[]);
+
+                let cmd_buffer = *self.cmd_buffer;
+
+                VkImage::cmd_transition_img_layout(&TransitionImageLayoutInfo {
+                        device: &self.device,
+                        cmd_buffer: *self.cmd_buffer,
+
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+
+                        image: *prefiltered_image,
+                        base_mip_level: 0,
+                        mip_levels: prefiltered_image.mip_levels,
+                        base_array_layer: 0,
+                        layer_count: 6,
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+
+                        src_access_mask: vk::AccessFlags::empty(),
+                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+
+                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
+                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                });
+
+                self.device.cmd_bind_descriptor_sets(
+                        cmd_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        *prefilter_shader.graphics_pipeline_layout,
+                        VkDescriptorSetIndex::World.value(),
+                        &[prefilter_shader.world_dst_set[0]],
+                        &[],
+                );
+
+                for mip in 0..prefiltered_image.mip_levels {
+                        let roughness = (mip as f32) / ((prefiltered_image.mip_levels - 1) as f32);
+
+                        let params_buffer_size = std::mem::size_of::<PrefilterParams>() as vk::DeviceSize;
+                        let params_buffer = VkBuffer::new_uniform_buffer(
+                                &self.device,
+                                Rc::clone(&self.allocator),
+                                params_buffer_size,
+                        )?;
+
+                        let params = PrefilterParams {
+                                roughness_and_env_map_size: Vec2::new(roughness, environment_image.width as f32),
+                        };
+                        params_buffer.write(&params)?;
+
+                        let render_pass_dst_set_layout =
+                                prefilter_shader.dst_set_layouts[VkDescriptorSetIndex::RenderPass];
+                        let [render_pass_dst_set] = self.frame_dst_set_allocators[0]
+                                .allocate_descriptor_sets(&[render_pass_dst_set_layout])?;
+
+                        let buffer_info = vk::DescriptorBufferInfo {
+                                buffer: *params_buffer,
+                                offset: 0,
+                                range: params_buffer_size,
+                        };
+
+                        let write = vk::WriteDescriptorSet::builder()
+                                .descriptor_type(prefilter_params_binding.descriptor_type)
+                                .dst_set(render_pass_dst_set)
+                                .dst_binding(prefilter_params_binding.binding)
+                                .dst_array_element(0)
+                                .buffer_info(buffer_info.ref_into_slice())
+                                .build();
+
+                        self.device.update_descriptor_sets(&[write], &[]);
+
+                        deletion_queue.push(VkObject::Buffer(params_buffer));
+
+                        self.device.cmd_bind_descriptor_sets(
+                                cmd_buffer,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                *prefilter_shader.graphics_pipeline_layout,
+                                VkDescriptorSetIndex::RenderPass.value(),
+                                &[render_pass_dst_set],
+                                &[],
+                        );
+
+                        self.cmd_render_cubemap(cmd_buffer, prefilter_shader, &prefiltered_image, mip, deletion_queue)?;
+                }
+
+                VkImage::cmd_transition_img_layout(&TransitionImageLayoutInfo {
+                        device: &self.device,
+                        cmd_buffer: *self.cmd_buffer,
+
+                        old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+
+                        image: *prefiltered_image,
+                        base_mip_level: 0,
+                        mip_levels: prefiltered_image.mip_levels,
+                        base_array_layer: 0,
+                        layer_count: 6,
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+
+                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                        dst_access_mask: vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
+
+                        src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                });
+
+                Ok(prefiltered_image)
         }
 
         unsafe fn cmd_render_cubemap(
@@ -1510,9 +1781,11 @@ impl VkAssetManager {
                 cmd_buffer: vk::CommandBuffer,
                 shader: &VkShader,
                 target: &VkImage,
+                mip_level: u32,
                 deletion_queue: &mut Vec<VkObject>,
         ) -> VkResult<()> {
-                let size = target.width;
+                // calculate size of mip
+                let size = (target.width as f32 * 0.5f32.powi(mip_level as i32)) as u32;
 
                 let scissor = vk::Rect2D {
                         offset: vk::Offset2D { x: 0, y: 0 },
@@ -1554,7 +1827,7 @@ impl VkAssetManager {
                                 .components(Default::default())
                                 .subresource_range(vk::ImageSubresourceRange {
                                         aspect_mask: vk::ImageAspectFlags::COLOR,
-                                        base_mip_level: 0,
+                                        base_mip_level: mip_level,
                                         level_count: 1,
                                         base_array_layer: i as u32,
                                         layer_count: 1,
@@ -1772,7 +2045,9 @@ impl VkAssetManager {
                 let dst_sets = (0..self.concurrent_frames)
                         .map(|_| unsafe {
                                 self.dst_set_allocator
-                                        .allocate_descriptor_sets(&[vk_shader.material_dst_set_layout])
+                                        .allocate_descriptor_sets(&[
+                                                vk_shader.dst_set_layouts[VkDescriptorSetIndex::Material]
+                                        ])
                                         .map(|x| x[0])
                         })
                         .collect::<VkResult<Vec<vk::DescriptorSet>>>()?;
@@ -2090,6 +2365,7 @@ impl VkShaderResourceType {
 #[derive(Debug, Clone, Copy, Enum, Hash, PartialEq, Eq)]
 pub enum VkDescriptorSetIndex {
         World,
+        RenderPass,
         Material,
         Mesh,
 }
@@ -2098,8 +2374,9 @@ impl VkDescriptorSetIndex {
         pub fn value(&self) -> u32 {
                 match self {
                         VkDescriptorSetIndex::World => 0,
-                        VkDescriptorSetIndex::Material => 1,
-                        VkDescriptorSetIndex::Mesh => 2,
+                        VkDescriptorSetIndex::RenderPass => 1,
+                        VkDescriptorSetIndex::Material => 2,
+                        VkDescriptorSetIndex::Mesh => 3,
                 }
         }
 }

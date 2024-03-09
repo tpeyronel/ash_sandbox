@@ -73,6 +73,7 @@ impl ShaderResourceType {
 #[derive(Debug, Hash, Clone, Copy)]
 pub enum ShaderResourceProvider {
         World,
+        RenderPass,
         Material,
         Mesh,
 }

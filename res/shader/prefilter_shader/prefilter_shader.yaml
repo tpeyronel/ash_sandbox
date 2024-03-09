@@ -1,0 +1,9 @@
+---
+name: "prefilter-shader"
+vertex-shader: "prefilter_shader.vert"
+fragment-shader: "prefilter_shader.frag"
+uniforms: []
+vertex-inputs: []
+push-constants-size: 64
+cull-mode: "back"
+render-stage: "skybox-mapping"
