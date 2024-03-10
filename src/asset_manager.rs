@@ -11,7 +11,7 @@ use std::{
 
 use bitflags::bitflags;
 use crossbeam_channel::Receiver;
-use ddsfile::DxgiFormat;
+use ddsfile::{D3DFormat, DxgiFormat};
 use gltf::accessor::{DataType, Dimensions};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
@@ -202,6 +202,7 @@ pub enum ImageFormat {
         R8,
         R8G8B8,
         R8G8B8A8,
+        R16G16,       // f16
         R16G16B16A16, // f16
         R32G32B32,    // f32
         R32G32B32A32, // f32
@@ -236,6 +237,7 @@ impl ImageFormat {
                         ImageFormat::R8
                         | ImageFormat::R8G8B8
                         | ImageFormat::R8G8B8A8
+                        | ImageFormat::R16G16
                         | ImageFormat::R16G16B16A16
                         | ImageFormat::R32G32B32
                         | ImageFormat::R32G32B32A32 => (1, 1),
@@ -258,6 +260,7 @@ impl ImageFormat {
                         ImageFormat::R8 => 1,
                         ImageFormat::R8G8B8 => 3,
                         ImageFormat::R8G8B8A8 => 4,
+                        ImageFormat::R16G16 => 4,
                         ImageFormat::R16G16B16A16 => 8,
                         ImageFormat::R32G32B32 => 12,
                         ImageFormat::R32G32B32A32 => 16,
@@ -571,7 +574,10 @@ impl Image {
                                 f => return Err(LoadImageError::UnsupportedDxgiFormat(f)),
                         }
                 } else if let Some(d3d_format) = dds.get_d3d_format() {
-                        return Err(LoadImageError::UnsupportedD3DFormat(d3d_format));
+                        match d3d_format {
+                                D3DFormat::G16R16F => (ImageFormat::R16G16, ColorSpace::Linear),
+                                f => return Err(LoadImageError::UnsupportedD3DFormat(f)),
+                        }
                 } else {
                         return Err(LoadImageError::UnsupportedPixelFormat(dds.header.spf.clone()));
                 };

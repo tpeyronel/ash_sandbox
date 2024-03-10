@@ -223,6 +223,11 @@ impl Application {
                 //         ColorSpace::Linear,
                 // )?);
 
+                asset_manager.add_image(Image::from_file(
+                        Path::new("res/image/brdf_lut.dds"),
+                        ColorSpace::Linear,
+                )?);
+
                 let wide_street_cubemap = asset_manager.insert_cubemap(Cubemap::Equirectangular(Image::from_file(
                         // Path::new("res/image/wide_street.exr"),
                         Path::new("res/image/results/wide_street.DDS"),

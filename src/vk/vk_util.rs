@@ -41,6 +41,7 @@ pub fn vk_format_from_image_format_and_color_space(img_format: ImageFormat, colo
                 // (ImageFormat::R16G16, ColorSpace::Linear) => vk::Format::R16G16_UINT,
                 // (ImageFormat::R16G16B16, ColorSpace::Linear) => vk::Format::R16G16B16_UINT,
                 // (ImageFormat::R16G16B16A16, ColorSpace::Linear) => vk::Format::R16G16B16A16_UINT,
+                (ImageFormat::R16G16, ColorSpace::Linear) => vk::Format::R16G16_SFLOAT,
                 (ImageFormat::R16G16B16A16, ColorSpace::Linear) => vk::Format::R16G16B16A16_SFLOAT,
                 (ImageFormat::R32G32B32, ColorSpace::Linear) => vk::Format::R32G32B32_SFLOAT,
                 (ImageFormat::R32G32B32A32, ColorSpace::Linear) => vk::Format::R32G32B32A32_SFLOAT,
