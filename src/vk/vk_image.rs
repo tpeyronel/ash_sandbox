@@ -178,8 +178,18 @@ impl VkImage {
                         f => f,
                 };
 
-                // let mip_levels = cinfo.mip_levels.to_value(image.width, image.height);
-                let mip_levels = image.mipmaps;
+                let mip_levels = cinfo.mip_levels.to_value(image.width, image.height);
+                let mips_to_copy = if mip_levels != image.mipmaps {
+                        if image.mipmaps != 1 {
+                                warn!(
+                                        "image {:?} has {} precomputed mipmaps but {} were requested, generating all from mipmap 0",
+                                        image.name, image.mipmaps, mip_levels,
+                                );
+                        }
+                        1
+                } else {
+                        mip_levels
+                };
 
                 let mut flags = vk::ImageCreateFlags::empty();
                 if image.flags.contains(ImageFlags::CUBEMAP) {
@@ -248,7 +258,7 @@ impl VkImage {
                 for layer in 0..image.layers {
                         let mut width = image.width;
                         let mut height = image.height;
-                        for mipmap in 0..image.mipmaps {
+                        for mipmap in 0..mips_to_copy {
                                 let data = image.get_data(layer, mipmap);
 
                                 match (src_format, dst_format) {
@@ -319,40 +329,42 @@ impl VkImage {
 
                 deletion_queue.push(VkObject::Buffer(staging_buffer));
 
-                Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
-                        device,
-                        cmd_buffer,
+                if mips_to_copy != mip_levels {
+                        Self::cmd_gen_mipmaps(&GenerateMipmapsInfo {
+                                instance,
+                                pdevice,
+                                device,
+                                cmd_buffer,
+                                image: *vk_image,
+                                image_format: vk_image.format,
+                                width: vk_image.width,
+                                height: vk_image.height,
+                                mip_levels,
+                                base_array_layer: 0,
+                                layer_count: vk_image.array_layers,
+                        });
+                } else {
+                        Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
+                                device,
+                                cmd_buffer,
 
-                        old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
 
-                        image: *vk_image,
-                        base_mip_level: 0,
-                        mip_levels,
-                        base_array_layer: 0,
-                        layer_count: image.layers,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                                image: *vk_image,
+                                base_mip_level: 0,
+                                mip_levels,
+                                base_array_layer: 0,
+                                layer_count: image.layers,
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
 
-                        src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                        dst_access_mask: vk::AccessFlags::SHADER_READ,
+                                src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                                dst_access_mask: vk::AccessFlags::SHADER_READ,
 
-                        src_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                        dst_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
-                });
-
-                // Self::cmd_gen_mipmaps(&GenerateMipmapsInfo {
-                //         instance,
-                //         pdevice,
-                //         device,
-                //         cmd_buffer,
-                //         image: *vk_img,
-                //         image_format: dst_format,
-                //         width: cinfo.width,
-                //         height: cinfo.height,
-                //         mip_levels,
-                //         base_array_layer: 0,
-                //         layer_count: 1,
-                // });
+                                src_stage_mask: vk::PipelineStageFlags::TRANSFER,
+                                dst_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
+                        });
+                }
 
                 cinfo.setup_cmd_buffer
                         .end_and_submit(device, cinfo.transfer_queue, &[], &[], &[])?;
