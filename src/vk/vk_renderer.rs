@@ -34,10 +34,11 @@ use crate::{
         renderer::Renderer,
         shader_resource::ShaderResourceId,
         shader_resources::{
-                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_CUBE_SHADOW_MAP, SHADER_RESOURCE_INPUT_FRAMEBUFFER,
-                SHADER_RESOURCE_IRRADIANCE_MAP, SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_OBJECT_MATRICES,
-                SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX,
-                SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
+                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_BRDF_LUT, SHADER_RESOURCE_CUBE_SHADOW_MAP,
+                SHADER_RESOURCE_INPUT_FRAMEBUFFER, SHADER_RESOURCE_IRRADIANCE_MAP, SHADER_RESOURCE_MATERIAL_DATA,
+                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_PREFILTERED_MAP, SHADER_RESOURCE_SHADER_SETTINGS,
+                SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS,
+                SHADER_RESOURCE_WORLD_MATRICES,
         },
         skybox::Skybox,
         util::{RefIntoBytesSlice, RefIntoSlice},
@@ -446,6 +447,19 @@ impl Renderer for VkRenderer {
                 )?;
 
                 let asset_manager = world.remove_resource::<AssetManager>().unwrap();
+
+                /* Write BRDF LUT texture. This is done every frame, but it could be done just once. */
+                let brdf_lut_texture = asset_manager.texture(asset_manager.brdf_lut);
+                let brdf_lut_image = &self.vk_asset_manager.images[brdf_lut_texture.image];
+                let brdf_lut_sampler = &self.vk_asset_manager.samplers[brdf_lut_texture.sampler];
+
+                Self::write_image_resource(
+                        &self.vk_asset_manager,
+                        &SHADER_RESOURCE_BRDF_LUT,
+                        *brdf_lut_image.image_view,
+                        **brdf_lut_sampler,
+                        &mut self.world_shader_resource_descriptors_data,
+                );
 
                 let mut vk_render_scene = VkRenderScene {
                         skybox_object_matrices_offset: None,
@@ -2150,6 +2164,14 @@ impl VkRenderer {
                         &SHADER_RESOURCE_IRRADIANCE_MAP,
                         *skybox.irradiance_image_view,
                         *skybox.irradiance_sampler,
+                        world_shader_resource_descriptors_data,
+                );
+
+                Self::write_image_resource(
+                        vk_asset_manager,
+                        &SHADER_RESOURCE_PREFILTERED_MAP,
+                        *skybox.prefiltered_image_view,
+                        *skybox.prefiltered_sampler,
                         world_shader_resource_descriptors_data,
                 );
         }

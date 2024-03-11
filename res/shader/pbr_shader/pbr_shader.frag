@@ -5,6 +5,8 @@
 
 #resource samplerCube u_cube_shadow_map : CUBE_SHADOW_MAP;
 #resource samplerCube u_irradiance_map : IRRADIANCE_MAP;
+#resource samplerCube u_prefiltered_map : PREFILTERED_MAP;
+#resource sampler2D u_brdf_lut : BRDF_LUT;
 #resource sampler2D u_shadow_map : SHADOW_MAP;
 #resource ShaderSettings u_settings : SHADER_SETTINGS;
 #resource WorldMatrices u_world_matrices : WORLD_MATRICES;
@@ -238,6 +240,10 @@ void main() {
         // aka v
         vec3 frag_to_view = normalize(u_world_matrices.view_pos.xyz - i_frag_world_pos);
 
+        // aka r
+        vec3 reflection = reflect(-frag_to_view, normal);
+        vec3 reflection_lh = vec3(reflection.xy, -reflection.z);
+
         vec3 total_radiance = vec3(0.0);
 
         // point light
@@ -276,20 +282,27 @@ void main() {
         // ambient lighting
         {
                 // vec3 f_0 = vec3(0.04);
-                // float roughness = 0.5;
-                // float metallic = 0.0;
+                // float roughness = 0.1;
+                // float metallic = 1.0;
                 // vec3 albedo = vec3(1.0);
+                // vec3 f_0 = mix(vec3(0.04), albedo, metallic);
 
                 float cos_theta = dot(normal, frag_to_view);
                 vec3 fresnel = fresnel_schlick_roughness(cos_theta, f_0, roughness);
                 vec3 k_s = fresnel;
                 vec3 k_d = (vec3(1.0) - k_s) * (1.0 - metallic);
 
-                vec3 ambient_irradiance = texture(u_irradiance_map, normal_lh).rgb;
-                vec3 ambient_diffuse = ambient_irradiance * albedo;
-                vec3 ambient = k_d * ambient_diffuse /* * ao */;
+                vec3 ibl_irradiance = texture(u_irradiance_map, normal_lh).rgb;
+                vec3 ibl_diffuse = ibl_irradiance * albedo;
 
-                total_radiance += ambient;
+                int prefiltered_mip_levels = textureQueryLevels(u_prefiltered_map);
+                vec3 prefiltered_color = textureLod(u_prefiltered_map, reflection_lh, roughness * float(prefiltered_mip_levels - 1)).rgb;
+                vec2 env_brdf = textureLod(u_brdf_lut, vec2(max(cos_theta, 0.0), roughness), 0.0).rg;
+                vec3 ibl_specular = prefiltered_color * (fresnel * env_brdf.x + env_brdf.y);
+
+                vec3 ibl = (k_d * ibl_diffuse + ibl_specular) /* * ao */;
+
+                total_radiance += ibl;
         }
 
         vec3 output_color = vec3(0.0);

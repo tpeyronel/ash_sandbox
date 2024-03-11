@@ -34,14 +34,15 @@ use crate::{
         shader_resource::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
         shader_resource_registry::ShaderResourceRegistry,
         shader_resources::{
-                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_CUBE_SHADOW_MAP, SHADER_RESOURCE_ENVIRONMENT_MAP,
-                SHADER_RESOURCE_EQUIRECTANGULAR_MAP, SHADER_RESOURCE_INPUT_FRAMEBUFFER, SHADER_RESOURCE_IRRADIANCE_MAP,
+                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_BRDF_LUT, SHADER_RESOURCE_CUBE_SHADOW_MAP,
+                SHADER_RESOURCE_ENVIRONMENT_MAP, SHADER_RESOURCE_EQUIRECTANGULAR_MAP,
+                SHADER_RESOURCE_INPUT_FRAMEBUFFER, SHADER_RESOURCE_IRRADIANCE_MAP,
                 SHADER_RESOURCE_MATERIAL_BASE_COLOR_TEXTURE, SHADER_RESOURCE_MATERIAL_DATA,
                 SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE, SHADER_RESOURCE_MATERIAL_METALLIC_ROUGHNESS_TEXTURE,
                 SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE, SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE,
-                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_PREFILTER_PARAMS, SHADER_RESOURCE_SHADER_SETTINGS,
-                SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS,
-                SHADER_RESOURCE_WORLD_MATRICES,
+                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_PREFILTERED_MAP, SHADER_RESOURCE_PREFILTER_PARAMS,
+                SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX,
+                SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
         },
         util::{self, default, RefIntoBytesSlice},
         vk::vk_renderer::{BillboardData, MaterialData, ObjectMatrices, WorldLights, WorldMatrices},
@@ -1378,6 +1379,7 @@ pub struct AssetManager {
 
         shader_names: HashMap<String, ShaderId>,
 
+        pub brdf_lut: TextureId,
         pub skybox_model: ModelId,
 
         default_sampler: SamplerId,
@@ -1464,6 +1466,18 @@ impl AssetManager {
                 assets.shader_resources.register(ShaderResource {
                         id: SHADER_RESOURCE_IRRADIANCE_MAP.clone(),
                         resource_type: ShaderResourceType::ImageCube,
+                        provider: ShaderResourceProvider::World,
+                });
+
+                assets.shader_resources.register(ShaderResource {
+                        id: SHADER_RESOURCE_PREFILTERED_MAP.clone(),
+                        resource_type: ShaderResourceType::ImageCube,
+                        provider: ShaderResourceProvider::World,
+                });
+
+                assets.shader_resources.register(ShaderResource {
+                        id: SHADER_RESOURCE_BRDF_LUT.clone(),
+                        resource_type: ShaderResourceType::Image2D,
                         provider: ShaderResourceProvider::World,
                 });
 
@@ -1590,12 +1604,32 @@ impl AssetManager {
                 };
                 let skybox_model = assets.models.insert(skybox_model);
 
+                let brdf_lut_image = assets.images.insert(Image::from_file(
+                        Path::new("res/image/brdf_lut.dds"),
+                        ColorSpace::Linear,
+                )?);
+
+                let brdf_lut_sampler = assets.samplers.insert(Sampler {
+                        name: Some("BRDF LUT sampler".into()),
+                        mag_filter: MagFilter::Linear,
+                        min_filter: MinFilter::LinearMipmapLinear,
+                        wrap_s: WrappingMode::ClampToEdge,
+                        wrap_t: WrappingMode::ClampToEdge,
+                });
+
+                let brdf_lut_texture = assets.textures.insert(Texture {
+                        name: Some("BRDF LUT texture".into()),
+                        image: brdf_lut_image,
+                        sampler: brdf_lut_sampler,
+                });
+
                 Ok((
                         Self {
                                 assets,
 
                                 shader_names: HashMap::new(),
 
+                                brdf_lut: brdf_lut_texture,
                                 skybox_model,
 
                                 default_sampler,
