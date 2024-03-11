@@ -230,7 +230,9 @@ impl Application {
 
                 let wide_street_cubemap = asset_manager.insert_cubemap(Cubemap::Equirectangular(Image::from_file(
                         // Path::new("res/image/wide_street.exr"),
-                        Path::new("res/image/results/wide_street.DDS"),
+                        // Path::new("res/image/results/wide_street.DDS"),
+                        // Path::new("res/image/grassfield.exr"),
+                        Path::new("res/image/forest.exr"),
                         ColorSpace::Linear,
                 )?));
                 world.insert_resource(Skybox(wide_street_cubemap));
@@ -413,6 +415,14 @@ impl Application {
                         color_shader,
                 )?;
                 let _model_backpack = asset_manager.import_gltf_file(Path::new("res/model/backpack/backpack.gltf"))?;
+                let _model_cerberus = asset_manager.import_gltf_file_with_shader(
+                        Path::new("res/model/cerberus/cerberus.gltf"),
+                        pbr_shader,
+                )?;
+                let _model_helmet = asset_manager.import_gltf_file_with_shader(
+                        Path::new("res/model/helmet/helmet.gltf"),
+                        pbr_shader,
+                )?;
                 let _model_landscape = asset_manager.import_gltf_file_with_shader(
                         Path::new("res/model/landscape/landscape.gltf"),
                         billboard_shader,
@@ -695,6 +705,38 @@ fn spawn_entities(mut commands: Commands) {
         //         .id();
 
         // commands.add(CmdAddModelInstanceByName::from_str(backpack, "backpack"));
+
+        let cerberus = commands
+                .spawn()
+                .insert(Transform {
+                        translation: Vec3::new(0.0, -3.0, 0.0),
+                        scale: Vec3::splat(3.0),
+                        ..Transform::identity()
+                })
+                .insert(AngularVelocity(Vec3::Y * 22.5f32.to_radians()))
+                // .insert(OrbitalVelocity {
+                //         origin: Vec3::new(0.0, 0.0, 0.0),
+                //         velocity: Vec3::Y * -22.5f32.to_radians(),
+                // })
+                .id();
+
+        commands.add(CmdAddModelInstanceByName::from_str(cerberus, "cerberus"));
+
+        let helmet = commands
+                .spawn()
+                .insert(Transform {
+                        translation: Vec3::new(0.0, 3.0, 0.0),
+                        scale: Vec3::splat(0.75),
+                        ..Transform::identity()
+                })
+                .insert(AngularVelocity(Vec3::Y * 22.5f32.to_radians()))
+                // .insert(OrbitalVelocity {
+                //         origin: Vec3::new(0.0, 0.0, 0.0),
+                //         velocity: Vec3::Y * -22.5f32.to_radians(),
+                // })
+                .id();
+
+        commands.add(CmdAddModelInstanceByName::from_str(helmet, "helmet"));
 
         // let brick_wall = commands
         //         .spawn()
