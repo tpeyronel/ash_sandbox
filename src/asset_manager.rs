@@ -1871,9 +1871,12 @@ fn read_gltf_accessor<T: GltfElement + Clone>(buffers: &[gltf::buffer::Data], ac
         let data = unsafe { buffer_data.0.as_ptr().add(byte_offset) };
 
         assert_eq!(byte_length, element_count * std::mem::size_of::<T>());
-        let slice = unsafe { std::slice::from_raw_parts(data as *const T, element_count) };
 
-        slice.to_vec()
+        let mut vec = Vec::with_capacity(element_count);
+        unsafe { vec.set_len(element_count) };
+        unsafe { std::ptr::copy_nonoverlapping(data, vec.as_mut_ptr() as *mut u8, byte_length) };
+
+        vec
 }
 
 #[derive(Debug, Clone)]
