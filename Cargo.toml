@@ -6,13 +6,17 @@ version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# NOTE: use the following in ~/.cargo/config.toml
+# [net]
+# git-fetch-with-cli = true
+
 [dependencies]
 ash = "0.37.3"
 ash-window = "0.12.0"
-vk-mem = { git = "https://github.com/tpeyronel/vma-rs" }
+vk-mem = { git = "ssh://git@github.com/tpeyronel/vma-rs.git" }
 imgui = "0.11.0"
-imgui-winit-support = { git = "https://github.com/tpeyronel/imgui-winit-support" }
-imgui-rs-vulkan-renderer = { git = "https://github.com/tpeyronel/imgui-rs-vulkan-renderer" }
+imgui-winit-support = { git = "ssh://git@github.com/tpeyronel/imgui-winit-support.git" }
+imgui-rs-vulkan-renderer = { git = "ssh://git@github.com/tpeyronel/imgui-rs-vulkan-renderer.git" }
 winit = { version = "0.29.3", features = ["rwh_05"], default-features = false }
 raw-window-handle = "0.5"
 
