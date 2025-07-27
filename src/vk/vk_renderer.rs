@@ -1709,7 +1709,7 @@ impl VkRenderer {
         unsafe fn end_frame(&mut self, imagei: u32) -> AnyResult<()> {
                 let frame_data = &mut self.frames_data[self.framei];
                 let cmd_buffer = *frame_data.draw_cmd_buffer;
-                let present_img = self.swapchain.present_imgs[imagei as usize];
+                let present_img_data = &self.swapchain.present_imgs[imagei as usize];
 
                 /* Prepare resolve image for copying from */
                 let tinfo = TransitionImageLayoutInfo {
@@ -1735,7 +1735,7 @@ impl VkRenderer {
                 let tinfo = TransitionImageLayoutInfo {
                         device: &self.vk_context.device,
                         cmd_buffer,
-                        image: present_img,
+                        image: present_img_data.img,
                         base_mip_level: 0,
                         mip_levels: 1,
                         base_array_layer: 0,
@@ -1757,7 +1757,7 @@ impl VkRenderer {
                         self.swapchain.extent.width,
                         self.swapchain.extent.height,
                         *self.swapchain.resolve_imgs[1],
-                        present_img,
+                        present_img_data.img,
                         vk::Filter::NEAREST,
                 );
 
@@ -1765,7 +1765,7 @@ impl VkRenderer {
                 let tinfo = TransitionImageLayoutInfo {
                         device: &self.vk_context.device,
                         cmd_buffer,
-                        image: present_img,
+                        image: present_img_data.img,
                         base_mip_level: 0,
                         mip_levels: 1,
                         base_array_layer: 0,
@@ -1788,7 +1788,7 @@ impl VkRenderer {
                         .command_buffers(frame_data.draw_cmd_buffer.deref_into_slice())
                         .wait_semaphores(frame_data.img_available_semaphore.deref_into_slice())
                         .wait_dst_stage_mask(&wait_stages)
-                        .signal_semaphores(frame_data.render_finished_semaphore.deref_into_slice());
+                        .signal_semaphores(present_img_data.render_finished_semaphore.deref_into_slice());
 
                 self.vk_context.device.queue_submit(
                         self.vk_context.queues.graphics,
@@ -1799,7 +1799,7 @@ impl VkRenderer {
                 match self.swapchain.queue_present(
                         self.vk_context.queues.present,
                         &vk::PresentInfoKHR::default()
-                                .wait_semaphores(&[*frame_data.render_finished_semaphore])
+                                .wait_semaphores(&[*present_img_data.render_finished_semaphore])
                                 .swapchains(&[*self.swapchain])
                                 .image_indices(&[imagei]),
                 ) {
@@ -2156,30 +2156,23 @@ impl VkRenderer {
 }
 
 struct VkFrameData {
-        // Signaled when a swapchain image has become available for presentation. vkAcquireImage may return an image that is not immediately available.
+        // Signaled when a swapchain image has become available for presentation.
+        // This is needed because vkAcquireImage may return an image that is not immediately available.
         img_available_semaphore: VkSemaphore,
-        // Signaled when all the rendering commands for a frame have finished executing, which means that the rendered image is now ready for presentation.
-        render_finished_semaphore: VkSemaphore,
         // Command buffer used for submitting draw operations of one frame.
         draw_cmd_buffer: VkReusableCommandBuffer,
 }
 
 impl VkFrameData {
-        fn new(
-                vk_context: &mut VkContext,
-                // world_dst_set_layout: vk::DescriptorSetLayout,
-                // object_dst_set_layout: vk::DescriptorSetLayout,
-        ) -> AnyResult<Self> {
+        fn new(vk_context: &mut VkContext) -> AnyResult<Self> {
                 let semaphore_cinfo = vk::SemaphoreCreateInfo::default();
                 let img_available_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
-                let render_finished_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
 
                 let draw_cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
 
                 Ok(Self {
                         img_available_semaphore,
-                        render_finished_semaphore,
                         draw_cmd_buffer,
                 })
         }
@@ -2189,7 +2182,6 @@ impl Drop for VkFrameData {
         fn drop(&mut self) {
                 unsafe {
                         self.draw_cmd_buffer.destroy();
-                        self.render_finished_semaphore.destroy();
                         self.img_available_semaphore.destroy();
                 }
         }

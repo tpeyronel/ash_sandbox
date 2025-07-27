@@ -5,7 +5,7 @@ use bitflags::bitflags;
 #[allow(unused_imports)]
 use log::{debug, trace};
 
-use crate::AnyResult;
+use crate::{vk::vk_wrapper::VkSemaphore, AnyResult};
 
 use super::{
         vk_image::{VkImage, VkImageCreateInfo},
@@ -48,9 +48,7 @@ pub struct VkSwapchain {
         pub resolve_imgs: [VkImage; 2],
         pub resolve_img_views: [VkImageView; 2],
 
-        pub present_imgs: Vec<vk::Image>,
-        pub present_img_views: Vec<VkImageView>,
-        pub img_count: u32,
+        pub present_imgs: Vec<VkPresentImageData>,
 }
 
 impl VkSwapchain {
@@ -121,11 +119,12 @@ impl VkSwapchain {
                         samples,
                 )?;
 
-                let present_imgs = unsafe { device_loader.get_swapchain_images(handle)? };
-                let present_img_views =
-                        Self::create_present_img_views(Rc::clone(&device), &present_imgs, present_format.format)?;
-
-                let img_count = present_imgs.len() as u32;
+                let present_imgs = Self::create_present_img_data(
+                        handle,
+                        &device_loader,
+                        Rc::clone(&device),
+                        present_format.format,
+                )?;
 
                 Ok(Self {
                         device_loader,
@@ -161,8 +160,6 @@ impl VkSwapchain {
                         resolve_img_views,
 
                         present_imgs,
-                        present_img_views,
-                        img_count,
                 })
         }
 
@@ -276,19 +273,20 @@ impl VkSwapchain {
                         }
                 }
 
-                self.present_imgs = unsafe { self.device_loader.get_swapchain_images(self.handle)? };
-                unsafe { self.present_img_views.drain(..).for_each(|iv| iv.destroy()) };
-                self.present_img_views = Self::create_present_img_views(
+                let old_img_count = self.present_imgs.len();
+
+                self.present_imgs.drain(..).for_each(|i| unsafe { i.destroy() });
+                self.present_imgs = Self::create_present_img_data(
+                        self.handle,
+                        &self.device_loader,
                         Rc::clone(&self.device),
-                        &self.present_imgs,
                         self.present_format.format,
                 )?;
 
-                let old_img_count = self.img_count;
-                self.img_count = self.present_imgs.len() as u32;
-                recreation_info.img_count_changed = old_img_count != self.img_count;
+                let new_img_count = self.present_imgs.len();
+                recreation_info.img_count_changed = old_img_count != new_img_count;
                 if recreation_info.img_count_changed {
-                        debug!("VkSwapchain image count: {}", self.img_count);
+                        debug!("VkSwapchain image count: {}", new_img_count);
                 }
 
                 Ok(recreation_info)
@@ -639,16 +637,19 @@ impl VkSwapchain {
                 Ok((depth_img, depth_img_view))
         }
 
-        fn create_present_img_views(
+        fn create_present_img_data(
+                handle: vk::SwapchainKHR,
+                device_loader: &swapchain::Device,
                 device: Rc<VkDevice>,
-                resolve_imgs: &[vk::Image],
                 format: vk::Format,
-        ) -> VkResult<Vec<VkImageView>> {
-                resolve_imgs
-                        .iter()
-                        .map(|&image| {
+        ) -> VkResult<Vec<VkPresentImageData>> {
+                let present_imgs = unsafe { device_loader.get_swapchain_images(handle)? };
+
+                present_imgs
+                        .into_iter()
+                        .map(|img| {
                                 let img_view_cinfo = vk::ImageViewCreateInfo {
-                                        image,
+                                        image: img,
                                         view_type: vk::ImageViewType::TYPE_2D,
                                         format,
                                         components: vk::ComponentMapping::default(),
@@ -662,14 +663,23 @@ impl VkSwapchain {
                                         ..Default::default()
                                 };
 
-                                unsafe { VkImageView::new(Rc::clone(&device), &img_view_cinfo) }
+                                let img_view = unsafe { VkImageView::new(Rc::clone(&device), &img_view_cinfo)? };
+
+                                let semaphore_cinfo = vk::SemaphoreCreateInfo::default();
+                                let render_finished_semaphore = unsafe { VkSemaphore::new(&device, &semaphore_cinfo)? };
+
+                                Ok(VkPresentImageData {
+                                        img,
+                                        img_view,
+                                        render_finished_semaphore,
+                                })
                         })
-                        .collect::<VkResult<Vec<VkImageView>>>()
+                        .collect::<VkResult<Vec<VkPresentImageData>>>()
         }
 }
 
 impl_destroyable_expr!(VkSwapchain, vk::SwapchainKHR, |s: &VkSwapchain| {
-        s.present_img_views.iter().for_each(|iv| iv.destroy());
+        s.present_imgs.iter().for_each(|iv| iv.destroy());
         s.resolve_img_views.iter().for_each(|x| x.destroy());
         s.resolve_imgs.iter().for_each(|x| x.destroy());
         s.depth_img_view.destroy();
@@ -693,4 +703,19 @@ pub struct VkSwapchainRecreationInfo {
         pub extent_changed: bool,
         pub samples_changed: bool,
         pub img_count_changed: bool,
+}
+
+pub struct VkPresentImageData {
+        pub img: vk::Image,
+        pub img_view: VkImageView,
+        // Signaled when all the rendering commands for this image have finished executing,
+        // which means that the rendered image is now ready for presentation.
+        pub render_finished_semaphore: VkSemaphore,
+}
+
+impl VkPresentImageData {
+        unsafe fn destroy(&self) {
+                self.img_view.destroy();
+                self.render_finished_semaphore.destroy();
+        }
 }
