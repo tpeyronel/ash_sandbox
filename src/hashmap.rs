@@ -1,6 +1,7 @@
 use std::hash::Hash;
 
 pub type HashMap<K, V> = hashbrown::HashMap<K, V>;
+pub type Entry<'a, K, V, S> = hashbrown::hash_map::Entry<'a, K, V, S>;
 
 pub trait GetOrInsert<K: Eq + Hash + Clone, V> {
         fn get_or_insert(&mut self, k: &K, v: V) -> &V;
