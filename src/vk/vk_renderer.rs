@@ -231,6 +231,7 @@ impl VkRenderer {
                         in_flight_frames: max_concurrent_frames,
                         enable_depth_test: false,
                         enable_depth_write: false,
+                        subpass: 0,
                         sample_count: vk::SampleCountFlags::TYPE_1,
                 };
 
@@ -752,14 +753,11 @@ impl VkRenderer {
                         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 };
 
-                let subpass_descriptions = [vk::SubpassDescription::builder()
+                let subpass_descriptions = [vk::SubpassDescription::default()
                         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-                        //.input_attachments(&[])
                         .color_attachments(color_attachment_ref.ref_into_slice())
                         .depth_stencil_attachment(&depth_attachment_ref)
-                        .resolve_attachments(resolve_attachment_ref.ref_into_slice())
-                        //.preserve_attachments(&[])
-                        .build()];
+                        .resolve_attachments(resolve_attachment_ref.ref_into_slice())];
 
                 // Alternative that also works:
                 // let subpass_dependencies = [
@@ -826,7 +824,7 @@ impl VkRenderer {
                         },
                 ];
 
-                let render_pass_cinfo = vk::RenderPassCreateInfo::builder()
+                let render_pass_cinfo = vk::RenderPassCreateInfo::default()
                         .attachments(&attachments)
                         .subpasses(&subpass_descriptions)
                         .dependencies(&subpass_dependencies);
@@ -852,16 +850,11 @@ impl VkRenderer {
                         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 };
 
-                let subpass_descriptions = [vk::SubpassDescription::builder()
+                let subpass_descriptions = [vk::SubpassDescription::default()
                         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-                        //.input_attachments(&[])
-                        .color_attachments(face_attachment_ref.ref_into_slice())
-                        // .depth_stencil_attachment(&[])
-                        // .resolve_attachments(&[])
-                        //.preserve_attachments(&[])
-                        .build()];
+                        .color_attachments(face_attachment_ref.ref_into_slice())];
 
-                let render_pass_cinfo = vk::RenderPassCreateInfo::builder()
+                let render_pass_cinfo = vk::RenderPassCreateInfo::default()
                         .attachments(&attachments)
                         .subpasses(&subpass_descriptions);
 
@@ -886,14 +879,9 @@ impl VkRenderer {
                         layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 };
 
-                let subpass_descriptions = [vk::SubpassDescription::builder()
+                let subpass_descriptions = [vk::SubpassDescription::default()
                         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-                        //.input_attachments(&[])
-                        // .color_attachments(&[])
-                        .depth_stencil_attachment(&depth_attachment_ref)
-                        // .resolve_attachments(&[])
-                        //.preserve_attachments(&[])
-                        .build()];
+                        .depth_stencil_attachment(&depth_attachment_ref)];
 
                 let subpass_dependencies = [
                         vk::SubpassDependency {
@@ -916,7 +904,7 @@ impl VkRenderer {
                         },
                 ];
 
-                let render_pass_cinfo = vk::RenderPassCreateInfo::builder()
+                let render_pass_cinfo = vk::RenderPassCreateInfo::default()
                         .attachments(&attachments)
                         .subpasses(&subpass_descriptions)
                         .dependencies(&subpass_dependencies);
@@ -964,14 +952,10 @@ impl VkRenderer {
                         layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 };
 
-                let subpass_descriptions = [vk::SubpassDescription::builder()
+                let subpass_descriptions = [vk::SubpassDescription::default()
                         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-                        //.input_attachments(&[])
-                        .color_attachments(&[color_attachment_ref])
-                        .depth_stencil_attachment(&depth_attachment_ref)
-                        //.resolve_attachments(&[])
-                        //.preserve_attachments(&[])
-                        .build()];
+                        .color_attachments(color_attachment_ref.ref_into_slice())
+                        .depth_stencil_attachment(&depth_attachment_ref)];
 
                 let subpass_dependencies = [
                         vk::SubpassDependency {
@@ -998,7 +982,7 @@ impl VkRenderer {
                         },
                 ];
 
-                let render_pass_cinfo = vk::RenderPassCreateInfo::builder()
+                let render_pass_cinfo = vk::RenderPassCreateInfo::default()
                         .attachments(&attachments)
                         .subpasses(&subpass_descriptions)
                         .dependencies(&subpass_dependencies);
@@ -1032,14 +1016,9 @@ impl VkRenderer {
 
                 let attachment_refs = [input_color_attachment_ref];
 
-                let subpass_descriptions = [vk::SubpassDescription::builder()
+                let subpass_descriptions = [vk::SubpassDescription::default()
                         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-                        //.input_attachments(&[])
-                        .color_attachments(&attachment_refs)
-                        //.depth_stencil_attachment()
-                        //.resolve_attachments()
-                        //.preserve_attachments(&[])
-                        .build()];
+                        .color_attachments(&attachment_refs)];
 
                 let subpass_dependencies = [vk::SubpassDependency {
                         src_subpass: vk::SUBPASS_EXTERNAL,
@@ -1053,7 +1032,7 @@ impl VkRenderer {
                         dependency_flags: vk::DependencyFlags::empty(),
                 }];
 
-                let render_pass_cinfo = vk::RenderPassCreateInfo::builder()
+                let render_pass_cinfo = vk::RenderPassCreateInfo::default()
                         .attachments(&attachments)
                         .subpasses(&subpass_descriptions)
                         .dependencies(&subpass_dependencies);
@@ -1071,7 +1050,7 @@ impl VkRenderer {
         ) -> VkResult<VkFramebuffer> {
                 let attachments = [color_img_view, depth_img_view, resolve_img_view];
 
-                let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
+                let framebuffer_cinfo = vk::FramebufferCreateInfo::default()
                         .render_pass(render_pass)
                         .attachments(&attachments)
                         .width(extent.width)
@@ -1090,7 +1069,7 @@ impl VkRenderer {
                 let mk_framebuffer = |i: usize| {
                         let attachments = [*resolve_img_views[i]];
 
-                        let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
+                        let framebuffer_cinfo = vk::FramebufferCreateInfo::default()
                                 .render_pass(postprocess_render_pass)
                                 .attachments(&attachments)
                                 .width(extent.width)
@@ -1164,7 +1143,7 @@ impl VkRenderer {
         ) -> VkResult<VkFramebuffer> {
                 let attachments = [shadow_map_img_view];
 
-                let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
+                let framebuffer_cinfo = vk::FramebufferCreateInfo::default()
                         .render_pass(shadow_map_render_pass)
                         .attachments(&attachments)
                         .width(SHADOW_MAP_WIDTH)
@@ -1337,7 +1316,7 @@ impl VkRenderer {
                 let mk_framebuffer = |i: usize| {
                         let attachments = [*cube_shadow_map_color_img_views[i], cube_shadow_map_depth_img_view];
 
-                        let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
+                        let framebuffer_cinfo = vk::FramebufferCreateInfo::default()
                                 .render_pass(cube_shadow_map_render_pass)
                                 .width(SHADOW_MAP_WIDTH)
                                 .height(SHADOW_MAP_HEIGHT)
@@ -1460,7 +1439,7 @@ impl VkRenderer {
                 )?;
 
                 let cmd_buffer_binfo =
-                        vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+                        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
                 self.vk_context
                         .device
@@ -1489,7 +1468,7 @@ impl VkRenderer {
                         },
                 ];
 
-                let render_pass_binfo = vk::RenderPassBeginInfo::builder()
+                let render_pass_binfo = vk::RenderPassBeginInfo::default()
                         .render_pass(*self.render_passes[ShaderRenderStage::Drawing])
                         .framebuffer(*self.framebuffer)
                         .render_area(self.swapchain.scissor)
@@ -1661,7 +1640,7 @@ impl VkRenderer {
                 let frame_data = &self.frames_data[self.framei];
                 let cmd_buffer = *frame_data.draw_cmd_buffer;
 
-                let postprocess_render_pass_binfo = vk::RenderPassBeginInfo::builder()
+                let postprocess_render_pass_binfo = vk::RenderPassBeginInfo::default()
                         .render_pass(*self.render_passes[ShaderRenderStage::Postprocessing])
                         .framebuffer(*self.postprocess_framebuffers[1])
                         .render_area(self.swapchain.scissor);
@@ -1805,7 +1784,7 @@ impl VkRenderer {
                 self.vk_context.device.end_command_buffer(*frame_data.draw_cmd_buffer)?;
 
                 let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::TRANSFER];
-                let submit_info = vk::SubmitInfo::builder()
+                let submit_info = vk::SubmitInfo::default()
                         .command_buffers(frame_data.draw_cmd_buffer.deref_into_slice())
                         .wait_semaphores(frame_data.img_available_semaphore.deref_into_slice())
                         .wait_dst_stage_mask(&wait_stages)
@@ -1813,13 +1792,13 @@ impl VkRenderer {
 
                 self.vk_context.device.queue_submit(
                         self.vk_context.queues.graphics,
-                        &[submit_info.build()],
+                        &[submit_info],
                         *frame_data.draw_cmd_buffer.fence,
                 )?;
 
                 match self.swapchain.queue_present(
                         self.vk_context.queues.present,
-                        &vk::PresentInfoKHR::builder()
+                        &vk::PresentInfoKHR::default()
                                 .wait_semaphores(&[*frame_data.render_finished_semaphore])
                                 .swapchains(&[*self.swapchain])
                                 .image_indices(&[imagei]),
@@ -1965,7 +1944,7 @@ impl VkRenderer {
                 for i in 0..6 {
                         let framebuffer = *self.cube_shadow_map_framebuffers[i];
 
-                        let render_pass_binfo = vk::RenderPassBeginInfo::builder()
+                        let render_pass_binfo = vk::RenderPassBeginInfo::default()
                                 .render_pass(*self.render_passes[ShaderRenderStage::PointShadowMapping])
                                 .framebuffer(framebuffer)
                                 .render_area(shadow_map_rect)
@@ -2058,7 +2037,7 @@ impl VkRenderer {
                         max_depth: 1.0,
                 };
 
-                let render_pass_binfo = vk::RenderPassBeginInfo::builder()
+                let render_pass_binfo = vk::RenderPassBeginInfo::default()
                         .render_pass(*self.render_passes[ShaderRenderStage::DirectionalShadowMapping])
                         .framebuffer(*self.shadow_map_framebuffer)
                         .render_area(shadow_map_rect)
@@ -2133,13 +2112,12 @@ impl VkRenderer {
                                         image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                                 };
 
-                                let write = vk::WriteDescriptorSet::builder()
+                                let write = vk::WriteDescriptorSet::default()
                                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                                         .dst_set(vk_shader.world_dst_set[framei])
                                         .dst_binding(binding.binding)
                                         .dst_array_element(0)
-                                        .image_info(image_info.ref_into_slice())
-                                        .build();
+                                        .image_info(image_info.ref_into_slice());
 
                                 unsafe { device.update_descriptor_sets(&[write], &[]) };
                         }
@@ -2192,7 +2170,7 @@ impl VkFrameData {
                 // world_dst_set_layout: vk::DescriptorSetLayout,
                 // object_dst_set_layout: vk::DescriptorSetLayout,
         ) -> AnyResult<Self> {
-                let semaphore_cinfo = vk::SemaphoreCreateInfo::builder().build();
+                let semaphore_cinfo = vk::SemaphoreCreateInfo::default();
                 let img_available_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
                 let render_finished_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
 

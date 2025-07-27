@@ -333,7 +333,7 @@ impl VkAssetManager {
                         size: push_constants_size,
                 };
 
-                let layout_cinfo = vk::PipelineLayoutCreateInfo::builder().set_layouts(dst_set_layouts);
+                let layout_cinfo = vk::PipelineLayoutCreateInfo::default().set_layouts(dst_set_layouts);
                 let layout_cinfo = if push_constants_size > 0 {
                         layout_cinfo.push_constant_ranges(std::slice::from_ref(&push_constant_range))
                 } else {
@@ -546,8 +546,8 @@ impl VkAssetManager {
                 let mut vertex_input_attributes = Vec::new();
 
                 for (i, vertex_input) in shader.vertex_inputs.iter().enumerate() {
-                        let mut binding = vk::VertexInputBindingDescription::builder().binding(i as u32);
-                        let mut attribute = vk::VertexInputAttributeDescription::builder()
+                        let mut binding = vk::VertexInputBindingDescription::default().binding(i as u32);
+                        let mut attribute = vk::VertexInputAttributeDescription::default()
                                 .binding(i as u32)
                                 .location(i as u32)
                                 .offset(0);
@@ -577,8 +577,8 @@ impl VkAssetManager {
                                 _ => panic!("Invalid shader vertex input: {}", vertex_input),
                         }
 
-                        vertex_input_bindings.push(binding.build());
-                        vertex_input_attributes.push(attribute.build());
+                        vertex_input_bindings.push(binding);
+                        vertex_input_attributes.push(attribute);
                 }
 
                 let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
@@ -764,13 +764,11 @@ impl VkAssetManager {
                 let mut set_bindings = HashMap::<VkDescriptorSetIndex, Vec<vk::DescriptorSetLayoutBinding>>::new();
 
                 for resource_binding in resource_bindings.values() {
-                        let binding = vk::DescriptorSetLayoutBinding {
-                                binding: resource_binding.binding,
-                                descriptor_type: resource_binding.descriptor_type,
-                                descriptor_count: 1,
-                                stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                                p_immutable_samplers: std::ptr::null(),
-                        };
+                        let binding = vk::DescriptorSetLayoutBinding::default()
+                                .binding(resource_binding.binding)
+                                .descriptor_type(resource_binding.descriptor_type)
+                                .descriptor_count(1)
+                                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
 
                         set_bindings
                                 .get_mut_or_insert_with(&resource_binding.set, || vec![])
@@ -782,7 +780,7 @@ impl VkAssetManager {
 
                         unsafe {
                                 device.create_descriptor_set_layout(
-                                        &vk::DescriptorSetLayoutCreateInfo::builder().bindings(&bindings),
+                                        &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
                                         None,
                                 )
                         }
@@ -835,14 +833,14 @@ impl VkAssetManager {
                                                         range: vk::WHOLE_SIZE,
                                                 };
 
-                                                let dst_write = vk::WriteDescriptorSet::builder()
+                                                let dst_write = vk::WriteDescriptorSet::default()
                                                         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                                                         .dst_set(*dst_set)
                                                         .dst_binding(resource_binding.binding)
                                                         .dst_array_element(0)
                                                         .buffer_info(buffer_info.ref_into_slice());
 
-                                                unsafe { device.update_descriptor_sets(&[dst_write.build()], &[]) };
+                                                unsafe { device.update_descriptor_sets(&[dst_write], &[]) };
                                         }
                                 },
                                 VkShaderResourceType::UniformBufferDynamic => todo!(),
@@ -893,14 +891,14 @@ impl VkAssetManager {
                                                         range: buffer.element_padded_size() as vk::DeviceSize,
                                                 };
 
-                                                let dst_write = vk::WriteDescriptorSet::builder()
+                                                let dst_write = vk::WriteDescriptorSet::default()
                                                         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
                                                         .dst_set(*dst_set)
                                                         .dst_binding(resource_binding.binding)
                                                         .dst_array_element(0)
                                                         .buffer_info(buffer_info.ref_into_slice());
 
-                                                unsafe { device.update_descriptor_sets(&[dst_write.build()], &[]) };
+                                                unsafe { device.update_descriptor_sets(&[dst_write], &[]) };
                                         }
                                 },
                                 VkShaderResourceType::CombinedImageSampler => (),
@@ -1324,13 +1322,12 @@ impl VkAssetManager {
                 deletion_queue.push(VkObject::ImageView(equirectangular_vk_image_view));
                 deletion_queue.push(VkObject::Sampler(equirectangular_vk_sampler));
 
-                let write = vk::WriteDescriptorSet::builder()
+                let write = vk::WriteDescriptorSet::default()
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .dst_set(equi_to_cube_vk_shader.world_dst_set[0])
                         .dst_binding(equirectangular_binding.binding)
                         .dst_array_element(0)
-                        .image_info(image_info.ref_into_slice())
-                        .build();
+                        .image_info(image_info.ref_into_slice());
 
                 self.device.update_descriptor_sets(&[write], &[]);
 
@@ -1406,7 +1403,7 @@ impl VkAssetManager {
                 );
 
                 for i in 0..6usize {
-                        let face_image_view_cinfo = vk::ImageViewCreateInfo::builder()
+                        let face_image_view_cinfo = vk::ImageViewCreateInfo::default()
                                 .image(**cubemap_image)
                                 .view_type(vk::ImageViewType::TYPE_2D)
                                 .format(vk::Format::R16G16B16A16_SFLOAT)
@@ -1424,7 +1421,7 @@ impl VkAssetManager {
                         let attachments = [*face_image_view];
                         let render_pass = self.render_passes[ShaderRenderStage::SkyboxMapping];
 
-                        let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
+                        let framebuffer_cinfo = vk::FramebufferCreateInfo::default()
                                 .render_pass(render_pass)
                                 .width(size)
                                 .height(size)
@@ -1433,7 +1430,7 @@ impl VkAssetManager {
 
                         let framebuffer = VkFramebuffer::new(&self.device, &framebuffer_cinfo)?;
 
-                        let render_pass_binfo = vk::RenderPassBeginInfo::builder()
+                        let render_pass_binfo = vk::RenderPassBeginInfo::default()
                                 .render_pass(render_pass)
                                 .framebuffer(*framebuffer)
                                 .render_area(vk::Rect2D {
@@ -1545,13 +1542,12 @@ impl VkAssetManager {
 
                 deletion_queue.push(VkObject::Sampler(environment_sampler));
 
-                let write = vk::WriteDescriptorSet::builder()
+                let write = vk::WriteDescriptorSet::default()
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .dst_set(irradiance_shader.world_dst_set[0])
                         .dst_binding(environment_map_binding.binding)
                         .dst_array_element(0)
-                        .image_info(image_info.ref_into_slice())
-                        .build();
+                        .image_info(image_info.ref_into_slice());
 
                 self.device.update_descriptor_sets(&[write], &[]);
 
@@ -1660,13 +1656,12 @@ impl VkAssetManager {
 
                 deletion_queue.push(VkObject::Sampler(environment_sampler));
 
-                let write = vk::WriteDescriptorSet::builder()
+                let write = vk::WriteDescriptorSet::default()
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .dst_set(prefilter_shader.world_dst_set[0])
                         .dst_binding(environment_map_binding.binding)
                         .dst_array_element(0)
-                        .image_info(image_info.ref_into_slice())
-                        .build();
+                        .image_info(image_info.ref_into_slice());
 
                 self.device.update_descriptor_sets(&[write], &[]);
 
@@ -1728,13 +1723,12 @@ impl VkAssetManager {
                                 range: params_buffer_size,
                         };
 
-                        let write = vk::WriteDescriptorSet::builder()
+                        let write = vk::WriteDescriptorSet::default()
                                 .descriptor_type(prefilter_params_binding.descriptor_type)
                                 .dst_set(render_pass_dst_set)
                                 .dst_binding(prefilter_params_binding.binding)
                                 .dst_array_element(0)
-                                .buffer_info(buffer_info.ref_into_slice())
-                                .build();
+                                .buffer_info(buffer_info.ref_into_slice());
 
                         self.device.update_descriptor_sets(&[write], &[]);
 
@@ -1820,7 +1814,7 @@ impl VkAssetManager {
                 ];
 
                 for i in 0..6usize {
-                        let face_image_view_cinfo = vk::ImageViewCreateInfo::builder()
+                        let face_image_view_cinfo = vk::ImageViewCreateInfo::default()
                                 .image(**target)
                                 .view_type(vk::ImageViewType::TYPE_2D)
                                 .format(target.format)
@@ -1838,7 +1832,7 @@ impl VkAssetManager {
                         let render_pass = self.render_passes[ShaderRenderStage::SkyboxMapping];
                         let attachments = [*face_image_view];
 
-                        let framebuffer_cinfo = vk::FramebufferCreateInfo::builder()
+                        let framebuffer_cinfo = vk::FramebufferCreateInfo::default()
                                 .render_pass(render_pass)
                                 .width(size)
                                 .height(size)
@@ -1847,7 +1841,7 @@ impl VkAssetManager {
 
                         let framebuffer = VkFramebuffer::new(&self.device, &framebuffer_cinfo)?;
 
-                        let render_pass_binfo = vk::RenderPassBeginInfo::builder()
+                        let render_pass_binfo = vk::RenderPassBeginInfo::default()
                                 .render_pass(render_pass)
                                 .framebuffer(*framebuffer)
                                 .render_area(vk::Rect2D {
@@ -2065,7 +2059,7 @@ impl VkAssetManager {
                         let mut resource_buffers = vec![];
 
                         for &dst_set in &dst_sets {
-                                let write = vk::WriteDescriptorSet::builder()
+                                let write = vk::WriteDescriptorSet::default()
                                         .descriptor_type(vk_resource.resource_type.descriptor_type())
                                         .dst_set(dst_set)
                                         .dst_binding(resource_binding.binding)
@@ -2093,7 +2087,7 @@ impl VkAssetManager {
                                                 resource_buffers.push(buffer);
 
                                                 let write = write.buffer_info(buffer_info.ref_into_slice());
-                                                unsafe { self.device.update_descriptor_sets(&[write.build()], &[]) };
+                                                unsafe { self.device.update_descriptor_sets(&[write], &[]) };
                                         },
                                         VkShaderResourceType::UniformBufferDynamic => panic!("{}", resource_id),
                                         VkShaderResourceType::CombinedImageSampler => {
@@ -2112,7 +2106,7 @@ impl VkAssetManager {
                                                                         };
 
                                                                         let write = write.image_info(image_info.ref_into_slice());
-                                                                        unsafe { self.device.update_descriptor_sets(&[write.build()], &[]) };
+                                                                        unsafe { self.device.update_descriptor_sets(&[write], &[]) };
                                                                 },
                                                            _ => panic!("invalid resource data type {:?}", data),
                                                         }
@@ -2145,20 +2139,18 @@ impl VkAssetManager {
 
                 let mut shader_stages = vec![];
 
-                shader_stages.push(vk::PipelineShaderStageCreateInfo::builder()
+                shader_stages.push(vk::PipelineShaderStageCreateInfo::default()
                         .stage(vk::ShaderStageFlags::VERTEX)
                         .module(vert_module)
-                        .name(&entry_point)
-                        .build());
+                        .name(&entry_point));
 
                 if let Some(frag_module) = frag_module {
-                        shader_stages.push(vk::PipelineShaderStageCreateInfo::builder()
+                        shader_stages.push(vk::PipelineShaderStageCreateInfo::default()
                                 .stage(vk::ShaderStageFlags::FRAGMENT)
                                 .module(frag_module)
-                                .name(&entry_point)
-                                .build());
+                                .name(&entry_point));
                 }
-                let mut vert_input_cinfo = vk::PipelineVertexInputStateCreateInfo::builder();
+                let mut vert_input_cinfo = vk::PipelineVertexInputStateCreateInfo::default();
 
                 if !vertex_input_bindings.is_empty() {
                         vert_input_cinfo = vert_input_cinfo.vertex_binding_descriptions(&vertex_input_bindings);
@@ -2168,7 +2160,7 @@ impl VkAssetManager {
                         vert_input_cinfo = vert_input_cinfo.vertex_attribute_descriptions(&vertex_input_attributes);
                 }
 
-                let input_assembly_cinfo = vk::PipelineInputAssemblyStateCreateInfo::builder()
+                let input_assembly_cinfo = vk::PipelineInputAssemblyStateCreateInfo::default()
                         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
                         .primitive_restart_enable(false);
 
@@ -2186,11 +2178,11 @@ impl VkAssetManager {
                         extent: vk::Extent2D { width: 1, height: 1 },
                 };
 
-                let viewport_state_cinfo = vk::PipelineViewportStateCreateInfo::builder()
+                let viewport_state_cinfo = vk::PipelineViewportStateCreateInfo::default()
                         .viewports(viewport.ref_into_slice())
                         .scissors(scissor.ref_into_slice());
 
-                let rasterization_state_cinfo = vk::PipelineRasterizationStateCreateInfo::builder()
+                let rasterization_state_cinfo = vk::PipelineRasterizationStateCreateInfo::default()
                         .depth_clamp_enable(false)
                         .rasterizer_discard_enable(false)
                         .polygon_mode(vk::PolygonMode::FILL)
@@ -2202,31 +2194,30 @@ impl VkAssetManager {
                         .depth_bias_clamp(0.0)
                         .depth_bias_slope_factor(0.0);
 
-                let multisample_state_cinfo = vk::PipelineMultisampleStateCreateInfo::builder()
+                let multisample_state_cinfo = vk::PipelineMultisampleStateCreateInfo::default()
                         .rasterization_samples(swapchain_samples)
                         .sample_shading_enable(false);
 
-                let depth_stencil_state_cinfo = vk::PipelineDepthStencilStateCreateInfo::builder()
+                let depth_stencil_state_cinfo = vk::PipelineDepthStencilStateCreateInfo::default()
                         .depth_test_enable(enable_depth_test)
                         .depth_write_enable(true)
                         .depth_compare_op(vk::CompareOp::LESS)
                         .depth_bounds_test_enable(false)
                         .stencil_test_enable(false);
 
-                let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::builder()
+                let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
                         .color_write_mask(vk::ColorComponentFlags::RGBA)
-                        .blend_enable(false)
-                        .build()];
+                        .blend_enable(false)];
 
-                let color_blend_state_cinfo = vk::PipelineColorBlendStateCreateInfo::builder()
+                let color_blend_state_cinfo = vk::PipelineColorBlendStateCreateInfo::default()
                         .attachments(&color_blend_attachments)
                         .logic_op_enable(false);
 
                 let dyn_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
                 let pipeline_dyn_state_cinfo =
-                        vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dyn_states);
+                        vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dyn_states);
 
-                let graphics_pipeline_cinfo = vk::GraphicsPipelineCreateInfo::builder()
+                let graphics_pipeline_cinfo = vk::GraphicsPipelineCreateInfo::default()
                         .stages(&shader_stages)
                         .vertex_input_state(&vert_input_cinfo)
                         .input_assembly_state(&input_assembly_cinfo)
@@ -2240,7 +2231,7 @@ impl VkAssetManager {
                         .render_pass(render_pass)
                         .subpass(0);
 
-                unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo.build()) }
+                unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
         }
 
         // fn vk_format_from_component_and_data_type(comp_type: ComponentType, data_type: DataType) -> vk::Format {

@@ -10,10 +10,10 @@ extern crate vk_mem as vma;
 
 use std::rc::Rc;
 
-use ash::{extensions::khr::Swapchain, prelude::VkResult, vk};
+use ash::{prelude::VkResult, vk};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
-use raw_window_handle::HasRawDisplayHandle;
+use raw_window_handle::HasDisplayHandle;
 use winit::window::Window;
 
 use super::{
@@ -36,14 +36,11 @@ macro_rules! cstring {
 
 pub struct VkContext {
         pub instance: Rc<VkInstance>,
-
-        pub debug_utils: Option<Rc<VkDebugUtils>>,
-
         pub surface: Rc<VkSurface>,
 
         pub pdevice: Rc<VkPhysicalDevice>,
-
         pub device: Rc<VkDevice>,
+        pub debug_utils: Option<Rc<VkDebugUtils>>,
 
         _qfamilyi: VkQueueFamilyIndices,
         pub queues: VkQueues,
@@ -71,15 +68,6 @@ impl VkContext {
                 let instance = Self::create_instance(&window, &entry, vulkan_api_version)?;
                 trace!("Created VkInstance");
 
-                let debug_utils = if !ENABLE_VALIDATION_LAYERS {
-                        None
-                } else {
-                        let debug_cinfo = Self::create_debug_utils_messenger_cinfo();
-                        let debug_utils = unsafe { VkDebugUtils::new(&entry, &instance, &debug_cinfo)? };
-                        trace!("Created VkDebugUtilsMessenger");
-                        Some(Rc::new(debug_utils))
-                };
-
                 let surface = Rc::new(unsafe {
                         VkSurface::new(Rc::clone(&window), Rc::clone(&entry), Rc::clone(&instance))?
                 });
@@ -97,6 +85,15 @@ impl VkContext {
                 let (device, queues) = Self::create_device(&instance, **pdevice, &qfamilyi)?;
                 trace!("Created VkDevice");
 
+                let debug_utils = if !ENABLE_VALIDATION_LAYERS {
+                        None
+                } else {
+                        let debug_cinfo = Self::create_debug_utils_messenger_cinfo();
+                        let debug_utils = unsafe { VkDebugUtils::new(&entry, &instance, &device, &debug_cinfo)? };
+                        trace!("Created VkDebugUtilsMessenger");
+                        Some(Rc::new(debug_utils))
+                };
+
                 let allocator = Self::create_allocator(&instance, **pdevice, &device)?;
                 trace!("Created VmaAllocator");
 
@@ -110,14 +107,11 @@ impl VkContext {
 
                 Ok(Self {
                         instance,
-
-                        debug_utils,
-
                         surface,
 
                         pdevice,
-
                         device,
+                        debug_utils,
 
                         _qfamilyi: qfamilyi,
                         queues,
@@ -161,7 +155,7 @@ impl VkContext {
                         }
 
                         let mut req_extensions: Vec<CString> =
-                                ash_window::enumerate_required_extensions(window.raw_display_handle())?
+                                ash_window::enumerate_required_extensions(window.display_handle()?.as_raw())?
                                         .iter()
                                         .map(|&ext| CStr::from_ptr(ext).to_owned())
                                         .collect();
@@ -178,14 +172,14 @@ impl VkContext {
 
                         let app_name = cstring!("ash_sandbox");
 
-                        let app_info = vk::ApplicationInfo::builder()
+                        let app_info = vk::ApplicationInfo::default()
                                 .application_name(&app_name)
                                 .application_version(vk::make_api_version(0, 1, 0, 0))
                                 .engine_name(&app_name)
                                 .engine_version(vk::make_api_version(0, 1, 0, 0))
                                 .api_version(vulkan_api_version);
 
-                        let mut instance_cinfo = vk::InstanceCreateInfo::builder()
+                        let mut instance_cinfo = vk::InstanceCreateInfo::default()
                                 .application_info(&app_info)
                                 .enabled_layer_names(&req_layers_raw)
                                 .enabled_extension_names(&req_extensions_raw);
@@ -201,8 +195,8 @@ impl VkContext {
                 }
         }
 
-        fn create_debug_utils_messenger_cinfo() -> vk::DebugUtilsMessengerCreateInfoEXT {
-                vk::DebugUtilsMessengerCreateInfoEXT::builder()
+        fn create_debug_utils_messenger_cinfo() -> vk::DebugUtilsMessengerCreateInfoEXT<'static> {
+                vk::DebugUtilsMessengerCreateInfoEXT::default()
                         .message_severity(
                                 vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
                                         | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
@@ -214,7 +208,6 @@ impl VkContext {
                                         | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
                         )
                         .pfn_user_callback(Some(vk_debug_callback))
-                        .build()
         }
 
         fn create_device(
@@ -222,18 +215,20 @@ impl VkContext {
                 physical_device: vk::PhysicalDevice,
                 q_family_i: &VkQueueFamilyIndices,
         ) -> AnyResult<(Rc<VkDevice>, VkQueues)> {
-                let memory_budget_ext = CStr::from_bytes_with_nul(b"VK_EXT_memory_budget\0").unwrap();
+                let req_device_extensions_raw = vec![
+                        ash::khr::swapchain::NAME.as_ptr(),
+                        ash::ext::memory_budget::NAME.as_ptr(),
+                ];
 
-                let req_device_extensions_raw = vec![Swapchain::name().as_ptr(), memory_budget_ext.as_ptr()];
-                let req_device_features = vk::PhysicalDeviceFeatures::builder()
+                let req_device_features = vk::PhysicalDeviceFeatures::default()
                         .sampler_anisotropy(true)
                         .shader_clip_distance(true);
 
-                let mut features13 = vk::PhysicalDeviceVulkan13Features::builder()
+                let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
                         .synchronization2(true)
                         .dynamic_rendering(true);
-                let mut features = vk::PhysicalDeviceFeatures2::builder()
-                        .features(req_device_features.build())
+                let mut features = vk::PhysicalDeviceFeatures2::default()
+                        .features(req_device_features)
                         .push_next(&mut features13);
 
                 let queue_priorities;
@@ -241,26 +236,23 @@ impl VkContext {
                 let device_q_cinfos = if q_family_i.graphics == q_family_i.present {
                         queue_priorities = vec![1.0];
 
-                        vec![vk::DeviceQueueCreateInfo::builder()
+                        vec![vk::DeviceQueueCreateInfo::default()
                                 .queue_family_index(q_family_i.graphics)
-                                .queue_priorities(&queue_priorities)
-                                .build()]
+                                .queue_priorities(&queue_priorities)]
                 } else {
                         queue_priorities = vec![0.75, 0.25];
 
                         vec![
-                                vk::DeviceQueueCreateInfo::builder()
+                                vk::DeviceQueueCreateInfo::default()
                                         .queue_family_index(q_family_i.graphics)
-                                        .queue_priorities(&queue_priorities[0..1])
-                                        .build(),
-                                vk::DeviceQueueCreateInfo::builder()
+                                        .queue_priorities(&queue_priorities[0..1]),
+                                vk::DeviceQueueCreateInfo::default()
                                         .queue_family_index(q_family_i.present)
-                                        .queue_priorities(&queue_priorities[1..2])
-                                        .build(),
+                                        .queue_priorities(&queue_priorities[1..2]),
                         ]
                 };
 
-                let device_cinfo = vk::DeviceCreateInfo::builder()
+                let device_cinfo = vk::DeviceCreateInfo::default()
                         .queue_create_infos(&device_q_cinfos)
                         .enabled_extension_names(&req_device_extensions_raw)
                         // .enabled_features(&req_device_features)
@@ -290,7 +282,7 @@ impl VkContext {
                 device: &Rc<VkDevice>,
                 q_family_i: &VkQueueFamilyIndices,
         ) -> VkResult<Rc<VkCommandPool>> {
-                let cmd_pool_cinfo = vk::CommandPoolCreateInfo::builder()
+                let cmd_pool_cinfo = vk::CommandPoolCreateInfo::default()
                         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
                         .queue_family_index(q_family_i.graphics);
 

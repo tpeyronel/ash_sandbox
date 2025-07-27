@@ -2,7 +2,7 @@ use std::{cell::Cell, ffi::CString, ops::Deref, rc::Rc};
 
 use ash::{
         prelude::VkResult,
-        vk::{self, Handle},
+        vk::{self},
 };
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
@@ -632,14 +632,11 @@ impl VkImage {
 
         pub unsafe fn set_debug_name(&self, device: &VkDevice, debug_utils: &VkDebugUtils, name: &str) -> VkResult<()> {
                 let name = CString::new(name).unwrap();
-                let name_info = vk::DebugUtilsObjectNameInfoEXT::builder()
-                        .object_handle(self.handle.as_raw())
-                        .object_type(vk::ObjectType::IMAGE)
+                let name_info = vk::DebugUtilsObjectNameInfoEXT::default()
+                        .object_handle(self.handle)
                         .object_name(name.as_c_str());
 
-                debug_utils
-                        .loader()
-                        .set_debug_utils_object_name(device.handle(), &name_info)
+                debug_utils.device_loader().set_debug_utils_object_name(&name_info)
         }
 
         pub fn cmd_transition_img_layout(tinfo: &TransitionImageLayoutInfo) {
@@ -699,16 +696,15 @@ impl VkImage {
                         },
                 ];
 
-                let region = vk::ImageBlit2::builder()
+                let region = vk::ImageBlit2::default()
                         .src_subresource(subresource)
                         .src_offsets(offsets)
                         .dst_subresource(subresource)
-                        .dst_offsets(offsets)
-                        .build();
+                        .dst_offsets(offsets);
 
                 let regions = [region];
 
-                let blit_image_info = vk::BlitImageInfo2::builder()
+                let blit_image_info = vk::BlitImageInfo2::default()
                         .src_image(src_image)
                         .src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                         .dst_image(dst_image)

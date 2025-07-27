@@ -11,14 +11,14 @@ version = "0.1.0"
 # git-fetch-with-cli = true
 
 [dependencies]
-ash = "0.37.3"
-ash-window = "0.12.0"
+ash = "0.38.0"
+ash-window = "0.13.0"
 vk-mem = { git = "ssh://git@github.com/tpeyronel/vma-rs.git" }
-imgui = "0.11.0"
-imgui-winit-support = { git = "ssh://git@github.com/tpeyronel/imgui-winit-support.git" }
-imgui-rs-vulkan-renderer = { git = "ssh://git@github.com/tpeyronel/imgui-rs-vulkan-renderer.git" }
-winit = { version = "0.29.3", features = ["rwh_05"], default-features = false }
-raw-window-handle = "0.5"
+imgui = "0.12.0"
+imgui-winit-support = "0.13.0"
+imgui-rs-vulkan-renderer = "1.16.0"
+winit = { version = "0.30.12" }
+raw-window-handle = "0.6.2"
 
 pin-project-internal = "1.0.10" # hack for bevy to compile
 

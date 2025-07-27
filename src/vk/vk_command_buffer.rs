@@ -19,14 +19,14 @@ pub struct VkReusableCommandBuffer {
 
 impl VkReusableCommandBuffer {
         pub fn new(device: Rc<VkDevice>, cmd_pool: Rc<VkCommandPool>) -> VkResult<Self> {
-                let cmd_buffer_ainfo = vk::CommandBufferAllocateInfo::builder()
+                let cmd_buffer_ainfo = vk::CommandBufferAllocateInfo::default()
                         .command_pool(**cmd_pool)
                         .command_buffer_count(1)
                         .level(vk::CommandBufferLevel::PRIMARY);
 
                 let handle = unsafe { device.allocate_command_buffers(&cmd_buffer_ainfo)?[0] };
 
-                let fence_cinfo = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
+                let fence_cinfo = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
                 let fence = unsafe { VkFence::new(Rc::clone(&device), &fence_cinfo)? };
 
                 Ok(Self {
@@ -40,14 +40,14 @@ impl VkReusableCommandBuffer {
         }
 
         pub fn new_vec(device: Rc<VkDevice>, cmd_pool: Rc<VkCommandPool>, count: u32) -> VkResult<Vec<Self>> {
-                let cmd_buffer_ainfo = vk::CommandBufferAllocateInfo::builder()
+                let cmd_buffer_ainfo = vk::CommandBufferAllocateInfo::default()
                         .command_pool(**cmd_pool)
                         .command_buffer_count(count)
                         .level(vk::CommandBufferLevel::PRIMARY);
 
                 let handles = unsafe { device.allocate_command_buffers(&cmd_buffer_ainfo)? };
 
-                let fence_cinfo = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
+                let fence_cinfo = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
 
                 handles.iter()
                         .map(|&handle| {
@@ -83,7 +83,7 @@ impl VkReusableCommandBuffer {
                         self.device
                                 .reset_command_buffer(self.handle, vk::CommandBufferResetFlags::RELEASE_RESOURCES)?;
 
-                        let cmd_buffer_binfo = vk::CommandBufferBeginInfo::builder()
+                        let cmd_buffer_binfo = vk::CommandBufferBeginInfo::default()
                                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
                         self.device.begin_command_buffer(self.handle, &cmd_buffer_binfo)?;
@@ -92,14 +92,13 @@ impl VkReusableCommandBuffer {
 
                         let cmd_buffers = [self.handle];
 
-                        let submit_info = vk::SubmitInfo::builder()
+                        let submit_info = vk::SubmitInfo::default()
                                 .command_buffers(&cmd_buffers)
                                 .wait_semaphores(wait_semaphores)
                                 .wait_dst_stage_mask(wait_stages)
                                 .signal_semaphores(signal_semaphores);
 
-                        self.device
-                                .queue_submit(submit_queue, &[submit_info.build()], *self.fence)?;
+                        self.device.queue_submit(submit_queue, &[submit_info], *self.fence)?;
 
                         Ok(())
                 }
@@ -111,7 +110,7 @@ impl VkReusableCommandBuffer {
                 device.reset_command_buffer(self.handle, vk::CommandBufferResetFlags::RELEASE_RESOURCES)?;
 
                 let cmd_buffer_binfo =
-                        vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+                        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
                 device.begin_command_buffer(self.handle, &cmd_buffer_binfo)
         }
@@ -126,13 +125,13 @@ impl VkReusableCommandBuffer {
         ) -> VkResult<()> {
                 device.end_command_buffer(self.handle)?;
 
-                let submit_info = vk::SubmitInfo::builder()
+                let submit_info = vk::SubmitInfo::default()
                         .command_buffers(std::slice::from_ref(&self.handle))
                         .wait_semaphores(wait_semaphores)
                         .wait_dst_stage_mask(wait_stages)
                         .signal_semaphores(signal_semaphores);
 
-                device.queue_submit(submit_queue, &[submit_info.build()], *self.fence)
+                device.queue_submit(submit_queue, &[submit_info], *self.fence)
         }
 
         pub unsafe fn wait(&self, timeout: u64) -> VkResult<()> {

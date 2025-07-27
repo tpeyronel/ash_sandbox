@@ -33,7 +33,7 @@ impl VkDescriptorSetAllocator {
                 dst_set_layouts: &[vk::DescriptorSetLayout; N],
                 retry: bool,
         ) -> VkResult<[vk::DescriptorSet; N]> {
-                let create_info = vk::DescriptorSetAllocateInfo::builder()
+                let create_info = vk::DescriptorSetAllocateInfo::default()
                         .descriptor_pool(self.dst_pools[self.pool_index])
                         .set_layouts(dst_set_layouts);
 
@@ -94,7 +94,7 @@ impl VkDescriptorSetAllocator {
                         pool_size(vk::DescriptorType::INPUT_ATTACHMENT, 10),
                 ];
 
-                let dst_pool_cinfo = vk::DescriptorPoolCreateInfo::builder()
+                let dst_pool_cinfo = vk::DescriptorPoolCreateInfo::default()
                         .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
                         .pool_sizes(&pool_sizes)
                         .max_sets(1000);

@@ -1,6 +1,6 @@
 use std::{cell::Cell, ops::Deref, rc::Rc};
 
-use ash::{extensions::khr::Swapchain, prelude::VkResult, vk};
+use ash::{khr::swapchain, prelude::VkResult, vk};
 use bitflags::bitflags;
 #[allow(unused_imports)]
 use log::{debug, trace};
@@ -17,7 +17,7 @@ use super::{
 };
 
 pub struct VkSwapchain {
-        loader: Swapchain,
+        device_loader: swapchain::Device,
 
         window: Rc<winit::window::Window>,
         instance: Rc<VkInstance>,
@@ -69,7 +69,7 @@ impl VkSwapchain {
                 debug!("VkSwapchain present format ({:?})", present_format);
 
                 let surface_capabilities = unsafe {
-                        surface.loader()
+                        surface.instance_loader()
                                 .get_physical_device_surface_capabilities(physical_device, **surface)?
                 };
 
@@ -87,7 +87,7 @@ impl VkSwapchain {
                 let present_mode = Self::choose_present_mode(&surface, physical_device)?;
                 debug!("VkSwapchain present mode: {:?}", present_mode);
 
-                let loader = Swapchain::new(&**instance, &**device);
+                let device_loader = swapchain::Device::new(&**instance, &**device);
 
                 let swch_cinfo = Self::swapchain_create_info(
                         &surface,
@@ -99,7 +99,7 @@ impl VkSwapchain {
                         vk::SwapchainKHR::null(),
                 );
 
-                let handle = unsafe { loader.create_swapchain(&swch_cinfo, None)? };
+                let handle = unsafe { device_loader.create_swapchain(&swch_cinfo, None)? };
 
                 let samples = Self::choose_sample_count(&instance, physical_device);
                 debug!("Swapchain samples: {:?}", samples);
@@ -121,14 +121,14 @@ impl VkSwapchain {
                         samples,
                 )?;
 
-                let present_imgs = unsafe { loader.get_swapchain_images(handle)? };
+                let present_imgs = unsafe { device_loader.get_swapchain_images(handle)? };
                 let present_img_views =
                         Self::create_present_img_views(Rc::clone(&device), &present_imgs, present_format.format)?;
 
                 let img_count = present_imgs.len() as u32;
 
                 Ok(Self {
-                        loader,
+                        device_loader,
 
                         window,
                         instance,
@@ -185,7 +185,7 @@ impl VkSwapchain {
 
                 let surface_capabilities = unsafe {
                         self.surface
-                                .loader()
+                                .instance_loader()
                                 .get_physical_device_surface_capabilities(self.physical_device, **self.surface)?
                 };
 
@@ -205,8 +205,6 @@ impl VkSwapchain {
                         debug!("VkSwapchain present mode: {:?}", self.present_mode);
                 }
 
-                let loader = Swapchain::new(&**self.instance, &**self.device);
-
                 let swch_cinfo = Self::swapchain_create_info(
                         &self.surface,
                         requested_img_count,
@@ -217,9 +215,14 @@ impl VkSwapchain {
                         self.handle,
                 );
 
-                let old_handle = self.handle;
-                self.handle = unsafe { loader.create_swapchain(&swch_cinfo, None)? };
-                unsafe { self.loader.destroy_swapchain(old_handle, None) };
+                unsafe {
+                        let old_handle = std::mem::replace(
+                                &mut self.handle,
+                                self.device_loader.create_swapchain(&swch_cinfo, None)?,
+                        );
+                        // Destroy old swapchain _after_ creating the new one.
+                        self.device_loader.destroy_swapchain(old_handle, None);
+                }
 
                 let old_samples = self.samples;
                 self.samples = Self::choose_sample_count(&self.instance, self.physical_device);
@@ -273,7 +276,7 @@ impl VkSwapchain {
                         }
                 }
 
-                self.present_imgs = unsafe { loader.get_swapchain_images(self.handle)? };
+                self.present_imgs = unsafe { self.device_loader.get_swapchain_images(self.handle)? };
                 unsafe { self.present_img_views.drain(..).for_each(|iv| iv.destroy()) };
                 self.present_img_views = Self::create_present_img_views(
                         Rc::clone(&self.device),
@@ -297,11 +300,12 @@ impl VkSwapchain {
                 semaphore: vk::Semaphore,
                 fence: vk::Fence,
         ) -> VkResult<(u32, bool)> {
-                self.loader.acquire_next_image(self.handle, timeout, semaphore, fence)
+                self.device_loader
+                        .acquire_next_image(self.handle, timeout, semaphore, fence)
         }
 
         pub unsafe fn queue_present(&self, queue: vk::Queue, present_info: &vk::PresentInfoKHR) -> VkResult<bool> {
-                self.loader.queue_present(queue, present_info)
+                self.device_loader.queue_present(queue, present_info)
         }
 
         fn choose_color_format(instance: &VkInstance, physical_device: vk::PhysicalDevice) -> VkResult<vk::Format> {
@@ -331,7 +335,7 @@ impl VkSwapchain {
                 physical_device: vk::PhysicalDevice,
         ) -> VkResult<vk::SurfaceFormatKHR> {
                 let formats = unsafe {
-                        surface.loader()
+                        surface.instance_loader()
                                 .get_physical_device_surface_formats(physical_device, **surface)?
                 };
 
@@ -394,7 +398,7 @@ impl VkSwapchain {
                 physical_device: vk::PhysicalDevice,
         ) -> VkResult<vk::PresentModeKHR> {
                 let modes = unsafe {
-                        surface.loader()
+                        surface.instance_loader()
                                 .get_physical_device_surface_present_modes(physical_device, **surface)?
                 };
 
@@ -417,8 +421,8 @@ impl VkSwapchain {
                 pre_transform: vk::SurfaceTransformFlagsKHR,
                 present_mode: vk::PresentModeKHR,
                 old_swapchain: vk::SwapchainKHR,
-        ) -> vk::SwapchainCreateInfoKHRBuilder {
-                vk::SwapchainCreateInfoKHR::builder()
+        ) -> vk::SwapchainCreateInfoKHR {
+                vk::SwapchainCreateInfoKHR::default()
                         .surface(**surface)
                         .min_image_count(requested_img_count)
                         .image_color_space(present_format.color_space)
@@ -672,7 +676,7 @@ impl_destroyable_expr!(VkSwapchain, vk::SwapchainKHR, |s: &VkSwapchain| {
         s.depth_img.destroy();
         s.color_img_view.destroy();
         s.color_img.destroy();
-        s.loader.destroy_swapchain(s.handle, None)
+        s.device_loader.destroy_swapchain(s.handle, None);
 });
 
 bitflags! {

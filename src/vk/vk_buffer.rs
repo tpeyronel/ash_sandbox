@@ -62,7 +62,7 @@ pub struct VkBuffer {
 
 impl VkBuffer {
         pub fn new(create_info: VkBufferCreateInfo) -> VkResult<Self> {
-                let mut handle_cinfo = vk::BufferCreateInfo::builder()
+                let mut handle_cinfo = vk::BufferCreateInfo::default()
                         .size(create_info.buffer_size)
                         .usage(create_info.buffer_usage);
 
@@ -285,10 +285,7 @@ impl VkBuffer {
 
         #[allow(dead_code)]
         pub fn flush_all_memory(&self) -> VkResult<()> {
-                unsafe {
-                        self.allocator
-                                .flush_allocation(self.alloc, 0, self.size_in_bytes as usize)
-                }
+                unsafe { self.allocator.flush_allocation(self.alloc, 0, self.size_in_bytes) }
         }
 }
 

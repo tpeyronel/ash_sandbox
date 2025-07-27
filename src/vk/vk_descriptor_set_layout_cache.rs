@@ -21,7 +21,7 @@ impl VkDescriptorSetLayoutCache {
 
         pub unsafe fn create_layout(
                 &mut self,
-                mut bindings: Vec<vk::DescriptorSetLayoutBinding>,
+                mut bindings: Vec<vk::DescriptorSetLayoutBinding<'static>>,
         ) -> VkResult<vk::DescriptorSetLayout> {
                 bindings.sort_by_key(|b| b.binding);
 
@@ -29,7 +29,7 @@ impl VkDescriptorSetLayoutCache {
                 let layout = match self.layouts.get(&layout_key) {
                         Some(&layout) => layout,
                         None => {
-                                let layout_cinfo = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&layout_key.0);
+                                let layout_cinfo = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_key.0);
                                 let new_layout = self.device.create_descriptor_set_layout(&layout_cinfo, None)?;
                                 self.layouts.insert(layout_key, new_layout);
                                 new_layout
@@ -46,7 +46,7 @@ impl VkDescriptorSetLayoutCache {
         }
 }
 
-struct LayoutKey(Vec<vk::DescriptorSetLayoutBinding>);
+struct LayoutKey(Vec<vk::DescriptorSetLayoutBinding<'static>>);
 
 impl PartialEq for LayoutKey {
         fn eq(&self, other: &Self) -> bool {

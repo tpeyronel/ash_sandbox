@@ -1,10 +1,12 @@
 use std::{cell::Cell, ops::Deref, rc::Rc};
 
-use ash::{extensions::ext::DebugUtils, prelude::VkResult, vk};
+use ash::{ext::debug_utils, khr::surface, prelude::VkResult, vk};
 #[allow(unused_imports)]
 use log::trace;
-use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use thiserror::Error;
+
+use crate::AnyResult;
 
 use super::{vk_buffer::VkBuffer, vk_image::VkImage};
 
@@ -239,7 +241,7 @@ impl VkQueueFamilyIndices {
                 };
 
                 let supports_present = |i: usize, _q_fam_props: &vk::QueueFamilyProperties| unsafe {
-                        surface.loader()
+                        surface.instance_loader()
                                 .get_physical_device_surface_support(pd, i as u32, **surface)
                                 .unwrap()
                 };
@@ -300,7 +302,8 @@ impl_destroyable!(VkDevice, ash::Device, destroy_device, None);
 pub struct VkDebugUtils {
         _entry: Rc<ash::Entry>,
 
-        loader: DebugUtils,
+        instance_loader: debug_utils::Instance,
+        device_loader: debug_utils::Device,
         handle: vk::DebugUtilsMessengerEXT,
         destroyed: Cell<bool>,
 }
@@ -309,26 +312,35 @@ impl VkDebugUtils {
         pub unsafe fn new(
                 entry: &Rc<ash::Entry>,
                 instance: &ash::Instance,
+                device: &ash::Device,
                 create_info: &vk::DebugUtilsMessengerCreateInfoEXT,
         ) -> VkResult<Self> {
-                let loader = DebugUtils::new(entry.deref(), instance);
-                let handle = loader.create_debug_utils_messenger(create_info, None)?;
+                let instance_loader = debug_utils::Instance::new(entry.deref(), instance);
+                let device_loader = debug_utils::Device::new(instance, device);
+                let handle = instance_loader.create_debug_utils_messenger(create_info, None)?;
 
                 Ok(Self {
                         _entry: Rc::clone(entry),
-                        loader,
+                        instance_loader,
+                        device_loader,
                         handle,
                         destroyed: Cell::new(false),
                 })
         }
 
-        pub fn loader(&self) -> &DebugUtils {
-                &self.loader
+        #[allow(unused)]
+        pub fn instance_loader(&self) -> &debug_utils::Instance {
+                &self.instance_loader
+        }
+
+        #[allow(unused)]
+        pub fn device_loader(&self) -> &debug_utils::Device {
+                &self.device_loader
         }
 }
 
 impl_destroyable_expr!(VkDebugUtils, vk::DebugUtilsMessengerEXT, |s: &VkDebugUtils| s
-        .loader
+        .instance_loader
         .destroy_debug_utils_messenger(s.handle, None));
 
 pub struct VkSurface {
@@ -336,7 +348,7 @@ pub struct VkSurface {
         _entry: Rc<ash::Entry>,
         _instance: Rc<VkInstance>,
 
-        loader: ash::extensions::khr::Surface,
+        instance_loader: surface::Instance,
         handle: vk::SurfaceKHR,
         destroyed: Cell<bool>,
 }
@@ -346,13 +358,13 @@ impl VkSurface {
                 window: Rc<winit::window::Window>,
                 entry: Rc<ash::Entry>,
                 instance: Rc<VkInstance>,
-        ) -> VkResult<Self> {
-                let loader = ash::extensions::khr::Surface::new(&entry, &instance);
+        ) -> AnyResult<Self> {
+                let instance_loader = surface::Instance::new(&entry, &instance);
                 let handle = ash_window::create_surface(
                         &entry,
                         &instance,
-                        window.raw_display_handle(),
-                        window.raw_window_handle(),
+                        window.display_handle()?.as_raw(),
+                        window.window_handle()?.as_raw(),
                         None,
                 )?;
 
@@ -361,19 +373,19 @@ impl VkSurface {
                         _entry: entry,
                         _instance: instance,
 
-                        loader,
+                        instance_loader,
                         handle,
                         destroyed: Cell::new(false),
                 })
         }
 
-        pub fn loader(&self) -> &ash::extensions::khr::Surface {
-                &self.loader
+        pub fn instance_loader(&self) -> &surface::Instance {
+                &self.instance_loader
         }
 }
 
 impl_destroyable_expr!(VkSurface, vk::SurfaceKHR, |s: &VkSurface| s
-        .loader
+        .instance_loader
         .destroy_surface(s.handle, None));
 
 pub struct VkImageView {
@@ -597,7 +609,7 @@ impl VkShaderModule {
                         return Err(VkShaderModuleError::CodeSizeNotMultipleOf4(code.len()));
                 }
 
-                let mut shader_module_cinfo = vk::ShaderModuleCreateInfo::builder().build();
+                let mut shader_module_cinfo = vk::ShaderModuleCreateInfo::default();
                 shader_module_cinfo.code_size = code.len();
                 shader_module_cinfo.p_code = code.as_ptr() as *const u32;
 

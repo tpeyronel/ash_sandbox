@@ -46,14 +46,11 @@ use log::{error, info, trace};
 use serde::{Deserialize, Serialize};
 use winit::{
         event::{Event, WindowEvent},
-        event_loop::{ControlFlow, EventLoop},
-        window::{Fullscreen, Window, WindowBuilder},
+        window::{Fullscreen, Window},
 };
 
 #[allow(dead_code)]
 pub struct Application {
-        event_loop: Option<EventLoop<()>>,
-
         target_tick_time: f32,
         world: World,
         schedule: Schedule,
@@ -70,12 +67,11 @@ pub struct Application {
 }
 
 impl Application {
-        pub fn new() -> AnyResult<Self> {
+        pub fn new(event_loop: &winit::event_loop::ActiveEventLoop) -> AnyResult<Self> {
                 let config = ApplicationConfig::from_file(Path::new("config.json"))?;
 
-                let event_loop = EventLoop::new()?;
                 let fullscreen_video_mode = event_loop.primary_monitor().unwrap().video_modes().next().unwrap();
-                let window = Rc::new(WindowBuilder::new()
+                let window_attributes = Window::default_attributes()
                         .with_fullscreen(match config.window_mode {
                                 WindowMode::Windowed => None,
                                 WindowMode::Borderless => Some(Fullscreen::Borderless(None)),
@@ -85,8 +81,9 @@ impl Application {
                         .with_min_inner_size(winit::dpi::PhysicalSize::<u32> {
                                 width: 144,
                                 height: 144,
-                        })
-                        .build(&event_loop)?);
+                        });
+
+                let window = Rc::new(event_loop.create_window(window_attributes)?);
                 trace!("Created window");
 
                 let mut imgui_manager = ImguiManager::new(&window);
@@ -300,8 +297,11 @@ impl Application {
                 input_manager.push_input_binding_map(input_map);
                 trace!("Initialized InputManager");
 
+                // TODO: check for a better place for these lines.
+                window.set_visible(true);
+                world.insert_resource(UpdateBegin(Instant::now()));
+
                 Ok(Self {
-                        event_loop: Some(event_loop),
                         target_tick_time: 1.0 / config.tps as f32,
                         world,
                         schedule,
@@ -316,26 +316,6 @@ impl Application {
                         frame_begin: Instant::now(),
                         delta_time: 0.0,
                 })
-        }
-
-        pub fn run(mut self) -> AnyResult<()> {
-                self.window.set_visible(true);
-                self.world.insert_resource(UpdateBegin(Instant::now()));
-
-                let event_loop = self.event_loop.take().unwrap();
-                event_loop.set_control_flow(ControlFlow::Poll);
-                event_loop.run(move |event, target| {
-                        let mut quit = false;
-
-                        self.on_winit_event(event, &mut quit)
-                                .expect("Error ocurred in render loop");
-
-                        if quit {
-                                target.exit();
-                        }
-                })?;
-
-                Ok(())
         }
 
         fn init_asset_manager() -> AnyResult<(AssetManager, Receiver<AssetManagerEvent>)> {
@@ -415,14 +395,10 @@ impl Application {
                         color_shader,
                 )?;
                 let _model_backpack = asset_manager.import_gltf_file(Path::new("res/model/backpack/backpack.gltf"))?;
-                let _model_cerberus = asset_manager.import_gltf_file_with_shader(
-                        Path::new("res/model/cerberus/cerberus.gltf"),
-                        pbr_shader,
-                )?;
-                let _model_helmet = asset_manager.import_gltf_file_with_shader(
-                        Path::new("res/model/helmet/helmet.gltf"),
-                        pbr_shader,
-                )?;
+                let _model_cerberus = asset_manager
+                        .import_gltf_file_with_shader(Path::new("res/model/cerberus/cerberus.gltf"), pbr_shader)?;
+                let _model_helmet = asset_manager
+                        .import_gltf_file_with_shader(Path::new("res/model/helmet/helmet.gltf"), pbr_shader)?;
                 let _model_landscape = asset_manager.import_gltf_file_with_shader(
                         Path::new("res/model/landscape/landscape.gltf"),
                         billboard_shader,
@@ -526,7 +502,7 @@ impl Application {
                         .with_stage_after(CoreStage::Render, CoreStage::Cleanup, cleanup_stage)
         }
 
-        fn on_winit_event(&mut self, event: winit::event::Event<()>, quit: &mut bool) -> AnyResult<()> {
+        pub fn on_winit_event(&mut self, event: winit::event::Event<()>, quit: &mut bool) -> AnyResult<()> {
                 self.world
                         .get_non_send_resource_mut::<ImguiManager>()
                         .unwrap()

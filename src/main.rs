@@ -23,6 +23,7 @@ mod skybox;
 mod util;
 mod vk;
 mod window_manager;
+mod winit_application;
 
 #[allow(unused_imports)]
 #[macro_use]
@@ -35,11 +36,11 @@ extern crate approx;
 
 use std::{error::Error, io::Write};
 
-use application::Application;
 use chrono::Local;
 use env_logger::Env;
 #[allow(unused_imports)]
 use log::{info, trace, warn};
+use winit_application::WinitApplication;
 
 pub type AnyResult<T> = anyhow::Result<T>;
 
@@ -54,7 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 })
                 .init();
 
-        let app = Application::new()?;
+        let app = WinitApplication::new();
 
         app.run()?;
 
