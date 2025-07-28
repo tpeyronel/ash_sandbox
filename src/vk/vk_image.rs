@@ -97,7 +97,7 @@ pub struct VkImage {
         pub width: u32,
         pub height: u32,
         pub depth: u32,
-        pub mip_levels: u32,
+        pub mip_levels: u32, // mip_levels >= 1
         pub array_layers: u32,
 }
 
