@@ -338,5 +338,9 @@ unsafe extern "system" fn vk_debug_callback(
         }
         let _ = stdout.flush();
 
+        if message_severity == vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
+                std::hint::black_box(())
+        }
+
         vk::FALSE
 }
