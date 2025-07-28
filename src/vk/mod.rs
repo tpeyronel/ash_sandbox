@@ -6,6 +6,7 @@ mod vk_descriptor_set_allocator;
 mod vk_descriptor_set_layout_cache;
 mod vk_format;
 mod vk_image;
+mod vk_image_subresource_range;
 pub mod vk_renderer;
 mod vk_swapchain;
 mod vk_util;
