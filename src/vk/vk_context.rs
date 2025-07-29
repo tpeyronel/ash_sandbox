@@ -246,9 +246,12 @@ impl VkContext {
                 let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
                         .synchronization2(true)
                         .dynamic_rendering(true);
+                let mut features_maintenance_5 =
+                        vk::PhysicalDeviceMaintenance5FeaturesKHR::default().maintenance5(true);
                 let mut features = vk::PhysicalDeviceFeatures2::default()
                         .features(req_device_features)
-                        .push_next(&mut features13);
+                        .push_next(&mut features13)
+                        .push_next(&mut features_maintenance_5);
 
                 let queue_priorities;
 
