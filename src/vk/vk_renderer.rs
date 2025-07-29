@@ -1,5 +1,4 @@
 use ash::{prelude::VkResult, vk};
-use enum_map::EnumMap;
 use slotmap::SecondaryMap;
 use std::{rc::Rc, slice, time::Instant};
 
@@ -23,9 +22,7 @@ use super::{
 };
 use crate::{
         application::{InterpGlobalTransform, ShaderSettings},
-        asset_manager::{
-                AssetManager, AssetManagerEvent, MaterialId, MaterialMesh, MeshId, ShaderId, ShaderRenderStage,
-        },
+        asset_manager::{AssetManager, AssetManagerEvent, MaterialId, MaterialMesh, MeshId, ShaderId},
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE, SHADOW_MAP_HEIGHT, SHADOW_MAP_WIDTH},
         hashmap::HashMap,
@@ -42,10 +39,10 @@ use crate::{
         },
         skybox::Skybox,
         util::{RefIntoBytesSlice, RefIntoSlice},
+        vk::vk_image_subresource_range::ImageSubresourceRangeUtil,
 };
 use crate::{
         constants::{DESIRED_SWAPCHAIN_IMG_COUNT, MAX_CONCURRENT_FRAMES},
-        util::DerefIntoSlice,
         AnyResult,
 };
 
@@ -61,14 +58,8 @@ pub struct VkRenderer {
 
         resolve_sampler: VkSampler,
 
-        render_passes: EnumMap<ShaderRenderStage, VkRenderPass>,
-
-        framebuffer: VkFramebuffer,
-        postprocess_framebuffers: [VkFramebuffer; 2],
-
-        shadow_map_img: VkImage,
-        shadow_map_img_view: VkImageView,
-        shadow_map_framebuffer: VkFramebuffer,
+        shadow_map_depth_img: VkImage,
+        shadow_map_depth_img_view: VkImageView,
         shadow_map_sampler: VkSampler,
 
         cube_shadow_map_img: VkImage,
@@ -76,7 +67,6 @@ pub struct VkRenderer {
         cube_shadow_map_img_views: [VkImageView; 6],
         cube_shadow_map_depth_img: VkImage,
         cube_shadow_map_depth_img_view: VkImageView,
-        cube_shadow_map_framebuffers: [VkFramebuffer; 6],
         cube_shadow_map_sampler: VkSampler,
 
         setup_cmd_buffer: VkReusableCommandBuffer,
@@ -105,76 +95,17 @@ impl VkRenderer {
 
                 let resolve_sampler = Self::create_resolve_sampler(&vk_context.device)?;
 
-                let render_pass = Self::create_render_pass(
-                        &vk_context.device,
-                        swapchain.samples,
-                        swapchain.color_format,
-                        swapchain.depth_format,
-                )?;
-                trace!("Created VkRenderPass");
-
-                let skybox_mapping_render_pass = Self::create_skybox_mapping_render_pass(&vk_context.device)?;
-                trace!("Created equirectangular conversion VkRenderPass");
-
                 let shadow_map_depth_format = swapchain.depth_format;
-
-                let shadow_map_render_pass =
-                        Self::create_shadow_map_render_pass(&vk_context.device, shadow_map_depth_format)?;
-                trace!("Created shadow map VkRenderPass");
 
                 let cube_shadow_map_color_format =
                         Self::choose_cube_shadow_map_color_format(&vk_context.instance, **vk_context.pdevice)?;
 
                 let cube_shadow_map_depth_format = shadow_map_depth_format;
 
-                let cube_shadow_map_render_pass = Self::create_cube_shadow_map_render_pass(
-                        &vk_context.device,
-                        cube_shadow_map_color_format,
-                        cube_shadow_map_depth_format,
-                )?;
-                trace!("Created cube shadow map VkRenderPass");
-
-                let postprocess_render_pass =
-                        Self::create_postprocess_render_pass(&vk_context.device, swapchain.color_format)?;
-                trace!("Created postprocess VkRenderPass");
-
-                let render_passes = [
-                        skybox_mapping_render_pass,
-                        cube_shadow_map_render_pass,
-                        shadow_map_render_pass,
-                        render_pass,
-                        postprocess_render_pass,
-                ];
-                let render_passes: EnumMap<ShaderRenderStage, VkRenderPass> = EnumMap::from_array(render_passes);
-
-                let framebuffer = Self::create_framebuffer(
-                        &vk_context.device,
-                        *render_passes[ShaderRenderStage::Drawing],
-                        *swapchain.color_img_view,
-                        *swapchain.depth_img_view,
-                        *swapchain.resolve_img_views[0],
-                        swapchain.extent,
-                )?;
-                trace!("Created VkFramebuffer");
-
-                let postprocess_framebuffers = Self::create_postprocess_framebuffers(
-                        &vk_context.device,
-                        *render_passes[ShaderRenderStage::Postprocessing],
-                        &swapchain.resolve_img_views,
-                        swapchain.extent,
-                )?;
-                trace!("Created postprocess VkFramebuffer");
-
-                let (shadow_map_img, shadow_map_img_view) = Self::create_shadow_map_img_and_view(
+                let (shadow_map_depth_img, shadow_map_depth_img_view) = Self::create_shadow_map_depth_img_and_view(
                         Rc::clone(&vk_context.device),
                         Rc::clone(&vk_context.allocator),
                         shadow_map_depth_format,
-                )?;
-
-                let shadow_map_framebuffer = Self::create_shadow_map_framebuffer(
-                        &vk_context.device,
-                        *render_passes[ShaderRenderStage::DirectionalShadowMapping],
-                        *shadow_map_img_view,
                 )?;
 
                 let shadow_map_sampler = Self::create_shadow_map_sampler(&vk_context.device)?;
@@ -193,13 +124,6 @@ impl VkRenderer {
                                 cube_shadow_map_depth_format,
                         )?;
 
-                let cube_shadow_map_framebuffers = Self::create_cube_shadow_map_framebuffers(
-                        &vk_context.device,
-                        *render_passes[ShaderRenderStage::PointShadowMapping],
-                        &cube_shadow_map_img_views,
-                        *cube_shadow_map_depth_img_view,
-                )?;
-
                 let cube_shadow_map_sampler = Self::create_cube_shadow_map_sampler(&vk_context.device)?;
 
                 let setup_cmd_buffer =
@@ -211,12 +135,7 @@ impl VkRenderer {
                         .map(|_| VkFrameData::new(&mut vk_context))
                         .collect::<AnyResult<Vec<VkFrameData>>>()?;
 
-                let vk_asset_manager = VkAssetManager::new(
-                        &mut vk_context,
-                        swapchain.samples,
-                        EnumMap::from_fn(|rs| *render_passes[rs]),
-                        max_concurrent_frames,
-                )?;
+                let vk_asset_manager = VkAssetManager::new(&mut vk_context, swapchain.samples, max_concurrent_frames)?;
                 trace!("Created VkAssetManager");
 
                 let imgui_renderer_options = imgui_rs_vulkan_renderer::Options {
@@ -233,7 +152,10 @@ impl VkRenderer {
                         (**vk_context.device).clone(),
                         vk_context.queues.graphics,
                         **vk_context.cmd_pool,
-                        *render_passes[ShaderRenderStage::Postprocessing],
+                        imgui_rs_vulkan_renderer::DynamicRendering {
+                                color_attachment_format: swapchain.resolve_imgs[0].format,
+                                depth_attachment_format: None,
+                        },
                         imguic,
                         Some(imgui_renderer_options),
                 )?);
@@ -250,14 +172,8 @@ impl VkRenderer {
 
                         resolve_sampler,
 
-                        render_passes,
-
-                        framebuffer,
-                        postprocess_framebuffers,
-
-                        shadow_map_img,
-                        shadow_map_img_view,
-                        shadow_map_framebuffer,
+                        shadow_map_depth_img,
+                        shadow_map_depth_img_view,
                         shadow_map_sampler,
 
                         cube_shadow_map_img,
@@ -265,7 +181,6 @@ impl VkRenderer {
                         cube_shadow_map_img_views,
                         cube_shadow_map_depth_img,
                         cube_shadow_map_depth_img_view,
-                        cube_shadow_map_framebuffers,
                         cube_shadow_map_sampler,
 
                         setup_cmd_buffer,
@@ -300,8 +215,6 @@ impl Renderer for VkRenderer {
                         BeginFrameResult::Draw { imagei } => imagei,
                         BeginFrameResult::Skip => return Ok(()),
                 };
-
-                let frame_data = &self.frames_data[self.framei];
 
                 Self::write_struct_resource(
                         self.framei,
@@ -503,7 +416,7 @@ impl Renderer for VkRenderer {
                 Self::write_image_resource(
                         &self.vk_asset_manager,
                         &SHADER_RESOURCE_SHADOW_MAP,
-                        *self.shadow_map_img_view,
+                        *self.shadow_map_depth_img_view,
                         *self.shadow_map_sampler,
                         &mut self.world_shader_resource_descriptors_data,
                 );
@@ -528,7 +441,7 @@ impl Renderer for VkRenderer {
                         self.map_point_shadows(&asset_manager, &vk_render_scene)?;
                         self.map_shadows(&asset_manager, &vk_render_scene)?;
 
-                        self.draw_scene(*frame_data.draw_cmd_buffer, &asset_manager, &vk_render_scene)?;
+                        self.draw_scene(&asset_manager, &vk_render_scene)?;
 
                         self.do_postprocess(&asset_manager, imgui_draw_data)?;
 
@@ -550,9 +463,7 @@ impl Renderer for VkRenderer {
                         let _ = self.vk_context.device.device_wait_idle();
                         drop(self.imgui_renderer.take().unwrap());
                         self.frames_data.clear();
-                        self.postprocess_framebuffers.iter().for_each(|x| x.destroy());
                         self.cube_shadow_map_sampler.destroy();
-                        self.cube_shadow_map_framebuffers.iter().for_each(|x| x.destroy());
                         self.cube_shadow_map_depth_img_view.destroy();
                         self.cube_shadow_map_depth_img.destroy();
                         self.cube_shadow_map_img_views.iter().for_each(|x| x.destroy());
@@ -560,13 +471,8 @@ impl Renderer for VkRenderer {
                         self.cube_shadow_map_img.destroy();
                         self.setup_cmd_buffer.destroy();
                         self.shadow_map_sampler.destroy();
-                        self.shadow_map_framebuffer.destroy();
-                        self.shadow_map_img_view.destroy();
-                        self.shadow_map_img.destroy();
-                        self.framebuffer.destroy();
-                        self.render_passes.iter().for_each(|(_, rp)| {
-                                rp.destroy();
-                        });
+                        self.shadow_map_depth_img_view.destroy();
+                        self.shadow_map_depth_img.destroy();
                         self.resolve_sampler.destroy();
                         self.swapchain.destroy();
                         self.vk_asset_manager.destroy();
@@ -626,24 +532,6 @@ impl VkRenderer {
 
                 //         recreate_pipeline = true;
                 // }
-
-                unsafe { self.framebuffer.destroy() };
-                self.framebuffer = Self::create_framebuffer(
-                        &self.vk_context.device,
-                        *self.render_passes[ShaderRenderStage::Drawing],
-                        *self.swapchain.color_img_view,
-                        *self.swapchain.depth_img_view,
-                        *self.swapchain.resolve_img_views[0],
-                        self.swapchain.extent,
-                )?;
-
-                unsafe { self.postprocess_framebuffers.iter().for_each(|x| x.destroy()) };
-                self.postprocess_framebuffers = Self::create_postprocess_framebuffers(
-                        &self.vk_context.device,
-                        *self.render_passes[ShaderRenderStage::Postprocessing],
-                        &self.swapchain.resolve_img_views,
-                        self.swapchain.extent,
-                )?;
 
                 // if recreate_pipeline {
                 // trace!("Recreating VkGraphicsPipeline...");
@@ -1074,7 +962,7 @@ impl VkRenderer {
                 Ok([mk_framebuffer(0)?, mk_framebuffer(1)?])
         }
 
-        fn create_shadow_map_img_and_view(
+        fn create_shadow_map_depth_img_and_view(
                 device: Rc<VkDevice>,
                 allocator: Rc<VmaAllocator>,
                 depth_format: vk::Format,
@@ -1440,37 +1328,97 @@ impl VkRenderer {
                 Ok(BeginFrameResult::Draw { imagei })
         }
 
-        unsafe fn draw_scene(
-                &mut self,
-                cmd_buffer: vk::CommandBuffer,
-                asset_manager: &AssetManager,
-                scene: &VkRenderScene,
-        ) -> VkResult<()> {
+        unsafe fn draw_scene(&mut self, asset_manager: &AssetManager, scene: &VkRenderScene) -> VkResult<()> {
+                let frame_data = &self.frames_data[self.framei];
+                let cmd_buffer = *frame_data.draw_cmd_buffer;
+
                 let time = self.creation_instant.elapsed().as_secs_f32();
                 let intensity = (((time.sin() + 1.0) / 2.0) * 0.05) + 0.05;
 
-                let clear_values = [
-                        vk::ClearValue {
-                                color: vk::ClearColorValue {
-                                        float32: [intensity, intensity, intensity, 1.0],
+                let color_clear_value = vk::ClearValue {
+                        color: vk::ClearColorValue {
+                                float32: [intensity, intensity, intensity, 1.0],
+                        },
+                };
+
+                let depth_clear_value = vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+                };
+
+                {
+                        VkImage::cmd_transition_img_layout(
+                                &self.vk_context.device,
+                                cmd_buffer,
+                                &TransitionImageLayoutInfo {
+                                        image: *self.swapchain.color_img,
+                                        old_layout: vk::ImageLayout::UNDEFINED,
+                                        new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                        src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                        src_access_mask: vk::AccessFlags2::NONE,
+                                        dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                        dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                        subresource_range: vk::ImageSubresourceRange::full_color(),
                                 },
-                        },
-                        vk::ClearValue {
-                                depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
-                        },
-                ];
+                        );
 
-                let render_pass_binfo = vk::RenderPassBeginInfo::default()
-                        .render_pass(*self.render_passes[ShaderRenderStage::Drawing])
-                        .framebuffer(*self.framebuffer)
-                        .render_area(self.swapchain.scissor)
-                        .clear_values(&clear_values);
+                        VkImage::cmd_transition_img_layout(
+                                &self.vk_context.device,
+                                cmd_buffer,
+                                &TransitionImageLayoutInfo {
+                                        image: *self.swapchain.depth_img,
+                                        old_layout: vk::ImageLayout::UNDEFINED,
+                                        new_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                        src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                        src_access_mask: vk::AccessFlags2::NONE,
+                                        dst_stage_mask: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                                                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                                        dst_access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                                                | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                                        subresource_range: vk::ImageSubresourceRange::full_depth(),
+                                },
+                        );
 
-                self.vk_context.device.cmd_begin_render_pass(
-                        cmd_buffer,
-                        &render_pass_binfo,
-                        vk::SubpassContents::INLINE,
-                );
+                        VkImage::cmd_transition_img_layout(
+                                &self.vk_context.device,
+                                cmd_buffer,
+                                &TransitionImageLayoutInfo {
+                                        image: *self.swapchain.resolve_imgs[0],
+                                        old_layout: vk::ImageLayout::UNDEFINED,
+                                        new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                        src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                        src_access_mask: vk::AccessFlags2::NONE,
+                                        dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                        dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                        subresource_range: vk::ImageSubresourceRange::full_color(),
+                                },
+                        );
+
+                        let color_attachment = vk::RenderingAttachmentInfo::default()
+                                .image_view(*self.swapchain.color_img_view)
+                                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                                .resolve_mode(vk::ResolveModeFlags::AVERAGE)
+                                .resolve_image_view(*self.swapchain.resolve_img_views[0])
+                                .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                                .load_op(vk::AttachmentLoadOp::CLEAR)
+                                .store_op(vk::AttachmentStoreOp::STORE)
+                                .clear_value(color_clear_value);
+
+                        let depth_attachment = vk::RenderingAttachmentInfo::default()
+                                .image_view(*self.swapchain.depth_img_view)
+                                .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                                .resolve_mode(vk::ResolveModeFlags::NONE)
+                                .load_op(vk::AttachmentLoadOp::CLEAR)
+                                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                                .clear_value(depth_clear_value);
+
+                        let rendering_info = vk::RenderingInfo::default()
+                                .render_area(self.swapchain.scissor)
+                                .layer_count(1)
+                                .color_attachments(color_attachment.ref_into_slice())
+                                .depth_attachment(&depth_attachment);
+
+                        self.vk_context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
+                }
 
                 self.vk_context
                         .device
@@ -1500,7 +1448,7 @@ impl VkRenderer {
                         self.draw_shader_group(asset_manager, cmd_buffer, shader_id, shader_group)?;
                 }
 
-                self.vk_context.device.cmd_end_render_pass(cmd_buffer);
+                self.vk_context.device.cmd_end_rendering(cmd_buffer);
 
                 Ok(())
         }
@@ -1514,13 +1462,15 @@ impl VkRenderer {
         ) -> VkResult<()> {
                 let device = &*self.vk_context.device;
                 let framei = self.framei;
-                let vk_shader = &self.vk_asset_manager.shaders[shader_id];
 
-                device.cmd_bind_pipeline(
-                        cmd_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        *vk_shader.graphics_pipeline,
-                );
+                let vk_shader = &self.vk_asset_manager.shaders[shader_id];
+                let vk_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
+                        asset_manager,
+                        shader_id,
+                        self.swapchain.color_format,
+                        self.swapchain.depth_format,
+                )?;
+                device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, vk_pipeline);
 
                 Self::update_world_descriptors(device, &self.world_shader_resource_descriptors_data, framei, vk_shader);
 
@@ -1632,25 +1582,63 @@ impl VkRenderer {
                 let frame_data = &self.frames_data[self.framei];
                 let cmd_buffer = *frame_data.draw_cmd_buffer;
 
-                let postprocess_render_pass_binfo = vk::RenderPassBeginInfo::default()
-                        .render_pass(*self.render_passes[ShaderRenderStage::Postprocessing])
-                        .framebuffer(*self.postprocess_framebuffers[1])
-                        .render_area(self.swapchain.scissor);
-
-                self.vk_context.device.cmd_begin_render_pass(
+                VkImage::cmd_transition_img_layout(
+                        &self.vk_context.device,
                         cmd_buffer,
-                        &postprocess_render_pass_binfo,
-                        vk::SubpassContents::INLINE,
+                        &TransitionImageLayoutInfo {
+                                image: *self.swapchain.resolve_imgs[0],
+                                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                                dst_access_mask: vk::AccessFlags2::SHADER_READ,
+                                subresource_range: vk::ImageSubresourceRange::full_color(),
+                        },
                 );
+
+                VkImage::cmd_transition_img_layout(
+                        &self.vk_context.device,
+                        cmd_buffer,
+                        &TransitionImageLayoutInfo {
+                                image: *self.swapchain.resolve_imgs[1],
+                                old_layout: vk::ImageLayout::UNDEFINED,
+                                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                src_access_mask: vk::AccessFlags2::NONE,
+                                dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                subresource_range: vk::ImageSubresourceRange::full_color(),
+                        },
+                );
+
+                {
+                        let color_attachment = vk::RenderingAttachmentInfo::default()
+                                .image_view(*self.swapchain.resolve_img_views[1])
+                                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                                .load_op(vk::AttachmentLoadOp::CLEAR)
+                                .store_op(vk::AttachmentStoreOp::STORE);
+
+                        let rendering_info = vk::RenderingInfo::default()
+                                .render_area(self.swapchain.scissor)
+                                .layer_count(1)
+                                .color_attachments(color_attachment.ref_into_slice());
+
+                        self.vk_context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
+                }
 
                 let hdr_shader_id = asset_manager.shader_names()["hdr-shader"];
                 let hdr_vk_shader = &self.vk_asset_manager.shaders[hdr_shader_id];
+                let hdr_vk_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
+                        asset_manager,
+                        hdr_shader_id,
+                        self.swapchain.color_format,
+                        vk::Format::UNDEFINED,
+                )?;
 
-                self.vk_context.device.cmd_bind_pipeline(
-                        cmd_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        *hdr_vk_shader.graphics_pipeline,
-                );
+                self.vk_context
+                        .device
+                        .cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, hdr_vk_pipeline);
 
                 // We dont use self.swapchain.viewport because it is upside down (we dont flip Y for this pass)
                 let viewport = vk::Viewport {
@@ -1693,7 +1681,7 @@ impl VkRenderer {
                         .unwrap()
                         .cmd_draw(cmd_buffer, imgui_draw_data)?;
 
-                self.vk_context.device.cmd_end_render_pass(cmd_buffer);
+                self.vk_context.device.cmd_end_rendering(cmd_buffer);
 
                 Ok(())
         }
@@ -1704,44 +1692,36 @@ impl VkRenderer {
                 let present_img_data = &self.swapchain.present_imgs[imagei as usize];
 
                 /* Prepare resolve image for copying from */
-                let tinfo = TransitionImageLayoutInfo {
-                        device: &self.vk_context.device,
+                VkImage::cmd_transition_img_layout(
+                        &self.vk_context.device,
                         cmd_buffer,
-                        image: *self.swapchain.resolve_imgs[1],
-                        base_mip_level: 0,
-                        mip_levels: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                        dst_access_mask: vk::AccessFlags::TRANSFER_READ,
-                        old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        new_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                };
-
-                VkImage::cmd_transition_img_layout(&tinfo);
+                        &TransitionImageLayoutInfo {
+                                image: *self.swapchain.resolve_imgs[1],
+                                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                new_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                dst_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                dst_access_mask: vk::AccessFlags2::TRANSFER_READ,
+                                subresource_range: vk::ImageSubresourceRange::full_color(),
+                        },
+                );
 
                 /* Prepare present image for copying into */
-                let tinfo = TransitionImageLayoutInfo {
-                        device: &self.vk_context.device,
+                VkImage::cmd_transition_img_layout(
+                        &self.vk_context.device,
                         cmd_buffer,
-                        image: present_img_data.img,
-                        base_mip_level: 0,
-                        mip_levels: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                        src_access_mask: vk::AccessFlags::NONE,
-                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                };
-
-                VkImage::cmd_transition_img_layout(&tinfo);
+                        &TransitionImageLayoutInfo {
+                                image: present_img_data.img,
+                                old_layout: vk::ImageLayout::UNDEFINED,
+                                new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                src_access_mask: vk::AccessFlags2::NONE,
+                                dst_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                dst_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+                                subresource_range: vk::ImageSubresourceRange::full_color(),
+                        },
+                );
 
                 VkImage::cmd_copy_image_to_image(
                         &self.vk_context.device,
@@ -1754,35 +1734,39 @@ impl VkRenderer {
                 );
 
                 // Prepare swapchain image for presentation
-                let tinfo = TransitionImageLayoutInfo {
-                        device: &self.vk_context.device,
+                VkImage::cmd_transition_img_layout(
+                        &self.vk_context.device,
                         cmd_buffer,
-                        image: present_img_data.img,
-                        base_mip_level: 0,
-                        mip_levels: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        src_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                        dst_stage_mask: vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                        src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                        dst_access_mask: vk::AccessFlags::NONE,
-                        old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-                };
-
-                VkImage::cmd_transition_img_layout(&tinfo);
+                        &TransitionImageLayoutInfo {
+                                image: present_img_data.img,
+                                old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+                                src_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+                                dst_stage_mask: vk::PipelineStageFlags2::NONE,
+                                dst_access_mask: vk::AccessFlags2::NONE,
+                                subresource_range: vk::ImageSubresourceRange::full_color(),
+                        },
+                );
 
                 self.vk_context.device.end_command_buffer(*frame_data.draw_cmd_buffer)?;
 
-                let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::TRANSFER];
-                let submit_info = vk::SubmitInfo::default()
-                        .command_buffers(frame_data.draw_cmd_buffer.deref_into_slice())
-                        .wait_semaphores(frame_data.img_available_semaphore.deref_into_slice())
-                        .wait_dst_stage_mask(&wait_stages)
-                        .signal_semaphores(present_img_data.render_finished_semaphore.deref_into_slice());
+                let wait_semaphore_info = vk::SemaphoreSubmitInfo::default()
+                        .semaphore(*frame_data.img_available_semaphore)
+                        .stage_mask(vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::TRANSFER);
 
-                self.vk_context.device.queue_submit(
+                let command_buffer_info =
+                        vk::CommandBufferSubmitInfo::default().command_buffer(*frame_data.draw_cmd_buffer);
+
+                let signal_semaphore_info =
+                        vk::SemaphoreSubmitInfo::default().semaphore(*present_img_data.render_finished_semaphore);
+
+                let submit_info = vk::SubmitInfo2::default()
+                        .wait_semaphore_infos(wait_semaphore_info.ref_into_slice())
+                        .command_buffer_infos(command_buffer_info.ref_into_slice())
+                        .signal_semaphore_infos(signal_semaphore_info.ref_into_slice());
+
+                self.vk_context.device.queue_submit2(
                         self.vk_context.queues.graphics,
                         &[submit_info],
                         *frame_data.draw_cmd_buffer.fence,
@@ -1904,16 +1888,15 @@ impl VkRenderer {
                 let frame_data = &self.frames_data[self.framei];
                 let cmd_buffer = *frame_data.draw_cmd_buffer;
 
-                let clear_values = [
-                        vk::ClearValue {
-                                color: vk::ClearColorValue {
-                                        float32: [f32::MAX, 0.0, 0.0, 0.0], // We only care about red channel
-                                },
+                let color_clear_value = vk::ClearValue {
+                        color: vk::ClearColorValue {
+                                float32: [f32::MAX, 0.0, 0.0, 0.0], // We only care about red channel
                         },
-                        vk::ClearValue {
-                                depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
-                        },
-                ];
+                };
+
+                let depth_clear_value = vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+                };
 
                 let shadow_map_rect = vk::Rect2D {
                         offset: vk::Offset2D { x: 0, y: 0 },
@@ -1933,20 +1916,62 @@ impl VkRenderer {
                         max_depth: 1.0,
                 };
 
+                VkImage::cmd_transition_img_layout(
+                        &self.vk_context.device,
+                        cmd_buffer,
+                        &TransitionImageLayoutInfo {
+                                image: *self.cube_shadow_map_img,
+                                old_layout: vk::ImageLayout::UNDEFINED,
+                                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                src_access_mask: vk::AccessFlags2::NONE,
+                                dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                subresource_range: vk::ImageSubresourceRange::full_color(),
+                        },
+                );
+
+                VkImage::cmd_transition_img_layout(
+                        &self.vk_context.device,
+                        cmd_buffer,
+                        &TransitionImageLayoutInfo {
+                                image: *self.cube_shadow_map_depth_img,
+                                old_layout: vk::ImageLayout::UNDEFINED,
+                                new_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                src_access_mask: vk::AccessFlags2::NONE,
+                                dst_stage_mask: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                                        | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                                dst_access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                                        | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                                subresource_range: vk::ImageSubresourceRange::full_depth(),
+                        },
+                );
+
                 for i in 0..6 {
-                        let framebuffer = *self.cube_shadow_map_framebuffers[i];
+                        {
+                                let color_attachment = vk::RenderingAttachmentInfo::default()
+                                        .image_view(*self.cube_shadow_map_img_views[i])
+                                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                                        .store_op(vk::AttachmentStoreOp::STORE)
+                                        .clear_value(color_clear_value);
 
-                        let render_pass_binfo = vk::RenderPassBeginInfo::default()
-                                .render_pass(*self.render_passes[ShaderRenderStage::PointShadowMapping])
-                                .framebuffer(framebuffer)
-                                .render_area(shadow_map_rect)
-                                .clear_values(&clear_values);
+                                let depth_attachment = vk::RenderingAttachmentInfo::default()
+                                        .image_view(*self.cube_shadow_map_depth_img_view)
+                                        .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                                        .load_op(vk::AttachmentLoadOp::CLEAR)
+                                        .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                                        .clear_value(depth_clear_value);
 
-                        self.vk_context.device.cmd_begin_render_pass(
-                                cmd_buffer,
-                                &render_pass_binfo,
-                                vk::SubpassContents::INLINE,
-                        );
+                                let rendering_info = vk::RenderingInfo::default()
+                                        .render_area(shadow_map_rect)
+                                        .layer_count(1)
+                                        .color_attachments(color_attachment.ref_into_slice())
+                                        .depth_attachment(&depth_attachment);
+
+                                self.vk_context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
+                        }
 
                         self.vk_context
                                 .device
@@ -1958,11 +1983,17 @@ impl VkRenderer {
 
                         let cube_shadow_map_shader_id = asset_manager.shader_names()["cube-shadow-map"];
                         let cube_shadow_map_shader = &self.vk_asset_manager.shaders[cube_shadow_map_shader_id];
+                        let cube_shadow_map_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
+                                asset_manager,
+                                cube_shadow_map_shader_id,
+                                self.cube_shadow_map_img.format,
+                                self.cube_shadow_map_depth_img.format,
+                        )?;
 
                         self.vk_context.device.cmd_bind_pipeline(
                                 cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
-                                *cube_shadow_map_shader.graphics_pipeline,
+                                cube_shadow_map_pipeline,
                         );
 
                         self.vk_context.device.cmd_push_constants(
@@ -1994,8 +2025,24 @@ impl VkRenderer {
                                 }
                         }
 
-                        self.vk_context.device.cmd_end_render_pass(cmd_buffer);
+                        self.vk_context.device.cmd_end_rendering(cmd_buffer);
                 }
+
+                // Prepare cube shadow map image for reading in shader.
+                VkImage::cmd_transition_img_layout(
+                        &self.vk_context.device,
+                        cmd_buffer,
+                        &TransitionImageLayoutInfo {
+                                image: *self.cube_shadow_map_img,
+                                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                                dst_access_mask: vk::AccessFlags2::SHADER_READ,
+                                subresource_range: vk::ImageSubresourceRange::full_color(),
+                        },
+                );
 
                 Ok(())
         }
@@ -2004,9 +2051,9 @@ impl VkRenderer {
                 let frame_data = &self.frames_data[self.framei];
                 let cmd_buffer = *frame_data.draw_cmd_buffer;
 
-                let clear_values = [vk::ClearValue {
+                let depth_clear_value = vk::ClearValue {
                         depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
-                }];
+                };
 
                 let shadow_map_rect = vk::Rect2D {
                         offset: vk::Offset2D { x: 0, y: 0 },
@@ -2029,17 +2076,38 @@ impl VkRenderer {
                         max_depth: 1.0,
                 };
 
-                let render_pass_binfo = vk::RenderPassBeginInfo::default()
-                        .render_pass(*self.render_passes[ShaderRenderStage::DirectionalShadowMapping])
-                        .framebuffer(*self.shadow_map_framebuffer)
-                        .render_area(shadow_map_rect)
-                        .clear_values(&clear_values);
-
-                self.vk_context.device.cmd_begin_render_pass(
+                VkImage::cmd_transition_img_layout(
+                        &self.vk_context.device,
                         cmd_buffer,
-                        &render_pass_binfo,
-                        vk::SubpassContents::INLINE,
+                        &TransitionImageLayoutInfo {
+                                image: *self.shadow_map_depth_img,
+                                old_layout: vk::ImageLayout::UNDEFINED,
+                                new_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                src_access_mask: vk::AccessFlags2::NONE,
+                                dst_stage_mask: vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                                        | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                                dst_access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
+                                        | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                                subresource_range: vk::ImageSubresourceRange::full_depth(),
+                        },
                 );
+
+                {
+                        let depth_attachment = vk::RenderingAttachmentInfo::default()
+                                .image_view(*self.shadow_map_depth_img_view)
+                                .image_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                                .load_op(vk::AttachmentLoadOp::CLEAR)
+                                .store_op(vk::AttachmentStoreOp::STORE)
+                                .clear_value(depth_clear_value);
+
+                        let rendering_info = vk::RenderingInfo::default()
+                                .render_area(shadow_map_rect)
+                                .layer_count(1)
+                                .depth_attachment(&depth_attachment);
+
+                        self.vk_context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
+                }
 
                 self.vk_context
                         .device
@@ -2051,11 +2119,17 @@ impl VkRenderer {
 
                 let shadow_map_shader_id = asset_manager.shader_names()["shadow-map"];
                 let shadow_map_shader = &self.vk_asset_manager.shaders[shadow_map_shader_id];
+                let shadow_map_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
+                        asset_manager,
+                        shadow_map_shader_id,
+                        vk::Format::UNDEFINED,
+                        self.shadow_map_depth_img.format,
+                )?;
 
                 self.vk_context.device.cmd_bind_pipeline(
                         cmd_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
-                        *shadow_map_shader.graphics_pipeline,
+                        shadow_map_pipeline,
                 );
 
                 self.vk_context.device.cmd_bind_descriptor_sets(
@@ -2075,7 +2149,22 @@ impl VkRenderer {
                         }
                 }
 
-                self.vk_context.device.cmd_end_render_pass(cmd_buffer);
+                self.vk_context.device.cmd_end_rendering(cmd_buffer);
+
+                VkImage::cmd_transition_img_layout(
+                        &self.vk_context.device,
+                        cmd_buffer,
+                        &TransitionImageLayoutInfo {
+                                image: *self.shadow_map_depth_img,
+                                old_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+                                src_access_mask: vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                                dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                                dst_access_mask: vk::AccessFlags2::SHADER_READ,
+                                subresource_range: vk::ImageSubresourceRange::full_depth(),
+                        },
+                );
 
                 Ok(())
         }

@@ -89,7 +89,7 @@ pub struct VkImageCubemapCreateInfo {
 pub struct VkImage {
         allocator: Rc<VmaAllocator>,
 
-        pub handle: vk::Image,
+        handle: vk::Image,
         alloc: vma::Allocation,
 
         destroyed: Cell<bool>,
@@ -235,26 +235,20 @@ impl VkImage {
                 cinfo.setup_cmd_buffer.begin(device)?;
                 let cmd_buffer = **cinfo.setup_cmd_buffer;
 
-                Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
+                Self::cmd_transition_img_layout(
                         device,
                         cmd_buffer,
-
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-
-                        image: *vk_image,
-                        base_mip_level: 0,
-                        mip_levels,
-                        base_array_layer: 0,
-                        layer_count: image.layers,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-
-                        src_access_mask: vk::AccessFlags::empty(),
-                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-
-                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
-                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                });
+                        &TransitionImageLayoutInfo {
+                                image: *vk_image,
+                                old_layout: vk::ImageLayout::UNDEFINED,
+                                new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                src_access_mask: vk::AccessFlags2::NONE,
+                                dst_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                dst_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+                                subresource_range: vk::ImageSubresourceRange::full_color(),
+                        },
+                );
 
                 let dst_layer_stride = dst_format.compute_stride_with_mipmaps(image.width, image.height, mip_levels);
                 let buffer_size = (image.layers * dst_layer_stride) as vk::DeviceSize;
@@ -347,30 +341,28 @@ impl VkImage {
                                 width: vk_image.width,
                                 height: vk_image.height,
                                 mip_levels,
-                                base_array_layer: 0,
-                                layer_count: vk_image.array_layers,
-                        });
-                } else {
-                        Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
-                                device,
-                                cmd_buffer,
-
                                 old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                                 new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-
-                                image: *vk_image,
-                                base_mip_level: 0,
-                                mip_levels,
-                                base_array_layer: 0,
-                                layer_count: image.layers,
-                                aspect_mask: vk::ImageAspectFlags::COLOR,
-
-                                src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                                dst_access_mask: vk::AccessFlags::SHADER_READ,
-
-                                src_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                                dst_stage_mask: vk::PipelineStageFlags::FRAGMENT_SHADER,
+                                src_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+                                dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                                dst_access_mask: vk::AccessFlags2::SHADER_READ,
                         });
+                } else {
+                        Self::cmd_transition_img_layout(
+                                device,
+                                cmd_buffer,
+                                &TransitionImageLayoutInfo {
+                                        image: *vk_image,
+                                        old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                        src_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                        src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+                                        dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                                        dst_access_mask: vk::AccessFlags2::SHADER_READ,
+                                        subresource_range: vk::ImageSubresourceRange::full_color(),
+                                },
+                        );
                 }
 
                 cinfo.setup_cmd_buffer
@@ -427,26 +419,20 @@ impl VkImage {
                 cinfo.setup_cmd_buffer.begin(device)?;
                 let cmd_buffer = **cinfo.setup_cmd_buffer;
 
-                Self::cmd_transition_img_layout(&TransitionImageLayoutInfo {
+                Self::cmd_transition_img_layout(
                         device,
                         cmd_buffer,
-
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-
-                        image: *vk_img,
-                        base_mip_level: 0,
-                        mip_levels,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-
-                        src_access_mask: vk::AccessFlags::empty(),
-                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-
-                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
-                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                });
+                        &TransitionImageLayoutInfo {
+                                image: *vk_img,
+                                old_layout: vk::ImageLayout::UNDEFINED,
+                                new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                src_access_mask: vk::AccessFlags2::NONE,
+                                dst_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                dst_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+                                subresource_range: vk::ImageSubresourceRange::full_color(),
+                        },
+                );
 
                 match load_strategy {
                         VkLoadStrategy::StagingBufferDirect | VkLoadStrategy::StagingBufferConvert => {
@@ -554,18 +540,23 @@ impl VkImage {
                         },
                 }
 
+                // This is missing check of mip_levels > 1 i think.
                 Self::cmd_gen_mipmaps(&GenerateMipmapsInfo {
                         instance,
                         pdevice,
                         device,
                         cmd_buffer,
                         image: *vk_img,
-                        image_format: dst_format,
-                        width: cinfo.width,
-                        height: cinfo.height,
-                        mip_levels,
-                        base_array_layer: 0,
-                        layer_count: 1,
+                        image_format: vk_img.format,
+                        width: vk_img.width,
+                        height: vk_img.height,
+                        mip_levels: vk_img.mip_levels,
+                        old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        src_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                        src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+                        dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                        dst_access_mask: vk::AccessFlags2::SHADER_READ,
                 });
 
                 cinfo.setup_cmd_buffer
@@ -646,36 +637,29 @@ impl VkImage {
                 debug_utils.device_loader().set_debug_utils_object_name(&name_info)
         }
 
-        pub fn cmd_transition_img_layout(tinfo: &TransitionImageLayoutInfo) {
-                let barrier = vk::ImageMemoryBarrier {
+        pub fn cmd_transition_img_layout(
+                device: &ash::Device,
+                cmd_buffer: vk::CommandBuffer,
+                tinfo: &TransitionImageLayoutInfo,
+        ) {
+                let image_memory_barrier = vk::ImageMemoryBarrier2 {
+                        src_stage_mask: tinfo.src_stage_mask,
                         src_access_mask: tinfo.src_access_mask,
+                        dst_stage_mask: tinfo.dst_stage_mask,
                         dst_access_mask: tinfo.dst_access_mask,
                         old_layout: tinfo.old_layout,
                         new_layout: tinfo.new_layout,
                         src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                         dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                         image: tinfo.image,
-                        subresource_range: vk::ImageSubresourceRange {
-                                aspect_mask: tinfo.aspect_mask,
-                                base_mip_level: tinfo.base_mip_level,
-                                level_count: tinfo.mip_levels,
-                                base_array_layer: tinfo.base_array_layer,
-                                layer_count: tinfo.layer_count,
-                        },
-                        ..vk::ImageMemoryBarrier::default()
+                        subresource_range: tinfo.subresource_range,
+                        ..Default::default()
                 };
 
-                unsafe {
-                        tinfo.device.cmd_pipeline_barrier(
-                                tinfo.cmd_buffer,
-                                tinfo.src_stage_mask,
-                                tinfo.dst_stage_mask,
-                                vk::DependencyFlags::empty(),
-                                &[],
-                                &[],
-                                std::slice::from_ref(&barrier),
-                        );
-                }
+                let dependency_info =
+                        vk::DependencyInfo::default().image_memory_barriers(image_memory_barrier.ref_into_slice());
+
+                unsafe { device.cmd_pipeline_barrier2(cmd_buffer, &dependency_info) };
         }
 
         pub unsafe fn cmd_copy_image_to_image(
@@ -761,6 +745,10 @@ impl VkImage {
                 }
         }
 
+        /// PRE: minfo.image.(mip_level = 0, all_layers) must be in minfo.old_layout layout. The
+        /// other mip levels do not matter as they will be overwritten.
+        ///
+        /// POST: minfo.image.(all_mip_levels, all_layers) will be in minfo.new_layout layout.
         pub fn cmd_gen_mipmaps(minfo: &GenerateMipmapsInfo) {
                 assert!(
                         unsafe {
@@ -772,26 +760,37 @@ impl VkImage {
                         "vk::ImageFormat does not support linear filter!"
                 );
 
-                let mut tinfo = TransitionImageLayoutInfo {
-                        device: minfo.device,
-                        cmd_buffer: minfo.cmd_buffer,
+                // Transition first mip level to TRANSFER_SRC_OPTIMAL.
+                Self::cmd_transition_img_layout(
+                        minfo.device,
+                        minfo.cmd_buffer,
+                        &TransitionImageLayoutInfo {
+                                image: minfo.image,
+                                old_layout: minfo.old_layout,
+                                new_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                src_stage_mask: minfo.src_stage_mask,
+                                src_access_mask: minfo.src_access_mask,
+                                dst_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                dst_access_mask: vk::AccessFlags2::TRANSFER_READ,
+                                subresource_range: vk::ImageSubresourceRange::full_color().level_count(1),
+                        },
+                );
 
-                        image: minfo.image,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-
-                        base_mip_level: Default::default(),
-                        mip_levels: 1,
-                        base_array_layer: minfo.base_array_layer,
-                        layer_count: minfo.layer_count,
-
-                        src_access_mask: Default::default(),
-                        dst_access_mask: Default::default(),
-                        old_layout: Default::default(),
-                        new_layout: Default::default(),
-
-                        src_stage_mask: Default::default(),
-                        dst_stage_mask: Default::default(),
-                };
+                // Transition mip levels 1.. to TRANSFER_DST_OPTIMAL.
+                Self::cmd_transition_img_layout(
+                        minfo.device,
+                        minfo.cmd_buffer,
+                        &TransitionImageLayoutInfo {
+                                image: minfo.image,
+                                old_layout: vk::ImageLayout::UNDEFINED,
+                                new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                src_access_mask: vk::AccessFlags2::NONE,
+                                dst_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                dst_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+                                subresource_range: vk::ImageSubresourceRange::full_color().base_mip_level(1),
+                        },
+                );
 
                 let mut prev_mip_width = minfo.width;
                 let mut prev_mip_height = minfo.height;
@@ -800,23 +799,12 @@ impl VkImage {
                         let this_mip_width = if prev_mip_width > 1 { prev_mip_width / 2 } else { 1 };
                         let this_mip_height = if prev_mip_height > 1 { prev_mip_height / 2 } else { 1 };
 
-                        tinfo.base_mip_level = i - 1;
-
-                        tinfo.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
-                        tinfo.new_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
-                        tinfo.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
-                        tinfo.dst_access_mask = vk::AccessFlags::TRANSFER_READ;
-                        tinfo.src_stage_mask = vk::PipelineStageFlags::TRANSFER;
-                        tinfo.dst_stage_mask = vk::PipelineStageFlags::TRANSFER;
-
-                        Self::cmd_transition_img_layout(&tinfo);
-
                         let mut blit = vk::ImageBlit::default();
 
                         blit.src_subresource.aspect_mask = vk::ImageAspectFlags::COLOR;
                         blit.src_subresource.mip_level = i - 1;
-                        blit.src_subresource.base_array_layer = minfo.base_array_layer;
-                        blit.src_subresource.layer_count = minfo.layer_count;
+                        blit.src_subresource.base_array_layer = 0;
+                        blit.src_subresource.layer_count = vk::REMAINING_ARRAY_LAYERS;
                         blit.src_offsets[0].x = 0;
                         blit.src_offsets[0].y = 0;
                         blit.src_offsets[0].z = 0;
@@ -826,8 +814,8 @@ impl VkImage {
 
                         blit.dst_subresource.aspect_mask = vk::ImageAspectFlags::COLOR;
                         blit.dst_subresource.mip_level = i;
-                        blit.dst_subresource.base_array_layer = minfo.base_array_layer;
-                        blit.dst_subresource.layer_count = minfo.layer_count;
+                        blit.dst_subresource.base_array_layer = 0;
+                        blit.dst_subresource.layer_count = vk::REMAINING_ARRAY_LAYERS;
                         blit.dst_offsets[0].x = 0;
                         blit.dst_offsets[0].y = 0;
                         blit.dst_offsets[0].z = 0;
@@ -847,28 +835,45 @@ impl VkImage {
                                 );
                         }
 
-                        tinfo.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
-                        tinfo.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
-                        tinfo.src_access_mask = vk::AccessFlags::TRANSFER_READ;
-                        tinfo.dst_access_mask = vk::AccessFlags::SHADER_READ;
-                        tinfo.src_stage_mask = vk::PipelineStageFlags::TRANSFER;
-                        tinfo.dst_stage_mask = vk::PipelineStageFlags::FRAGMENT_SHADER;
-
-                        Self::cmd_transition_img_layout(&tinfo);
+                        // Transition the mip level we just created inito TRANSFER_SRC_OPTIMAL for the next mip level.
+                        // We could skip this for the last mip level but we don't care.
+                        Self::cmd_transition_img_layout(
+                                minfo.device,
+                                minfo.cmd_buffer,
+                                &TransitionImageLayoutInfo {
+                                        image: minfo.image,
+                                        old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                        new_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                        src_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                        src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+                                        dst_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                        dst_access_mask: vk::AccessFlags2::TRANSFER_READ,
+                                        subresource_range: vk::ImageSubresourceRange::full_color()
+                                                .base_mip_level(i)
+                                                .level_count(1),
+                                },
+                        );
 
                         prev_mip_width = this_mip_width;
                         prev_mip_height = this_mip_height;
                 }
 
-                tinfo.base_mip_level = minfo.mip_levels - 1;
-                tinfo.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
-                tinfo.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
-                tinfo.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
-                tinfo.dst_access_mask = vk::AccessFlags::SHADER_READ;
-                tinfo.src_stage_mask = vk::PipelineStageFlags::TRANSFER;
-                tinfo.dst_stage_mask = vk::PipelineStageFlags::FRAGMENT_SHADER;
-
-                Self::cmd_transition_img_layout(&tinfo);
+                // Now all mip levels are in TRANSFER_SRC_OPTIMAL.
+                // Transition all of them into minfo.new_layout.
+                Self::cmd_transition_img_layout(
+                        minfo.device,
+                        minfo.cmd_buffer,
+                        &TransitionImageLayoutInfo {
+                                image: minfo.image,
+                                old_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                new_layout: minfo.new_layout,
+                                src_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                src_access_mask: vk::AccessFlags2::NONE,
+                                dst_stage_mask: minfo.dst_stage_mask,
+                                dst_access_mask: minfo.dst_access_mask,
+                                subresource_range: vk::ImageSubresourceRange::full_color(),
+                        },
+                );
         }
 }
 
@@ -876,21 +881,15 @@ impl_destroyable_expr!(VkImage, vk::Image, |s: &VkImage| {
         s.allocator.destroy_image(s.handle, s.alloc);
 });
 
-pub struct TransitionImageLayoutInfo<'a> {
-        pub device: &'a ash::Device,
-        pub cmd_buffer: vk::CommandBuffer,
+pub struct TransitionImageLayoutInfo {
         pub image: vk::Image,
-        pub base_mip_level: u32,
-        pub mip_levels: u32,
-        pub base_array_layer: u32,
-        pub layer_count: u32,
-        pub aspect_mask: vk::ImageAspectFlags,
-        pub src_stage_mask: vk::PipelineStageFlags,
-        pub dst_stage_mask: vk::PipelineStageFlags,
-        pub src_access_mask: vk::AccessFlags,
-        pub dst_access_mask: vk::AccessFlags,
         pub old_layout: vk::ImageLayout,
         pub new_layout: vk::ImageLayout,
+        pub src_stage_mask: vk::PipelineStageFlags2, // NOTE: NONE is equivalent to TOP_OF_PIPE
+        pub src_access_mask: vk::AccessFlags2,
+        pub dst_stage_mask: vk::PipelineStageFlags2, // NOTE: NONE is equivalent to BOTTOM_OF_PIPE
+        pub dst_access_mask: vk::AccessFlags2,
+        pub subresource_range: vk::ImageSubresourceRange,
 }
 
 pub struct GenerateMipmapsInfo<'a> {
@@ -903,8 +902,12 @@ pub struct GenerateMipmapsInfo<'a> {
         pub width: u32,
         pub height: u32,
         pub mip_levels: u32,
-        pub base_array_layer: u32,
-        pub layer_count: u32,
+        pub old_layout: vk::ImageLayout, // The layout of image.(mip_level = 0, all_layers) before the cmd.
+        pub new_layout: vk::ImageLayout, // The layout of image.(all_mip_levels, all_layers) after the cmd.
+        pub src_stage_mask: vk::PipelineStageFlags2,
+        pub src_access_mask: vk::AccessFlags2,
+        pub dst_stage_mask: vk::PipelineStageFlags2,
+        pub dst_access_mask: vk::AccessFlags2,
 }
 
 #[derive(Debug, PartialEq, Eq)]

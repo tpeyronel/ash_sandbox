@@ -1720,10 +1720,6 @@ impl AssetManager {
                 self.assets.samplers.get(sampler_id)
         }
 
-        pub fn get_shader(&self, shader_id: ShaderId) -> Option<&Shader> {
-                self.assets.shaders.get(shader_id)
-        }
-
         // #[allow(dead_code)]
         // pub fn images(&self) -> &SlotMap<ImageId, Image> {
         //         &self.images

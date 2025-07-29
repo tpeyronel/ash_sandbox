@@ -1,4 +1,5 @@
 use std::{
+        cell::RefCell,
         ffi::CString,
         path::{Path, PathBuf},
         rc::Rc,
@@ -10,7 +11,6 @@ use ash::{
 };
 use crossbeam_channel::Receiver;
 use enum_map::EnumMap;
-use hashbrown::HashMap;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace};
 use slotmap::SecondaryMap;
@@ -22,7 +22,7 @@ use crate::{
                 ShaderResourceData, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE, PREFILTER_MAP_SIZE},
-        hashmap::GetOrInsert,
+        hashmap::{Entry, GetOrInsert, HashMap},
         my_glm::{Mat4, Vec2, Vec3, Vec4},
         renderer::PrefilterParams,
         shader_preprocessor::{PreprocessedShaderStage, ShaderStageSourceBuilder},
@@ -36,7 +36,8 @@ use crate::{
                 vk_buffer::{BufferData, VkBuffer, VkImmutableBufferCreateInfo},
                 vk_command_buffer::VkReusableCommandBuffer,
                 vk_image::{MipLevels, VkImage},
-                vk_wrapper::{VkDevice, VkImageView, VkPhysicalDevice, VkSampler},
+                vk_image_subresource_range::ImageSubresourceRangeUtil,
+                vk_wrapper::{HasVkHandle, VkDevice, VkImageView, VkPhysicalDevice, VkSampler},
         },
         AnyResult,
 };
@@ -48,11 +49,8 @@ use super::{
         vk_image::{
                 GenerateMipmapsInfo, TransitionImageLayoutInfo, VkImageCreateFromImageInfo, VkImageCubemapCreateInfo,
         },
-        vk_util::{vk_format_from_image_format_and_color_space, BytesPerPixel},
-        vk_wrapper::{
-                VkDebugUtils, VkFramebuffer, VkInstance, VkObject, VkPipeline, VkPipelineLayout, VkShaderModule,
-                VmaAllocator,
-        },
+        vk_util::vk_format_from_image_format_and_color_space,
+        vk_wrapper::{VkDebugUtils, VkInstance, VkObject, VkPipeline, VkPipelineLayout, VkShaderModule, VmaAllocator},
 };
 
 pub struct VkMesh {
@@ -92,13 +90,11 @@ pub struct VkShader {
         pub dst_set_layouts: EnumMap<VkDescriptorSetIndex, vk::DescriptorSetLayout>,
 
         pub graphics_pipeline_layout: VkPipelineLayout,
-        pub graphics_pipeline: VkPipeline,
 }
 
 impl VkShader {
         fn destroy(&self, device: &VkDevice) {
                 unsafe {
-                        self.graphics_pipeline.destroy();
                         self.graphics_pipeline_layout.destroy();
 
                         for (_, &dst_set_layout) in &self.dst_set_layouts {
@@ -129,6 +125,14 @@ pub struct VkCubemap {
         pub prefiltered_sampler: VkSampler,
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct ShaderConfiguration {
+        shader_id: ShaderId,
+        color_attachment_formats: Vec<vk::Format>,
+        depth_attachment_format: vk::Format,
+        stencil_attachment_format: vk::Format,
+}
+
 pub struct VkAssetManager {
         instance: Rc<VkInstance>,
         pdevice: Rc<VkPhysicalDevice>,
@@ -145,14 +149,14 @@ pub struct VkAssetManager {
 
         swapchain_samples: vk::SampleCountFlags,
 
-        render_passes: EnumMap<ShaderRenderStage, vk::RenderPass>,
-
         pub meshes: SecondaryMap<MeshId, VkMesh>,
         pub images: SecondaryMap<ImageId, VkModelImage>,
         pub samplers: SecondaryMap<SamplerId, VkSampler>,
         pub materials: SecondaryMap<MaterialId, VkMaterial>,
         pub shaders: SecondaryMap<ShaderId, VkShader>,
         pub cubemaps: SecondaryMap<CubemapId, VkCubemap>,
+
+        pipelines: RefCell<HashMap<ShaderConfiguration, VkPipeline>>,
 
         pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
 
@@ -164,7 +168,6 @@ impl VkAssetManager {
         pub fn new(
                 vk_context: &mut VkContext,
                 swapchain_samples: vk::SampleCountFlags,
-                render_passes: EnumMap<ShaderRenderStage, vk::RenderPass>,
                 concurrent_frames: usize,
         ) -> AnyResult<Self> {
                 assert!(concurrent_frames > 0, "Frames in flight must be greater to zero");
@@ -190,7 +193,6 @@ impl VkAssetManager {
                         concurrent_frames,
 
                         swapchain_samples,
-                        render_passes,
 
                         meshes: SecondaryMap::new(),
                         images: SecondaryMap::new(),
@@ -198,6 +200,8 @@ impl VkAssetManager {
                         materials: SecondaryMap::new(),
                         shaders: SecondaryMap::new(),
                         cubemaps: SecondaryMap::new(),
+
+                        pipelines: RefCell::new(HashMap::new()),
 
                         shader_resources: HashMap::new(),
                         shader_resource_buffers: HashMap::new(),
@@ -287,6 +291,11 @@ impl VkAssetManager {
                         cubemap.environment_image_view.destroy();
                         cubemap.environment_image.destroy();
                 });
+
+                self.pipelines
+                        .get_mut()
+                        .drain()
+                        .for_each(|(_, pipeline)| unsafe { pipeline.destroy() });
 
                 self.shaders
                         .drain()
@@ -477,10 +486,7 @@ impl VkAssetManager {
         }
 
         fn on_shader_updated(&mut self, asset_manager: &AssetManager, shader_id: ShaderId) -> AnyResult<()> {
-                let shader = match asset_manager.get_shader(shader_id) {
-                        Some(shader) => shader,
-                        None => return Ok(()),
-                };
+                let shader = asset_manager.shader(shader_id);
 
                 let shader_resource_bindings =
                         Self::map_shader_resources(asset_manager.shader_resources(), &self.shader_resources, shader);
@@ -587,26 +593,6 @@ impl VkAssetManager {
                         shader.push_constants_size,
                 )?;
 
-                let samples = match shader.render_stage {
-                        ShaderRenderStage::Drawing => self.swapchain_samples,
-                        _ => vk::SampleCountFlags::TYPE_1,
-                };
-
-                let render_pass = self.render_passes[shader.render_stage];
-
-                let graphics_pipeline = Self::create_graphics_pipeline_for_vk_shader(
-                        &self.device,
-                        samples,
-                        render_pass,
-                        *graphics_pipeline_layout,
-                        !shader.disable_depth_test,
-                        shader.cull_mode.into(),
-                        *vert_module,
-                        frag_module.as_ref().map(|fm| **fm),
-                        &vertex_input_bindings,
-                        &vertex_input_attributes,
-                )?;
-
                 let vk_shader = VkShader {
                         vert_module,
                         frag_module,
@@ -620,12 +606,64 @@ impl VkAssetManager {
                         dst_set_layouts,
 
                         graphics_pipeline_layout,
-                        graphics_pipeline,
                 };
 
                 self.shaders.insert(shader_id, vk_shader);
 
                 Ok(())
+        }
+
+        pub fn get_pipeline_for_shader(
+                &self,
+                asset_manager: &AssetManager,
+                shader_id: ShaderId,
+                color_attachment_format: vk::Format,
+                depth_attachment_format: vk::Format,
+        ) -> VkResult<vk::Pipeline> {
+                let color_attachment_formats = if color_attachment_format == vk::Format::UNDEFINED {
+                        vec![]
+                } else {
+                        vec![color_attachment_format]
+                };
+
+                let shader_configuration = ShaderConfiguration {
+                        shader_id,
+                        color_attachment_formats,
+                        depth_attachment_format,
+                        stencil_attachment_format: vk::Format::UNDEFINED,
+                };
+
+                match self.pipelines.borrow_mut().entry(shader_configuration) {
+                        Entry::Occupied(occupied_entry) => Ok(**occupied_entry.get()),
+                        Entry::Vacant(vacant_entry) => {
+                                let shader = asset_manager.shader(shader_id);
+                                let vk_shader = &self.shaders[shader_id];
+
+                                let samples = match shader.render_stage {
+                                        ShaderRenderStage::Drawing => self.swapchain_samples,
+                                        _ => vk::SampleCountFlags::TYPE_1,
+                                };
+
+                                let shader_configuration = vacant_entry.key();
+
+                                let graphics_pipeline = Self::create_graphics_pipeline_for_vk_shader(
+                                        &self.device,
+                                        samples,
+                                        &shader_configuration.color_attachment_formats,
+                                        shader_configuration.depth_attachment_format,
+                                        shader_configuration.stencil_attachment_format,
+                                        *vk_shader.graphics_pipeline_layout,
+                                        !shader.disable_depth_test,
+                                        shader.cull_mode.into(),
+                                        *vk_shader.vert_module,
+                                        vk_shader.frag_module.as_ref().map(|fm| **fm),
+                                        &vk_shader.vertex_input_bindings,
+                                        &vk_shader.vertex_input_attributes,
+                                )?;
+
+                                Ok(**vacant_entry.insert(graphics_pipeline))
+                        },
+                }
         }
 
         fn map_shader_resources(
@@ -974,7 +1012,23 @@ impl VkAssetManager {
                                                 &mut deletion_queue,
                                         )?;
 
-                                        self.cmd_gen_mipmaps_for(&vk_image);
+                                        VkImage::cmd_gen_mipmaps(&GenerateMipmapsInfo {
+                                                instance: &self.instance,
+                                                pdevice: **self.pdevice,
+                                                device: &self.device,
+                                                cmd_buffer: *self.cmd_buffer,
+                                                image: vk_image.handle(),
+                                                image_format: vk_image.format,
+                                                width: vk_image.width,
+                                                height: vk_image.height,
+                                                mip_levels: vk_image.mip_levels,
+                                                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                                src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                                src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                                dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                                                dst_access_mask: vk::AccessFlags2::SHADER_READ,
+                                        });
 
                                         self.cmd_buffer.end_and_submit(
                                                 &self.device,
@@ -1268,7 +1322,6 @@ impl VkAssetManager {
                         image: *equirectangular_vk_image,
                         view_type: vk::ImageViewType::TYPE_2D,
                         format: equirectangular_vk_image.format,
-                        components: Default::default(),
                         subresource_range: vk::ImageSubresourceRange {
                                 aspect_mask: vk::ImageAspectFlags::COLOR,
                                 base_mip_level: 0,
@@ -1305,6 +1358,14 @@ impl VkAssetManager {
                         unsafe { VkSampler::new(Rc::clone(&self.device), &equirectangular_vk_sampler_cinfo)? };
 
                 let equi_to_cube_shader_id = asset_manager.shader_names()["equi-to-cube-shader"];
+
+                let equi_to_cube_vk_pipeline = self.get_pipeline_for_shader(
+                        asset_manager,
+                        equi_to_cube_shader_id,
+                        cubemap_image.format,
+                        vk::Format::UNDEFINED,
+                )?;
+
                 let equi_to_cube_vk_shader = &self.shaders[equi_to_cube_shader_id];
 
                 let equirectangular_binding = equi_to_cube_vk_shader
@@ -1343,29 +1404,21 @@ impl VkAssetManager {
                 unsafe { self.cmd_buffer.begin(&self.device)? };
                 let cmd_buffer = *self.cmd_buffer;
 
-                // transition all mips of cubemap_image into TRANSFER_DST_OPTIMAL layout.
-                // note: the transition for the 0th mip is unnecessary, as the transition
-                // could be done implicitly by the render pass.
-                VkImage::cmd_transition_img_layout(&TransitionImageLayoutInfo {
-                        device: &self.device,
-                        cmd_buffer: *self.cmd_buffer,
-
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-
-                        image: **cubemap_image,
-                        base_mip_level: 0,
-                        mip_levels: cubemap_image.mip_levels,
-                        base_array_layer: 0,
-                        layer_count: 6,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-
-                        src_access_mask: vk::AccessFlags::empty(),
-                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-
-                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
-                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                });
+                // Transition first mip of cubemap_image to COLOR_ATTACHMENT_OPTIMAL for rendering.
+                VkImage::cmd_transition_img_layout(
+                        &self.device,
+                        *self.cmd_buffer,
+                        &TransitionImageLayoutInfo {
+                                image: **cubemap_image,
+                                old_layout: vk::ImageLayout::UNDEFINED,
+                                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                src_access_mask: vk::AccessFlags2::NONE,
+                                dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                subresource_range: vk::ImageSubresourceRange::full_color().level_count(1),
+                        },
+                );
 
                 self.device.cmd_bind_descriptor_sets(
                         cmd_buffer,
@@ -1396,18 +1449,14 @@ impl VkAssetManager {
                 self.device.cmd_set_scissor(cmd_buffer, 0, scissor.ref_into_slice());
                 self.device.cmd_set_viewport(cmd_buffer, 0, viewport.ref_into_slice());
 
-                self.device.cmd_bind_pipeline(
-                        cmd_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        *equi_to_cube_vk_shader.graphics_pipeline,
-                );
+                self.device
+                        .cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, equi_to_cube_vk_pipeline);
 
                 for i in 0..6usize {
                         let face_image_view_cinfo = vk::ImageViewCreateInfo::default()
                                 .image(**cubemap_image)
                                 .view_type(vk::ImageViewType::TYPE_2D)
-                                .format(vk::Format::R16G16B16A16_SFLOAT)
-                                .components(Default::default())
+                                .format(cubemap_image.format)
                                 .subresource_range(vk::ImageSubresourceRange {
                                         aspect_mask: vk::ImageAspectFlags::COLOR,
                                         base_mip_level: 0,
@@ -1418,32 +1467,21 @@ impl VkAssetManager {
 
                         let face_image_view = VkImageView::new(Rc::clone(&self.device), &face_image_view_cinfo)?;
 
-                        let attachments = [*face_image_view];
-                        let render_pass = self.render_passes[ShaderRenderStage::SkyboxMapping];
+                        // Begin rendering.
+                        let color_attachment = vk::RenderingAttachmentInfo::default()
+                                .image_view(*face_image_view)
+                                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                                .load_op(vk::AttachmentLoadOp::DONT_CARE)
+                                .store_op(vk::AttachmentStoreOp::STORE);
 
-                        let framebuffer_cinfo = vk::FramebufferCreateInfo::default()
-                                .render_pass(render_pass)
-                                .width(size)
-                                .height(size)
-                                .layers(1)
-                                .attachments(&attachments);
+                        let rendering_info = vk::RenderingInfo::default()
+                                .render_area(scissor)
+                                .layer_count(1)
+                                .color_attachments(color_attachment.ref_into_slice());
 
-                        let framebuffer = VkFramebuffer::new(&self.device, &framebuffer_cinfo)?;
+                        self.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
 
-                        let render_pass_binfo = vk::RenderPassBeginInfo::default()
-                                .render_pass(render_pass)
-                                .framebuffer(*framebuffer)
-                                .render_area(vk::Rect2D {
-                                        offset: vk::Offset2D { x: 0, y: 0 },
-                                        extent: vk::Extent2D {
-                                                width: size,
-                                                height: size,
-                                        },
-                                });
-
-                        self.device
-                                .cmd_begin_render_pass(cmd_buffer, &render_pass_binfo, vk::SubpassContents::INLINE);
-
+                        // Push the corresponding rotation for this face.
                         self.device.cmd_push_constants(
                                 cmd_buffer,
                                 *equi_to_cube_vk_shader.graphics_pipeline_layout,
@@ -1452,31 +1490,16 @@ impl VkAssetManager {
                                 rotations[i].as_bytes(),
                         );
 
+                        // Draw (fullscreen triangle).
                         self.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
 
-                        self.device.cmd_end_render_pass(cmd_buffer);
+                        // End rendering.
+                        self.device.cmd_end_rendering(cmd_buffer);
 
                         deletion_queue.push(VkObject::ImageView(face_image_view));
-                        deletion_queue.push(VkObject::Framebuffer(framebuffer));
                 }
 
                 Ok(())
-        }
-
-        fn cmd_gen_mipmaps_for(&self, image: &VkImage) {
-                VkImage::cmd_gen_mipmaps(&GenerateMipmapsInfo {
-                        instance: &self.instance,
-                        pdevice: **self.pdevice,
-                        device: &self.device,
-                        cmd_buffer: *self.cmd_buffer,
-                        image: image.handle,
-                        image_format: image.format,
-                        width: image.width,
-                        height: image.height,
-                        mip_levels: image.mip_levels,
-                        base_array_layer: 0,
-                        layer_count: image.array_layers,
-                });
         }
 
         unsafe fn gen_irrandiace_map_for(
@@ -1529,6 +1552,14 @@ impl VkAssetManager {
                 let irradiance_shader_id = asset_manager.shader_names()["irradiance-shader"];
                 let irradiance_shader = &self.shaders[irradiance_shader_id];
 
+                let irradiance_pipeline_layout = *irradiance_shader.graphics_pipeline_layout;
+                let irradiance_pipeline = self.get_pipeline_for_shader(
+                        asset_manager,
+                        irradiance_shader_id,
+                        format,
+                        vk::Format::UNDEFINED,
+                )?;
+
                 let environment_map_binding = irradiance_shader
                         .shader_resource_bindings
                         .get(&SHADER_RESOURCE_ENVIRONMENT_MAP)
@@ -1553,27 +1584,6 @@ impl VkAssetManager {
 
                 let cmd_buffer = *self.cmd_buffer;
 
-                VkImage::cmd_transition_img_layout(&TransitionImageLayoutInfo {
-                        device: &self.device,
-                        cmd_buffer: *self.cmd_buffer,
-
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-
-                        image: *irradiance_image,
-                        base_mip_level: 0,
-                        mip_levels: irradiance_image.mip_levels,
-                        base_array_layer: 0,
-                        layer_count: 6,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-
-                        src_access_mask: vk::AccessFlags::empty(),
-                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-
-                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
-                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                });
-
                 self.device.cmd_bind_descriptor_sets(
                         cmd_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
@@ -1583,9 +1593,32 @@ impl VkAssetManager {
                         &[],
                 );
 
-                self.cmd_render_cubemap(cmd_buffer, irradiance_shader, &irradiance_image, 0, deletion_queue)?;
+                self.cmd_render_cubemap(
+                        cmd_buffer,
+                        irradiance_pipeline,
+                        irradiance_pipeline_layout,
+                        &irradiance_image,
+                        0,
+                        deletion_queue,
+                )?;
 
-                self.cmd_gen_mipmaps_for(&irradiance_image);
+                VkImage::cmd_gen_mipmaps(&GenerateMipmapsInfo {
+                        instance: &self.instance,
+                        pdevice: **self.pdevice,
+                        device: &self.device,
+                        cmd_buffer: *self.cmd_buffer,
+                        image: irradiance_image.handle(),
+                        image_format: irradiance_image.format,
+                        width: irradiance_image.width,
+                        height: irradiance_image.height,
+                        mip_levels: irradiance_image.mip_levels,
+                        old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                        src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                        dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                        dst_access_mask: vk::AccessFlags2::SHADER_READ,
+                });
 
                 Ok(irradiance_image)
         }
@@ -1638,6 +1671,14 @@ impl VkAssetManager {
                 let prefilter_shader_id = asset_manager.shader_names()["prefilter-shader"];
                 let prefilter_shader = &self.shaders[prefilter_shader_id];
 
+                let prefilter_pipeline = self.get_pipeline_for_shader(
+                        asset_manager,
+                        prefilter_shader_id,
+                        format,
+                        vk::Format::UNDEFINED,
+                )?;
+                let prefilter_pipeline_layout = *prefilter_shader.graphics_pipeline_layout;
+
                 let environment_map_binding = prefilter_shader
                         .shader_resource_bindings
                         .get(&SHADER_RESOURCE_ENVIRONMENT_MAP)
@@ -1666,27 +1707,6 @@ impl VkAssetManager {
                 self.device.update_descriptor_sets(&[write], &[]);
 
                 let cmd_buffer = *self.cmd_buffer;
-
-                VkImage::cmd_transition_img_layout(&TransitionImageLayoutInfo {
-                        device: &self.device,
-                        cmd_buffer: *self.cmd_buffer,
-
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-
-                        image: *prefiltered_image,
-                        base_mip_level: 0,
-                        mip_levels: prefiltered_image.mip_levels,
-                        base_array_layer: 0,
-                        layer_count: 6,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-
-                        src_access_mask: vk::AccessFlags::empty(),
-                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-
-                        src_stage_mask: vk::PipelineStageFlags::TOP_OF_PIPE,
-                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                });
 
                 self.device.cmd_bind_descriptor_sets(
                         cmd_buffer,
@@ -1743,37 +1763,42 @@ impl VkAssetManager {
                                 &[],
                         );
 
-                        self.cmd_render_cubemap(cmd_buffer, prefilter_shader, &prefiltered_image, mip, deletion_queue)?;
+                        self.cmd_render_cubemap(
+                                cmd_buffer,
+                                prefilter_pipeline,
+                                prefilter_pipeline_layout,
+                                &prefiltered_image,
+                                mip,
+                                deletion_queue,
+                        )?;
                 }
 
-                VkImage::cmd_transition_img_layout(&TransitionImageLayoutInfo {
-                        device: &self.device,
-                        cmd_buffer: *self.cmd_buffer,
-
-                        old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-
-                        image: *prefiltered_image,
-                        base_mip_level: 0,
-                        mip_levels: prefiltered_image.mip_levels,
-                        base_array_layer: 0,
-                        layer_count: 6,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-
-                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                        dst_access_mask: vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::TRANSFER_WRITE,
-
-                        src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                        dst_stage_mask: vk::PipelineStageFlags::TRANSFER,
-                });
+                VkImage::cmd_transition_img_layout(
+                        &self.device,
+                        *self.cmd_buffer,
+                        &TransitionImageLayoutInfo {
+                                image: *prefiltered_image,
+                                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                                dst_access_mask: vk::AccessFlags2::SHADER_READ,
+                                subresource_range: vk::ImageSubresourceRange::full_color(),
+                        },
+                );
 
                 Ok(prefiltered_image)
         }
 
+        /// POST: target.(mip_level = mip_level, all_layers) will have layout COLOR_ATTACHMENT_OPTIMAL,
+        /// written in stage vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+        /// with access vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
         unsafe fn cmd_render_cubemap(
                 &self,
                 cmd_buffer: vk::CommandBuffer,
-                shader: &VkShader,
+                pipeline: vk::Pipeline,
+                pipeline_layout: vk::PipelineLayout,
                 target: &VkImage,
                 mip_level: u32,
                 deletion_queue: &mut Vec<VkObject>,
@@ -1802,7 +1827,7 @@ impl VkAssetManager {
                 self.device.cmd_set_viewport(cmd_buffer, 0, viewport.ref_into_slice());
 
                 self.device
-                        .cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, *shader.graphics_pipeline);
+                        .cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
                 let rotations = [
                         Mat4::from_rotation_y(std::f32::consts::TAU / 4.0),  // +X (right)
@@ -1812,6 +1837,24 @@ impl VkAssetManager {
                         Mat4::IDENTITY,                                      // +Z (forward)
                         Mat4::from_rotation_y(std::f32::consts::TAU / 2.0),  // -Z (backward)
                 ];
+
+                // Transition target.(mip_level = mip_level, all_layers) to COLOR_ATTACHMENT_OPTIMAL for rendering.
+                VkImage::cmd_transition_img_layout(
+                        &self.device,
+                        *self.cmd_buffer,
+                        &TransitionImageLayoutInfo {
+                                image: **target,
+                                old_layout: vk::ImageLayout::UNDEFINED,
+                                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::NONE,
+                                src_access_mask: vk::AccessFlags2::NONE,
+                                dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                subresource_range: vk::ImageSubresourceRange::full_color()
+                                        .base_mip_level(mip_level)
+                                        .level_count(1),
+                        },
+                );
 
                 for i in 0..6usize {
                         let face_image_view_cinfo = vk::ImageViewCreateInfo::default()
@@ -1829,35 +1872,23 @@ impl VkAssetManager {
 
                         let face_image_view = VkImageView::new(Rc::clone(&self.device), &face_image_view_cinfo)?;
 
-                        let render_pass = self.render_passes[ShaderRenderStage::SkyboxMapping];
-                        let attachments = [*face_image_view];
+                        // Begin rendering.
+                        let color_attachment = vk::RenderingAttachmentInfo::default()
+                                .image_view(*face_image_view)
+                                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                                .load_op(vk::AttachmentLoadOp::DONT_CARE)
+                                .store_op(vk::AttachmentStoreOp::STORE);
 
-                        let framebuffer_cinfo = vk::FramebufferCreateInfo::default()
-                                .render_pass(render_pass)
-                                .width(size)
-                                .height(size)
-                                .layers(1)
-                                .attachments(&attachments);
+                        let rendering_info = vk::RenderingInfo::default()
+                                .render_area(scissor)
+                                .layer_count(1)
+                                .color_attachments(color_attachment.ref_into_slice());
 
-                        let framebuffer = VkFramebuffer::new(&self.device, &framebuffer_cinfo)?;
-
-                        let render_pass_binfo = vk::RenderPassBeginInfo::default()
-                                .render_pass(render_pass)
-                                .framebuffer(*framebuffer)
-                                .render_area(vk::Rect2D {
-                                        offset: vk::Offset2D { x: 0, y: 0 },
-                                        extent: vk::Extent2D {
-                                                width: size,
-                                                height: size,
-                                        },
-                                });
-
-                        self.device
-                                .cmd_begin_render_pass(cmd_buffer, &render_pass_binfo, vk::SubpassContents::INLINE);
+                        self.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
 
                         self.device.cmd_push_constants(
                                 cmd_buffer,
-                                *shader.graphics_pipeline_layout,
+                                pipeline_layout,
                                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                                 0,
                                 rotations[i].as_bytes(),
@@ -1865,10 +1896,9 @@ impl VkAssetManager {
 
                         self.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
 
-                        self.device.cmd_end_render_pass(cmd_buffer);
+                        self.device.cmd_end_rendering(cmd_buffer);
 
                         deletion_queue.push(VkObject::ImageView(face_image_view));
-                        deletion_queue.push(VkObject::Framebuffer(framebuffer));
                 }
 
                 Ok(())
@@ -2126,7 +2156,9 @@ impl VkAssetManager {
         fn create_graphics_pipeline_for_vk_shader(
                 device: &Rc<VkDevice>,
                 swapchain_samples: vk::SampleCountFlags,
-                render_pass: vk::RenderPass,
+                color_attachment_formats: &[vk::Format],
+                depth_attachment_format: vk::Format,   // May be vk::Format::UNDEFINED
+                stencil_attachment_format: vk::Format, // May be vk::Format::UNDEFINED
                 pipeline_layout: vk::PipelineLayout,
                 enable_depth_test: bool,
                 cull_mode: vk::CullModeFlags,
@@ -2217,6 +2249,12 @@ impl VkAssetManager {
                 let pipeline_dyn_state_cinfo =
                         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dyn_states);
 
+                let mut pipeline_rendering_cinfo = vk::PipelineRenderingCreateInfo::default()
+                        .view_mask(0)
+                        .color_attachment_formats(color_attachment_formats)
+                        .depth_attachment_format(depth_attachment_format)
+                        .stencil_attachment_format(stencil_attachment_format);
+
                 let graphics_pipeline_cinfo = vk::GraphicsPipelineCreateInfo::default()
                         .stages(&shader_stages)
                         .vertex_input_state(&vert_input_cinfo)
@@ -2228,8 +2266,7 @@ impl VkAssetManager {
                         .color_blend_state(&color_blend_state_cinfo)
                         .dynamic_state(&pipeline_dyn_state_cinfo)
                         .layout(pipeline_layout)
-                        .render_pass(render_pass)
-                        .subpass(0);
+                        .push_next(&mut pipeline_rendering_cinfo);
 
                 unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
         }
