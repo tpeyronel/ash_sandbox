@@ -10,7 +10,8 @@ use vk_mem::Alloc;
 
 use crate::{
         asset_manager::{Image, ImageFlags},
-        util::RefIntoBytesSlice,
+        util::{RefIntoBytesSlice, RefIntoSlice},
+        vk::{vk_image_subresource_range::ImageSubresourceRangeUtil, vk_wrapper::HasVkHandle},
 };
 
 use super::{
@@ -99,6 +100,12 @@ pub struct VkImage {
         pub depth: u32,
         pub mip_levels: u32, // mip_levels >= 1
         pub array_layers: u32,
+}
+
+impl HasVkHandle<vk::Image> for &VkImage {
+        fn handle(self) -> vk::Image {
+                self.handle
+        }
 }
 
 impl VkImage {

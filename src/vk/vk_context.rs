@@ -10,7 +10,10 @@ extern crate vk_mem as vma;
 
 use std::rc::Rc;
 
-use ash::{prelude::VkResult, vk};
+use ash::{
+        prelude::VkResult,
+        vk::{self},
+};
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use raw_window_handle::HasDisplayHandle;
@@ -24,7 +27,7 @@ use super::{
         },
 };
 use crate::{
-        vk::vk_wrapper::{VkPhysicalDevice, VkQueueFamilyIndices, VkQueues},
+        vk::vk_wrapper::{HasVkHandle, VkPhysicalDevice, VkQueueFamilyIndices, VkQueues},
         AnyResult,
 };
 
@@ -141,6 +144,22 @@ impl VkContext {
                         dum.destroy();
                 }
                 self.instance.destroy();
+        }
+
+        pub fn set_debug_name<T: vk::Handle>(&self, handle: impl HasVkHandle<T>, name: impl AsRef<str>) {
+                self.debug_utils.as_ref().inspect(|debug_utils| {
+                        let name = CString::new(name.as_ref()).unwrap();
+                        let name_info = vk::DebugUtilsObjectNameInfoEXT::default()
+                                .object_handle(handle.handle())
+                                .object_name(name.as_c_str());
+
+                        unsafe {
+                                debug_utils
+                                        .device_loader()
+                                        .set_debug_utils_object_name(&name_info)
+                                        .expect("error setting debug utils object name")
+                        };
+                });
         }
 
         fn create_instance(

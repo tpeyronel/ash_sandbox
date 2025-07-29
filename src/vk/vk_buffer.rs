@@ -5,7 +5,7 @@ use ash::{prelude::VkResult, vk};
 use log::trace;
 use vk_mem::Alloc;
 
-use crate::AnyResult;
+use crate::{vk::vk_wrapper::HasVkHandle, AnyResult};
 
 use super::{
         vk_command_buffer::VkReusableCommandBuffer,
@@ -298,6 +298,12 @@ impl_destroyable_expr!(VkBuffer, vk::Buffer, |s: &VkBuffer| {
                 s.allocator.destroy_buffer(s.handle, s.alloc);
         }
 });
+
+impl HasVkHandle<vk::Buffer> for &VkBuffer {
+        fn handle(self) -> vk::Buffer {
+                self.handle
+        }
+}
 
 pub struct VkDynamicUniformBuffer {
         capacity: usize,

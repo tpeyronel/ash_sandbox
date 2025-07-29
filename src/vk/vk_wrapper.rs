@@ -10,6 +10,26 @@ use crate::AnyResult;
 
 use super::{vk_buffer::VkBuffer, vk_image::VkImage};
 
+pub trait HasVkHandle<T: vk::Handle> {
+        fn handle(self) -> T;
+}
+
+impl<T: vk::Handle> HasVkHandle<T> for T {
+        fn handle(self) -> T {
+                self
+        }
+}
+
+macro_rules! impl_has_vk_handle {
+        ($t:ty, $h:ty) => {
+                impl HasVkHandle<$h> for &$t {
+                        fn handle(self) -> $h {
+                                self.handle
+                        }
+                }
+        };
+}
+
 macro_rules! impl_destroyable_deref {
         ($t:ty, $h:ty) => {
                 impl Deref for $t {
@@ -407,6 +427,7 @@ impl VkImageView {
         }
 }
 
+impl_has_vk_handle!(VkImageView, vk::ImageView);
 impl_destroyable_expr!(VkImageView, vk::ImageView, |s: &VkImageView| s
         .device
         .destroy_image_view(s.handle, None));
@@ -429,6 +450,7 @@ impl VkSampler {
         }
 }
 
+impl_has_vk_handle!(VkSampler, vk::Sampler);
 impl_destroyable_expr!(VkSampler, vk::Sampler, |s: &VkSampler| s
         .device
         .destroy_sampler(s.handle, None));
@@ -511,6 +533,7 @@ impl VkPipelineLayout {
         }
 }
 
+impl_has_vk_handle!(VkPipelineLayout, vk::PipelineLayout);
 impl_destroyable_expr!(VkPipelineLayout, vk::PipelineLayout, |s: &VkPipelineLayout| s
         .device
         .destroy_pipeline_layout(s.handle, None));
@@ -537,6 +560,7 @@ impl VkPipeline {
         }
 }
 
+impl_has_vk_handle!(VkPipeline, vk::Pipeline);
 impl_destroyable_expr!(VkPipeline, vk::Pipeline, |s: &VkPipeline| s
         .device
         .destroy_pipeline(s.handle, None));
@@ -557,6 +581,7 @@ impl VkSemaphore {
         }
 }
 
+impl_has_vk_handle!(VkSemaphore, vk::Semaphore);
 impl_destroyable_expr!(VkSemaphore, vk::Semaphore, |s: &VkSemaphore| s
         .device
         .destroy_semaphore(s.handle, None));
@@ -579,6 +604,7 @@ impl VkFence {
         }
 }
 
+impl_has_vk_handle!(VkFence, vk::Fence);
 impl_destroyable_expr!(VkFence, vk::Fence, |s: &VkFence| s.device.destroy_fence(s.handle, None));
 
 #[derive(Error, Debug, Clone)]
@@ -617,6 +643,7 @@ impl VkShaderModule {
         }
 }
 
+impl_has_vk_handle!(VkShaderModule, vk::ShaderModule);
 impl_destroyable_expr!(VkShaderModule, vk::ShaderModule, |s: &VkShaderModule| s
         .device
         .destroy_shader_module(s.handle, None));
