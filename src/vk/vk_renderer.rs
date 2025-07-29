@@ -100,15 +100,7 @@ impl VkRenderer {
         ) -> AnyResult<Self> {
                 let mut vk_context = VkContext::new(Rc::clone(&window))?;
 
-                let swapchain = VkSwapchain::new(
-                        Rc::clone(&window),
-                        Rc::clone(&vk_context.instance),
-                        Rc::clone(&vk_context.surface),
-                        **vk_context.pdevice,
-                        Rc::clone(&vk_context.device),
-                        Rc::clone(&vk_context.allocator),
-                        DESIRED_SWAPCHAIN_IMG_COUNT,
-                )?;
+                let swapchain = VkSwapchain::new(Rc::clone(&window), &vk_context, DESIRED_SWAPCHAIN_IMG_COUNT)?;
                 trace!("Created VkSwapchain");
 
                 let resolve_sampler = Self::create_resolve_sampler(&vk_context.device)?;
@@ -608,7 +600,7 @@ impl VkRenderer {
 
                 unsafe { self.vk_context.device.device_wait_idle()? };
 
-                let _srecreation_info = self.swapchain.recreate()?;
+                let _srecreation_info = self.swapchain.recreate(&self.vk_context)?;
 
                 // let mut recreate_render_pass: bool = false;
                 // let mut recreate_pipeline: bool = false;

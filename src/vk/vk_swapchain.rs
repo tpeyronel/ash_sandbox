@@ -5,7 +5,10 @@ use bitflags::bitflags;
 #[allow(unused_imports)]
 use log::{debug, trace};
 
-use crate::{vk::vk_wrapper::VkSemaphore, AnyResult};
+use crate::{
+        vk::{vk_context::VkContext, vk_wrapper::VkSemaphore},
+        AnyResult,
+};
 
 use super::{
         vk_image::{VkImage, VkImageCreateInfo},
@@ -54,13 +57,16 @@ pub struct VkSwapchain {
 impl VkSwapchain {
         pub fn new(
                 window: Rc<winit::window::Window>,
-                instance: Rc<VkInstance>,
-                surface: Rc<VkSurface>,
-                physical_device: vk::PhysicalDevice,
-                device: Rc<VkDevice>,
-                allocator: Rc<VmaAllocator>,
+                vk_context: &VkContext,
                 desired_img_count: u32,
         ) -> AnyResult<Self> {
+                // TODO: cleanup
+                let instance = Rc::clone(&vk_context.instance);
+                let surface = Rc::clone(&vk_context.surface);
+                let physical_device = **vk_context.pdevice;
+                let device = Rc::clone(&vk_context.device);
+                let allocator = Rc::clone(&vk_context.allocator);
+
                 let color_format = Self::choose_color_format(&instance, physical_device)?;
                 let depth_format = Self::choose_depth_format(&instance, physical_device)?;
                 let present_format = Self::choose_present_format(&surface, physical_device)?;
@@ -102,29 +108,15 @@ impl VkSwapchain {
                 let samples = Self::choose_sample_count(&instance, physical_device);
                 debug!("Swapchain samples: {:?}", samples);
 
-                let (color_img, color_img_view) = Self::create_color_img_resources(
-                        Rc::clone(&device),
-                        Rc::clone(&allocator),
-                        color_format,
-                        &extent,
-                        samples,
-                )?;
+                let (color_img, color_img_view) =
+                        Self::create_color_img_resources(vk_context, color_format, &extent, samples)?;
                 let (resolve_imgs, resolve_img_views) =
-                        Self::create_resolve_imgs_resources(&device, &allocator, color_format, &extent)?;
-                let (depth_img, depth_img_view) = Self::create_depth_img_resources(
-                        Rc::clone(&device),
-                        Rc::clone(&allocator),
-                        depth_format,
-                        &extent,
-                        samples,
-                )?;
+                        Self::create_resolve_imgs_resources(vk_context, color_format, &extent)?;
+                let (depth_img, depth_img_view) =
+                        Self::create_depth_img_resources(vk_context, depth_format, &extent, samples)?;
 
-                let present_imgs = Self::create_present_img_data(
-                        handle,
-                        &device_loader,
-                        Rc::clone(&device),
-                        present_format.format,
-                )?;
+                let present_imgs =
+                        Self::create_present_img_data(vk_context, handle, &device_loader, present_format.format)?;
 
                 Ok(Self {
                         device_loader,
@@ -163,7 +155,7 @@ impl VkSwapchain {
                 })
         }
 
-        pub fn recreate(&mut self) -> VkResult<VkSwapchainRecreationInfo> {
+        pub fn recreate(&mut self, vk_context: &VkContext) -> VkResult<VkSwapchainRecreationInfo> {
                 let mut recreation_info = VkSwapchainRecreationInfo {
                         present_format_changed: false,
                         extent_changed: false,
@@ -234,8 +226,7 @@ impl VkSwapchain {
                         || recreation_info.samples_changed
                 {
                         let (color_img, color_img_view) = Self::create_color_img_resources(
-                                Rc::clone(&self.device),
-                                Rc::clone(&self.allocator),
+                                vk_context,
                                 self.color_format,
                                 &self.extent,
                                 self.samples,
@@ -245,12 +236,8 @@ impl VkSwapchain {
                                 std::mem::replace(&mut self.color_img_view, color_img_view).destroy();
                         }
 
-                        let (resolve_imgs, resolve_img_views) = Self::create_resolve_imgs_resources(
-                                &self.device,
-                                &self.allocator,
-                                self.color_format,
-                                &self.extent,
-                        )?;
+                        let (resolve_imgs, resolve_img_views) =
+                                Self::create_resolve_imgs_resources(&vk_context, self.color_format, &self.extent)?;
                         unsafe {
                                 std::mem::replace(&mut self.resolve_imgs, resolve_imgs)
                                         .iter()
@@ -261,8 +248,7 @@ impl VkSwapchain {
                         }
 
                         let (depth_img, depth_img_view) = Self::create_depth_img_resources(
-                                Rc::clone(&self.device),
-                                Rc::clone(&self.allocator),
+                                vk_context,
                                 self.depth_format,
                                 &self.extent,
                                 self.samples,
@@ -277,9 +263,9 @@ impl VkSwapchain {
 
                 self.present_imgs.drain(..).for_each(|i| unsafe { i.destroy() });
                 self.present_imgs = Self::create_present_img_data(
+                        vk_context,
                         self.handle,
                         &self.device_loader,
-                        Rc::clone(&self.device),
                         self.present_format.format,
                 )?;
 
@@ -459,8 +445,7 @@ impl VkSwapchain {
         }
 
         fn create_color_img_resources(
-                device: Rc<VkDevice>,
-                allocator: Rc<VmaAllocator>,
+                vk_context: &VkContext,
                 format: vk::Format,
                 extent: &vk::Extent2D,
                 samples: vk::SampleCountFlags,
@@ -489,8 +474,9 @@ impl VkSwapchain {
                                 preferred_flags: Default::default(),
                         };
 
-                        VkImage::new(allocator, &depth_img_cinfo)?
+                        VkImage::new(Rc::clone(&vk_context.allocator), &depth_img_cinfo)?
                 };
+                vk_context.set_debug_name(&color_img, "render_color_image");
 
                 let color_img_view = unsafe {
                         let color_img_view_cinfo = vk::ImageViewCreateInfo {
@@ -508,15 +494,15 @@ impl VkSwapchain {
                                 ..vk::ImageViewCreateInfo::default()
                         };
 
-                        VkImageView::new(device, &color_img_view_cinfo)?
+                        VkImageView::new(Rc::clone(&vk_context.device), &color_img_view_cinfo)?
                 };
+                vk_context.set_debug_name(&color_img_view, "render_color_image_view");
 
                 Ok((color_img, color_img_view))
         }
 
         fn create_resolve_imgs_resources(
-                device: &Rc<VkDevice>,
-                allocator: &Rc<VmaAllocator>,
+                vk_context: &VkContext,
                 format: vk::Format,
                 extent: &vk::Extent2D,
         ) -> VkResult<([VkImage; 2], [VkImageView; 2])> {
@@ -548,11 +534,16 @@ impl VkSwapchain {
                                         preferred_flags: Default::default(),
                                 };
 
-                                VkImage::new(Rc::clone(allocator), &resolve_img_cinfo)
+                                VkImage::new(Rc::clone(&vk_context.allocator), &resolve_img_cinfo)
                         }
                 };
 
                 let resolve_imgs = [mk_resolve_img()?, mk_resolve_img()?];
+
+                resolve_imgs
+                        .iter()
+                        .enumerate()
+                        .for_each(|(i, img)| vk_context.set_debug_name(img, format!("resolve_image_{}", i)));
 
                 let mk_resolve_img_view = |resolve_img: vk::Image| unsafe {
                         let resolve_img_view_cinfo = vk::ImageViewCreateInfo {
@@ -570,7 +561,7 @@ impl VkSwapchain {
                                 ..vk::ImageViewCreateInfo::default()
                         };
 
-                        VkImageView::new(Rc::clone(device), &resolve_img_view_cinfo)
+                        VkImageView::new(Rc::clone(&vk_context.device), &resolve_img_view_cinfo)
                 };
 
                 let resolve_img_views = [
@@ -578,12 +569,15 @@ impl VkSwapchain {
                         mk_resolve_img_view(*resolve_imgs[1])?,
                 ];
 
+                resolve_img_views.iter().enumerate().for_each(|(i, img_view)| {
+                        vk_context.set_debug_name(img_view, format!("resolve_image_view_{}", i))
+                });
+
                 Ok((resolve_imgs, resolve_img_views))
         }
 
         fn create_depth_img_resources(
-                device: Rc<VkDevice>,
-                allocator: Rc<VmaAllocator>,
+                vk_context: &VkContext,
                 format: vk::Format,
                 extent: &vk::Extent2D,
                 samples: vk::SampleCountFlags,
@@ -612,8 +606,9 @@ impl VkSwapchain {
                                 preferred_flags: Default::default(),
                         };
 
-                        VkImage::new(allocator, &depth_img_cinfo)?
+                        VkImage::new(Rc::clone(&vk_context.allocator), &depth_img_cinfo)?
                 };
+                vk_context.set_debug_name(&depth_img, "render_depth_image");
 
                 let depth_img_view = unsafe {
                         let depth_img_view_cinfo = vk::ImageViewCreateInfo {
@@ -631,23 +626,29 @@ impl VkSwapchain {
                                 ..vk::ImageViewCreateInfo::default()
                         };
 
-                        VkImageView::new(device, &depth_img_view_cinfo)?
+                        VkImageView::new(Rc::clone(&vk_context.device), &depth_img_view_cinfo)?
                 };
+                vk_context.set_debug_name(&depth_img_view, "render_depth_image_view");
 
                 Ok((depth_img, depth_img_view))
         }
 
         fn create_present_img_data(
+                vk_context: &VkContext,
                 handle: vk::SwapchainKHR,
                 device_loader: &swapchain::Device,
-                device: Rc<VkDevice>,
                 format: vk::Format,
         ) -> VkResult<Vec<VkPresentImageData>> {
                 let present_imgs = unsafe { device_loader.get_swapchain_images(handle)? };
 
+                present_imgs.iter().enumerate().for_each(|(i, &p)| {
+                        vk_context.set_debug_name(p, format!("present_image_{}", i));
+                });
+
                 present_imgs
                         .into_iter()
-                        .map(|img| {
+                        .enumerate()
+                        .map(|(i, img)| {
                                 let img_view_cinfo = vk::ImageViewCreateInfo {
                                         image: img,
                                         view_type: vk::ImageViewType::TYPE_2D,
@@ -663,10 +664,17 @@ impl VkSwapchain {
                                         ..Default::default()
                                 };
 
-                                let img_view = unsafe { VkImageView::new(Rc::clone(&device), &img_view_cinfo)? };
+                                let img_view =
+                                        unsafe { VkImageView::new(Rc::clone(&vk_context.device), &img_view_cinfo)? };
+                                vk_context.set_debug_name(&img_view, format!("present_image_view_{}", i));
 
                                 let semaphore_cinfo = vk::SemaphoreCreateInfo::default();
-                                let render_finished_semaphore = unsafe { VkSemaphore::new(&device, &semaphore_cinfo)? };
+                                let render_finished_semaphore =
+                                        unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
+                                vk_context.set_debug_name(
+                                        &render_finished_semaphore,
+                                        format!("render_finished_semaphore_{}", i),
+                                );
 
                                 Ok(VkPresentImageData {
                                         img,
