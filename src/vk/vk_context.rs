@@ -340,7 +340,7 @@ unsafe extern "system" fn vk_debug_callback(
         };
 
         let display = format!(
-                "Vulkan {:?}:\n{:?} [{} ({})] : {}",
+                "Vulkan {:?}:\n{:?} [{} ({})] : {}\n\n",
                 message_severity,
                 message_type,
                 message_id_name,
