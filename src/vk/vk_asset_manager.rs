@@ -134,11 +134,6 @@ struct ShaderConfiguration {
 }
 
 pub struct VkAssetManager {
-        instance: Rc<VkInstance>,
-        pdevice: Rc<VkPhysicalDevice>,
-        device: Rc<VkDevice>,
-        debug_utils: Option<Rc<VkDebugUtils>>,
-        allocator: Rc<VmaAllocator>,
         transfer_queue: vk::Queue,
         // dst set allocator that is never reset. Used for permanent descriptor sets.
         dst_set_allocator: VkDescriptorSetAllocator,
@@ -181,11 +176,6 @@ impl VkAssetManager {
                         VkReusableCommandBuffer::new(Rc::clone(&context.device), Rc::clone(&context.cmd_pool))?;
 
                 Ok(Self {
-                        instance: Rc::clone(&context.instance),
-                        pdevice: Rc::clone(&context.pdevice),
-                        device: Rc::clone(&context.device),
-                        debug_utils: context.debug_utils.as_ref().map(|d| Rc::clone(d)),
-                        allocator: Rc::clone(&context.allocator),
                         transfer_queue: context.queues.graphics,
                         dst_set_allocator,
                         frame_dst_set_allocators,
@@ -232,7 +222,7 @@ impl VkAssetManager {
                                 AssetManagerEvent::ImageRemoved(_) => todo!(),
                                 AssetManagerEvent::SamplerChanged(_) => (),
                                 AssetManagerEvent::SamplerInserted(sampler_id) => {
-                                        self.on_sampler_updated(asset_manager, sampler_id)?;
+                                        self.on_sampler_updated(context, asset_manager, sampler_id)?;
                                 },
                                 AssetManagerEvent::SamplerRemoved(_) => todo!(),
                                 AssetManagerEvent::TextureInserted(_) => (),
@@ -250,7 +240,7 @@ impl VkAssetManager {
                                 AssetManagerEvent::ShaderResourceRemoved(_) => todo!(),
                                 AssetManagerEvent::ShaderChanged(_) => (),
                                 AssetManagerEvent::ShaderInserted(shader_id) => {
-                                        self.on_shader_updated(asset_manager, shader_id)?;
+                                        self.on_shader_updated(context, asset_manager, shader_id)?;
                                 },
                                 AssetManagerEvent::ShaderRemoved(_) => todo!(),
                                 AssetManagerEvent::CubemapChanged(_) => (),
@@ -270,7 +260,7 @@ impl VkAssetManager {
                 Ok(())
         }
 
-        pub fn destroy(&mut self) {
+        pub fn destroy(&mut self, context: &VkContext) {
                 self.shader_resource_dynamic_buffers
                         .drain()
                         .for_each(|(_, mut buffers)| {
@@ -300,7 +290,7 @@ impl VkAssetManager {
 
                 self.shaders
                         .drain()
-                        .for_each(|(_, shader)| shader.destroy(&self.device));
+                        .for_each(|(_, shader)| shader.destroy(&context.device));
 
                 self.materials.drain().for_each(|(_, mut material)| {
                         material.buffers.drain().for_each(|(_, mut buffers)| {
@@ -384,10 +374,17 @@ impl VkAssetManager {
                 Ok(())
         }
 
-        fn on_sampler_updated(&mut self, asset_manager: &AssetManager, sampler_id: SamplerId) -> AnyResult<()> {
+        fn on_sampler_updated(
+                &mut self,
+                context: &VkContext,
+                asset_manager: &AssetManager,
+                sampler_id: SamplerId,
+        ) -> AnyResult<()> {
                 if self.samplers.contains_key(sampler_id) {
                         todo!();
-                } else if let Some(vk_sampler) = self.create_vk_sampler_from_sampler(asset_manager, sampler_id)? {
+                } else if let Some(vk_sampler) =
+                        self.create_vk_sampler_from_sampler(context, asset_manager, sampler_id)?
+                {
                         self.samplers.insert(sampler_id, vk_sampler);
                 }
 
@@ -500,7 +497,12 @@ impl VkAssetManager {
                 Ok(())
         }
 
-        fn on_shader_updated(&mut self, asset_manager: &AssetManager, shader_id: ShaderId) -> AnyResult<()> {
+        fn on_shader_updated(
+                &mut self,
+                context: &VkContext,
+                asset_manager: &AssetManager,
+                shader_id: ShaderId,
+        ) -> AnyResult<()> {
                 let shader = asset_manager.shader(shader_id);
 
                 let shader_resource_bindings =
@@ -531,7 +533,7 @@ impl VkAssetManager {
                         .transpose()?;
 
                 let dst_set_layouts =
-                        Self::create_descriptor_set_layouts_from_bindings(&self.device, &shader_resource_bindings)?;
+                        Self::create_descriptor_set_layouts_from_bindings(&context.device, &shader_resource_bindings)?;
 
                 let world_dst_set_layout = dst_set_layouts[VkDescriptorSetIndex::World];
                 let material_dst_set_layout = dst_set_layouts[VkDescriptorSetIndex::Material];
@@ -539,7 +541,7 @@ impl VkAssetManager {
 
                 let world_dst_set = Self::init_world_dst_set(
                         self.concurrent_frames,
-                        &self.device,
+                        &context.device,
                         &mut self.dst_set_allocator,
                         &self.shader_resources,
                         &self.shader_resource_buffers,
@@ -549,7 +551,7 @@ impl VkAssetManager {
 
                 let mesh_dst_set = Self::init_mesh_dst_set(
                         self.concurrent_frames,
-                        &self.device,
+                        &context.device,
                         &mut self.dst_set_allocator,
                         &self.shader_resources,
                         &self.shader_resource_dynamic_buffers,
@@ -557,10 +559,10 @@ impl VkAssetManager {
                         mesh_dst_set_layout,
                 )?;
 
-                let vert_module = VkShaderModule::from_code(&self.device, &vert_shader_module.bin)?;
+                let vert_module = VkShaderModule::from_code(&context.device, &vert_shader_module.bin)?;
                 let frag_module = frag_shader_module
                         .as_ref()
-                        .map(|fsm| VkShaderModule::from_code(&self.device, &fsm.bin))
+                        .map(|fsm| VkShaderModule::from_code(&context.device, &fsm.bin))
                         .transpose()?;
 
                 let mut vertex_input_bindings = Vec::new();
@@ -603,7 +605,7 @@ impl VkAssetManager {
                 }
 
                 let graphics_pipeline_layout = Self::create_graphics_pipeline_layout(
-                        &self.device,
+                        &context.device,
                         dst_set_layouts.as_slice(),
                         shader.push_constants_size,
                 )?;
@@ -630,6 +632,7 @@ impl VkAssetManager {
 
         pub fn get_pipeline_for_shader(
                 &self,
+                context: &VkContext,
                 asset_manager: &AssetManager,
                 shader_id: ShaderId,
                 color_attachment_format: vk::Format,
@@ -662,7 +665,7 @@ impl VkAssetManager {
                                 let shader_configuration = vacant_entry.key();
 
                                 let graphics_pipeline = Self::create_graphics_pipeline_for_vk_shader(
-                                        &self.device,
+                                        &context.device,
                                         samples,
                                         &shader_configuration.color_attachment_formats,
                                         shader_configuration.depth_attachment_format,
@@ -1047,7 +1050,7 @@ impl VkAssetManager {
                                         );
 
                                         self.cmd_buffer.end_and_submit(
-                                                &self.device,
+                                                &context.device,
                                                 self.transfer_queue,
                                                 &[],
                                                 &[],
@@ -1061,15 +1064,7 @@ impl VkAssetManager {
                         }
                 };
 
-                if ENABLE_VALIDATION_LAYERS {
-                        unsafe {
-                                vk_image.set_debug_name(
-                                        &self.device,
-                                        self.debug_utils.as_ref().unwrap(),
-                                        &format!("[cubemap] {:?}", cubemap_id),
-                                )?;
-                        }
-                }
+                context.set_debug_name(&vk_image, format!("[cubemap] {:?}", cubemap_id));
 
                 // self.cmd_gen_mipmaps_for(&vk_image);
 
@@ -1088,7 +1083,7 @@ impl VkAssetManager {
                         ..Default::default()
                 };
 
-                let vk_image_view = unsafe { VkImageView::new(Rc::clone(&self.device), &vk_image_view_cinfo)? };
+                let vk_image_view = unsafe { VkImageView::new(context, &vk_image_view_cinfo)? };
 
                 let vk_sampler_cinfo = vk::SamplerCreateInfo {
                         mag_filter: vk::Filter::LINEAR,
@@ -1109,13 +1104,13 @@ impl VkAssetManager {
                         ..Default::default()
                 };
 
-                let vk_sampler = unsafe { VkSampler::new(Rc::clone(&self.device), &vk_sampler_cinfo)? };
+                let vk_sampler = unsafe { VkSampler::new(context, &vk_sampler_cinfo)? };
 
                 let irradiance_image;
                 let prefiltered_image;
 
                 unsafe {
-                        self.cmd_buffer.begin(&self.device)?;
+                        self.cmd_buffer.begin(&context.device)?;
 
                         irradiance_image = self.gen_irrandiace_map_for(
                                 context,
@@ -1133,22 +1128,11 @@ impl VkAssetManager {
                                 &mut deletion_queue,
                         )?;
 
-                        if ENABLE_VALIDATION_LAYERS {
-                                irradiance_image.set_debug_name(
-                                        &self.device,
-                                        self.debug_utils.as_ref().unwrap(),
-                                        &format!("[cubemap] {:?} (irradiance)", cubemap_id),
-                                )?;
-
-                                prefiltered_image.set_debug_name(
-                                        &self.device,
-                                        self.debug_utils.as_ref().unwrap(),
-                                        &format!("[cubemap] {:?} (prefiltered)", cubemap_id),
-                                )?;
-                        }
+                        context.set_debug_name(&irradiance_image, format!("[cubemap] {:?} (irradiance)", cubemap_id));
+                        context.set_debug_name(&prefiltered_image, format!("[cubemap] {:?} (prefiltered)", cubemap_id));
 
                         self.cmd_buffer
-                                .end_and_submit(&self.device, self.transfer_queue, &[], &[], &[])?;
+                                .end_and_submit(&context.device, self.transfer_queue, &[], &[], &[])?;
 
                         self.cmd_buffer.wait(u64::MAX)?;
 
@@ -1172,8 +1156,7 @@ impl VkAssetManager {
                         ..Default::default()
                 };
 
-                let irradiance_image_view =
-                        unsafe { VkImageView::new(Rc::clone(&self.device), &irradiance_image_view_cinfo)? };
+                let irradiance_image_view = unsafe { VkImageView::new(context, &irradiance_image_view_cinfo)? };
 
                 let irradiance_sampler_cinfo = vk::SamplerCreateInfo {
                         mag_filter: vk::Filter::LINEAR,
@@ -1194,7 +1177,7 @@ impl VkAssetManager {
                         ..Default::default()
                 };
 
-                let irradiance_sampler = unsafe { VkSampler::new(Rc::clone(&self.device), &irradiance_sampler_cinfo)? };
+                let irradiance_sampler = unsafe { VkSampler::new(context, &irradiance_sampler_cinfo)? };
 
                 let prefiltered_image_view_cinfo = vk::ImageViewCreateInfo {
                         image: *prefiltered_image,
@@ -1211,8 +1194,7 @@ impl VkAssetManager {
                         ..Default::default()
                 };
 
-                let prefiltered_image_view =
-                        unsafe { VkImageView::new(Rc::clone(&self.device), &prefiltered_image_view_cinfo)? };
+                let prefiltered_image_view = unsafe { VkImageView::new(context, &prefiltered_image_view_cinfo)? };
 
                 let prefiltered_sampler_cinfo = vk::SamplerCreateInfo {
                         mag_filter: vk::Filter::LINEAR,
@@ -1233,8 +1215,7 @@ impl VkAssetManager {
                         ..Default::default()
                 };
 
-                let prefiltered_sampler =
-                        unsafe { VkSampler::new(Rc::clone(&self.device), &prefiltered_sampler_cinfo)? };
+                let prefiltered_sampler = unsafe { VkSampler::new(context, &prefiltered_sampler_cinfo)? };
 
                 let vk_cubemap = VkCubemap {
                         environment_image: vk_image,
@@ -1346,7 +1327,7 @@ impl VkAssetManager {
                 };
 
                 let equirectangular_vk_image_view =
-                        unsafe { VkImageView::new(Rc::clone(&self.device), &equirectangular_vk_image_view_cinfo)? };
+                        unsafe { VkImageView::new(context, &equirectangular_vk_image_view_cinfo)? };
 
                 let equirectangular_vk_sampler_cinfo = vk::SamplerCreateInfo {
                         mag_filter: vk::Filter::LINEAR,
@@ -1367,12 +1348,12 @@ impl VkAssetManager {
                         ..Default::default()
                 };
 
-                let equirectangular_vk_sampler =
-                        unsafe { VkSampler::new(Rc::clone(&self.device), &equirectangular_vk_sampler_cinfo)? };
+                let equirectangular_vk_sampler = unsafe { VkSampler::new(context, &equirectangular_vk_sampler_cinfo)? };
 
                 let equi_to_cube_shader_id = asset_manager.shader_names()["equi-to-cube-shader"];
 
                 let equi_to_cube_vk_pipeline = self.get_pipeline_for_shader(
+                        context,
                         asset_manager,
                         equi_to_cube_shader_id,
                         cubemap_image.format,
@@ -1403,7 +1384,7 @@ impl VkAssetManager {
                         .dst_array_element(0)
                         .image_info(image_info.ref_into_slice());
 
-                self.device.update_descriptor_sets(&[write], &[]);
+                context.device.update_descriptor_sets(&[write], &[]);
 
                 let rotations = [
                         Mat4::from_rotation_y(std::f32::consts::TAU / 4.0),
@@ -1414,12 +1395,12 @@ impl VkAssetManager {
                         Mat4::from_rotation_y(std::f32::consts::TAU / 2.0),
                 ];
 
-                unsafe { self.cmd_buffer.begin(&self.device)? };
+                unsafe { self.cmd_buffer.begin(&context.device)? };
                 let cmd_buffer = *self.cmd_buffer;
 
                 // Transition first mip of cubemap_image to COLOR_ATTACHMENT_OPTIMAL for rendering.
                 VkImage::cmd_transition_img_layout(
-                        &self.device,
+                        &context.device,
                         *self.cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: **cubemap_image,
@@ -1433,7 +1414,7 @@ impl VkAssetManager {
                         },
                 );
 
-                self.device.cmd_bind_descriptor_sets(
+                context.device.cmd_bind_descriptor_sets(
                         cmd_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
                         *equi_to_cube_vk_shader.graphics_pipeline_layout,
@@ -1459,10 +1440,11 @@ impl VkAssetManager {
                         max_depth: 1.0,
                 };
 
-                self.device.cmd_set_scissor(cmd_buffer, 0, scissor.ref_into_slice());
-                self.device.cmd_set_viewport(cmd_buffer, 0, viewport.ref_into_slice());
+                context.device.cmd_set_scissor(cmd_buffer, 0, scissor.ref_into_slice());
+                context.device
+                        .cmd_set_viewport(cmd_buffer, 0, viewport.ref_into_slice());
 
-                self.device
+                context.device
                         .cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, equi_to_cube_vk_pipeline);
 
                 for i in 0..6usize {
@@ -1478,7 +1460,7 @@ impl VkAssetManager {
                                         layer_count: 1,
                                 });
 
-                        let face_image_view = VkImageView::new(Rc::clone(&self.device), &face_image_view_cinfo)?;
+                        let face_image_view = VkImageView::new(context, &face_image_view_cinfo)?;
 
                         // Begin rendering.
                         let color_attachment = vk::RenderingAttachmentInfo::default()
@@ -1492,10 +1474,10 @@ impl VkAssetManager {
                                 .layer_count(1)
                                 .color_attachments(color_attachment.ref_into_slice());
 
-                        self.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
+                        context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
 
                         // Push the corresponding rotation for this face.
-                        self.device.cmd_push_constants(
+                        context.device.cmd_push_constants(
                                 cmd_buffer,
                                 *equi_to_cube_vk_shader.graphics_pipeline_layout,
                                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
@@ -1504,10 +1486,10 @@ impl VkAssetManager {
                         );
 
                         // Draw (fullscreen triangle).
-                        self.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
+                        context.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
 
                         // End rendering.
-                        self.device.cmd_end_rendering(cmd_buffer);
+                        context.device.cmd_end_rendering(cmd_buffer);
 
                         deletion_queue.push(VkObject::ImageView(face_image_view));
                 }
@@ -1551,7 +1533,7 @@ impl VkAssetManager {
                                 ..Default::default()
                         };
 
-                        unsafe { VkSampler::new(Rc::clone(&self.device), &environment_sampler_cinfo)? }
+                        unsafe { VkSampler::new(context, &environment_sampler_cinfo)? }
                 };
 
                 let irradiance_image_cinfo = VkImageCubemapCreateInfo {
@@ -1568,6 +1550,7 @@ impl VkAssetManager {
 
                 let irradiance_pipeline_layout = *irradiance_shader.graphics_pipeline_layout;
                 let irradiance_pipeline = self.get_pipeline_for_shader(
+                        context,
                         asset_manager,
                         irradiance_shader_id,
                         format,
@@ -1594,11 +1577,11 @@ impl VkAssetManager {
                         .dst_array_element(0)
                         .image_info(image_info.ref_into_slice());
 
-                self.device.update_descriptor_sets(&[write], &[]);
+                context.device.update_descriptor_sets(&[write], &[]);
 
                 let cmd_buffer = *self.cmd_buffer;
 
-                self.device.cmd_bind_descriptor_sets(
+                context.device.cmd_bind_descriptor_sets(
                         cmd_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
                         *irradiance_shader.graphics_pipeline_layout,
@@ -1608,6 +1591,7 @@ impl VkAssetManager {
                 );
 
                 self.cmd_render_cubemap(
+                        context,
                         cmd_buffer,
                         irradiance_pipeline,
                         irradiance_pipeline_layout,
@@ -1671,7 +1655,7 @@ impl VkAssetManager {
                                 ..Default::default()
                         };
 
-                        unsafe { VkSampler::new(Rc::clone(&self.device), &environment_sampler_cinfo)? }
+                        unsafe { VkSampler::new(context, &environment_sampler_cinfo)? }
                 };
 
                 let prefiltered_image_cinfo = VkImageCubemapCreateInfo {
@@ -1687,6 +1671,7 @@ impl VkAssetManager {
                 let prefilter_shader = &self.shaders[prefilter_shader_id];
 
                 let prefilter_pipeline = self.get_pipeline_for_shader(
+                        context,
                         asset_manager,
                         prefilter_shader_id,
                         format,
@@ -1719,11 +1704,11 @@ impl VkAssetManager {
                         .dst_array_element(0)
                         .image_info(image_info.ref_into_slice());
 
-                self.device.update_descriptor_sets(&[write], &[]);
+                context.device.update_descriptor_sets(&[write], &[]);
 
                 let cmd_buffer = *self.cmd_buffer;
 
-                self.device.cmd_bind_descriptor_sets(
+                context.device.cmd_bind_descriptor_sets(
                         cmd_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
                         *prefilter_shader.graphics_pipeline_layout,
@@ -1761,11 +1746,11 @@ impl VkAssetManager {
                                 .dst_array_element(0)
                                 .buffer_info(buffer_info.ref_into_slice());
 
-                        self.device.update_descriptor_sets(&[write], &[]);
+                        context.device.update_descriptor_sets(&[write], &[]);
 
                         deletion_queue.push(VkObject::Buffer(params_buffer));
 
-                        self.device.cmd_bind_descriptor_sets(
+                        context.device.cmd_bind_descriptor_sets(
                                 cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
                                 *prefilter_shader.graphics_pipeline_layout,
@@ -1775,6 +1760,7 @@ impl VkAssetManager {
                         );
 
                         self.cmd_render_cubemap(
+                                context,
                                 cmd_buffer,
                                 prefilter_pipeline,
                                 prefilter_pipeline_layout,
@@ -1785,7 +1771,7 @@ impl VkAssetManager {
                 }
 
                 VkImage::cmd_transition_img_layout(
-                        &self.device,
+                        &context.device,
                         *self.cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: *prefiltered_image,
@@ -1807,6 +1793,7 @@ impl VkAssetManager {
         /// with access vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
         unsafe fn cmd_render_cubemap(
                 &self,
+                context: &VkContext,
                 cmd_buffer: vk::CommandBuffer,
                 pipeline: vk::Pipeline,
                 pipeline_layout: vk::PipelineLayout,
@@ -1834,10 +1821,11 @@ impl VkAssetManager {
                         max_depth: 1.0,
                 };
 
-                self.device.cmd_set_scissor(cmd_buffer, 0, scissor.ref_into_slice());
-                self.device.cmd_set_viewport(cmd_buffer, 0, viewport.ref_into_slice());
+                context.device.cmd_set_scissor(cmd_buffer, 0, scissor.ref_into_slice());
+                context.device
+                        .cmd_set_viewport(cmd_buffer, 0, viewport.ref_into_slice());
 
-                self.device
+                context.device
                         .cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
                 let rotations = [
@@ -1851,7 +1839,7 @@ impl VkAssetManager {
 
                 // Transition target.(mip_level = mip_level, all_layers) to COLOR_ATTACHMENT_OPTIMAL for rendering.
                 VkImage::cmd_transition_img_layout(
-                        &self.device,
+                        &context.device,
                         *self.cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: **target,
@@ -1881,7 +1869,7 @@ impl VkAssetManager {
                                         layer_count: 1,
                                 });
 
-                        let face_image_view = VkImageView::new(Rc::clone(&self.device), &face_image_view_cinfo)?;
+                        let face_image_view = VkImageView::new(context, &face_image_view_cinfo)?;
 
                         // Begin rendering.
                         let color_attachment = vk::RenderingAttachmentInfo::default()
@@ -1895,9 +1883,9 @@ impl VkAssetManager {
                                 .layer_count(1)
                                 .color_attachments(color_attachment.ref_into_slice());
 
-                        self.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
+                        context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
 
-                        self.device.cmd_push_constants(
+                        context.device.cmd_push_constants(
                                 cmd_buffer,
                                 pipeline_layout,
                                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
@@ -1905,9 +1893,9 @@ impl VkAssetManager {
                                 rotations[i].as_bytes(),
                         );
 
-                        self.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
+                        context.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
 
-                        self.device.cmd_end_rendering(cmd_buffer);
+                        context.device.cmd_end_rendering(cmd_buffer);
 
                         deletion_queue.push(VkObject::ImageView(face_image_view));
                 }
@@ -1998,14 +1986,13 @@ impl VkAssetManager {
 
                 let vk_image = unsafe { VkImage::from_image(context, &vk_image_cinfo)? };
 
-                if ENABLE_VALIDATION_LAYERS {
-                        let name = match &image.name {
+                context.set_debug_name(
+                        &vk_image,
+                        match &image.name {
                                 Some(name) => format!("[image] {}", name),
                                 None => format!("[image] {:?}", image_id),
-                        };
-
-                        unsafe { vk_image.set_debug_name(&self.device, self.debug_utils.as_ref().unwrap(), &name)? };
-                }
+                        },
+                );
 
                 let vk_image_view_cinfo = vk::ImageViewCreateInfo {
                         image: *vk_image,
@@ -2022,7 +2009,7 @@ impl VkAssetManager {
                         ..Default::default()
                 };
 
-                let vk_image_view = unsafe { VkImageView::new(Rc::clone(&self.device), &vk_image_view_cinfo)? };
+                let vk_image_view = unsafe { VkImageView::new(context, &vk_image_view_cinfo)? };
 
                 Ok(Some(VkModelImage {
                         image: vk_image,
@@ -2032,6 +2019,7 @@ impl VkAssetManager {
 
         fn create_vk_sampler_from_sampler(
                 &self,
+                context: &VkContext,
                 asset_manager: &AssetManager,
                 sampler_id: SamplerId,
         ) -> AnyResult<Option<VkSampler>> {
@@ -2049,7 +2037,7 @@ impl VkAssetManager {
                         address_mode_w: vk::SamplerAddressMode::REPEAT,
                         mip_lod_bias: 0.0,
                         anisotropy_enable: ENABLE_ANISOTROPY as vk::Bool32,
-                        max_anisotropy: self.pdevice.max_sampler_anisotropy,
+                        max_anisotropy: context.pdevice.max_sampler_anisotropy,
                         compare_enable: vk::FALSE,
                         compare_op: vk::CompareOp::ALWAYS,
                         min_lod: 0.0,
@@ -2059,7 +2047,7 @@ impl VkAssetManager {
                         ..Default::default()
                 };
 
-                let vk_sampler = unsafe { VkSampler::new(Rc::clone(&self.device), &vk_sampler_cinfo)? };
+                let vk_sampler = unsafe { VkSampler::new(context, &vk_sampler_cinfo)? };
 
                 Ok(Some(vk_sampler))
         }
@@ -2128,7 +2116,7 @@ impl VkAssetManager {
                                                 resource_buffers.push(buffer);
 
                                                 let write = write.buffer_info(buffer_info.ref_into_slice());
-                                                unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+                                                unsafe { context.device.update_descriptor_sets(&[write], &[]) };
                                         },
                                         VkShaderResourceType::UniformBufferDynamic => panic!("{}", resource_id),
                                         VkShaderResourceType::CombinedImageSampler => {
@@ -2147,7 +2135,7 @@ impl VkAssetManager {
                                                                         };
 
                                                                         let write = write.image_info(image_info.ref_into_slice());
-                                                                        unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+                                                                        unsafe { context.device.update_descriptor_sets(&[write], &[]) };
                                                                 },
                                                            _ => panic!("invalid resource data type {:?}", data),
                                                         }

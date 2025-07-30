@@ -16,7 +16,7 @@ use super::{
         vk_image::{TransitionImageLayoutInfo, VkImage, VkImageCreateInfo},
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
         vk_util,
-        vk_wrapper::{VkDevice, VkImageView, VkInstance, VkSampler, VkSemaphore},
+        vk_wrapper::{VkDevice, VkImageView, VkSampler, VkSemaphore},
 };
 use crate::{
         application::{InterpGlobalTransform, ShaderSettings},
@@ -91,7 +91,7 @@ impl VkRenderer {
                 let swapchain = VkSwapchain::new(Rc::clone(&window), &context, DESIRED_SWAPCHAIN_IMG_COUNT)?;
                 trace!("Created VkSwapchain");
 
-                let resolve_sampler = Self::create_resolve_sampler(&context.device)?;
+                let resolve_sampler = Self::create_resolve_sampler(&context)?;
 
                 let shadow_map_depth_format = swapchain.depth_format;
 
@@ -102,7 +102,7 @@ impl VkRenderer {
                 let (shadow_map_depth_img, shadow_map_depth_img_view) =
                         Self::create_shadow_map_depth_img_and_view(&context, shadow_map_depth_format)?;
 
-                let shadow_map_sampler = Self::create_shadow_map_sampler(&context.device)?;
+                let shadow_map_sampler = Self::create_shadow_map_sampler(&context)?;
 
                 let (cube_shadow_map_img, cube_shadow_map_img_view, cube_shadow_map_img_views) =
                         Self::create_cube_shadow_map_img_and_views(&context, cube_shadow_map_color_format)?;
@@ -110,7 +110,7 @@ impl VkRenderer {
                 let (cube_shadow_map_depth_img, cube_shadow_map_depth_img_view) =
                         Self::create_cube_shadow_map_depth_img_and_view(&context, cube_shadow_map_depth_format)?;
 
-                let cube_shadow_map_sampler = Self::create_cube_shadow_map_sampler(&context.device)?;
+                let cube_shadow_map_sampler = Self::create_cube_shadow_map_sampler(&context)?;
 
                 let setup_cmd_buffer =
                         VkReusableCommandBuffer::new(Rc::clone(&context.device), Rc::clone(&context.cmd_pool))?;
@@ -462,7 +462,7 @@ impl Renderer for VkRenderer {
                         self.shadow_map_depth_img.destroy();
                         self.resolve_sampler.destroy();
                         self.swapchain.destroy();
-                        self.vk_asset_manager.destroy();
+                        self.vk_asset_manager.destroy(&self.context);
                         self.context.destroy();
                 }
 
@@ -500,7 +500,7 @@ impl VkRenderer {
                 Ok(())
         }
 
-        fn create_resolve_sampler(device: &Rc<VkDevice>) -> VkResult<VkSampler> {
+        fn create_resolve_sampler(context: &VkContext) -> VkResult<VkSampler> {
                 let vk_sampler_cinfo = vk::SamplerCreateInfo {
                         mag_filter: vk::Filter::NEAREST,
                         min_filter: vk::Filter::NEAREST,
@@ -520,7 +520,7 @@ impl VkRenderer {
                         ..Default::default()
                 };
 
-                Ok(unsafe { VkSampler::new(Rc::clone(device), &vk_sampler_cinfo)? })
+                Ok(unsafe { VkSampler::new(context, &vk_sampler_cinfo)? })
         }
 
         fn create_shadow_map_depth_img_and_view(
@@ -570,13 +570,13 @@ impl VkRenderer {
                                 ..vk::ImageViewCreateInfo::default()
                         };
 
-                        VkImageView::new(Rc::clone(&context.device), &img_view_cinfo)?
+                        VkImageView::new(context, &img_view_cinfo)?
                 };
 
                 Ok((img, img_view))
         }
 
-        fn create_shadow_map_sampler(device: &Rc<VkDevice>) -> VkResult<VkSampler> {
+        fn create_shadow_map_sampler(context: &VkContext) -> VkResult<VkSampler> {
                 let vk_sampler_cinfo = vk::SamplerCreateInfo {
                         mag_filter: vk::Filter::NEAREST,
                         min_filter: vk::Filter::NEAREST,
@@ -596,7 +596,7 @@ impl VkRenderer {
                         ..Default::default()
                 };
 
-                Ok(unsafe { VkSampler::new(Rc::clone(device), &vk_sampler_cinfo)? })
+                Ok(unsafe { VkSampler::new(context, &vk_sampler_cinfo)? })
         }
 
         fn choose_cube_shadow_map_color_format(context: &VkContext) -> VkResult<vk::Format> {
@@ -653,13 +653,13 @@ impl VkRenderer {
                         ..vk::ImageViewCreateInfo::default()
                 };
 
-                let img_view = unsafe { VkImageView::new(Rc::clone(&context.device), &img_view_cinfo)? };
+                let img_view = unsafe { VkImageView::new(context, &img_view_cinfo)? };
 
                 img_view_cinfo.view_type = vk::ImageViewType::TYPE_2D;
                 img_view_cinfo.subresource_range.layer_count = 1;
                 let mut mk_img_view = |l| unsafe {
                         img_view_cinfo.subresource_range.base_array_layer = l;
-                        VkImageView::new(Rc::clone(&context.device), &img_view_cinfo)
+                        VkImageView::new(context, &img_view_cinfo)
                 };
 
                 let img_views = [
@@ -720,13 +720,13 @@ impl VkRenderer {
                         ..vk::ImageViewCreateInfo::default()
                 };
 
-                let img_view = unsafe { VkImageView::new(Rc::clone(&context.device), &img_view_cinfo)? };
+                let img_view = unsafe { VkImageView::new(context, &img_view_cinfo)? };
 
                 Ok((img, img_view))
         }
 
-        fn create_cube_shadow_map_sampler(device: &Rc<VkDevice>) -> VkResult<VkSampler> {
-                Self::create_shadow_map_sampler(device)
+        fn create_cube_shadow_map_sampler(context: &VkContext) -> VkResult<VkSampler> {
+                Self::create_shadow_map_sampler(context)
         }
 
         // TODO: check that T is compatible with the shader resource type.
@@ -986,6 +986,7 @@ impl VkRenderer {
 
                 let vk_shader = &self.vk_asset_manager.shaders[shader_id];
                 let vk_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
+                        &self.context,
                         asset_manager,
                         shader_id,
                         self.swapchain.color_format,
@@ -1151,6 +1152,7 @@ impl VkRenderer {
                 let hdr_shader_id = asset_manager.shader_names()["hdr-shader"];
                 let hdr_vk_shader = &self.vk_asset_manager.shaders[hdr_shader_id];
                 let hdr_vk_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
+                        &self.context,
                         asset_manager,
                         hdr_shader_id,
                         self.swapchain.color_format,
@@ -1506,6 +1508,7 @@ impl VkRenderer {
                         let cube_shadow_map_shader_id = asset_manager.shader_names()["cube-shadow-map"];
                         let cube_shadow_map_shader = &self.vk_asset_manager.shaders[cube_shadow_map_shader_id];
                         let cube_shadow_map_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
+                                &self.context,
                                 asset_manager,
                                 cube_shadow_map_shader_id,
                                 self.cube_shadow_map_img.format,
@@ -1642,6 +1645,7 @@ impl VkRenderer {
                 let shadow_map_shader_id = asset_manager.shader_names()["shadow-map"];
                 let shadow_map_shader = &self.vk_asset_manager.shaders[shadow_map_shader_id];
                 let shadow_map_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
+                        &self.context,
                         asset_manager,
                         shadow_map_shader_id,
                         vk::Format::UNDEFINED,

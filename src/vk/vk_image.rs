@@ -614,15 +614,6 @@ impl VkImage {
                 Self::new(context, &image_cinfo)
         }
 
-        pub unsafe fn set_debug_name(&self, device: &VkDevice, debug_utils: &VkDebugUtils, name: &str) -> VkResult<()> {
-                let name = CString::new(name).unwrap();
-                let name_info = vk::DebugUtilsObjectNameInfoEXT::default()
-                        .object_handle(self.handle)
-                        .object_name(name.as_c_str());
-
-                debug_utils.device_loader().set_debug_utils_object_name(&name_info)
-        }
-
         pub fn cmd_transition_img_layout(
                 device: &ash::Device,
                 cmd_buffer: vk::CommandBuffer,

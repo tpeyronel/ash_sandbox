@@ -6,7 +6,7 @@ use log::trace;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use thiserror::Error;
 
-use crate::AnyResult;
+use crate::{vk::vk_context::VkContext, AnyResult};
 
 use super::{vk_buffer::VkBuffer, vk_image::VkImage};
 
@@ -416,11 +416,11 @@ pub struct VkImageView {
 }
 
 impl VkImageView {
-        pub unsafe fn new(device: Rc<VkDevice>, create_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
-                let handle = device.create_image_view(create_info, None)?;
+        pub unsafe fn new(context: &VkContext, create_info: &vk::ImageViewCreateInfo) -> VkResult<Self> {
+                let handle = context.device.create_image_view(create_info, None)?;
 
                 Ok(Self {
-                        device,
+                        device: Rc::clone(&context.device),
                         handle,
                         destroyed: Cell::new(false),
                 })
@@ -439,11 +439,11 @@ pub struct VkSampler {
 }
 
 impl VkSampler {
-        pub unsafe fn new(device: Rc<VkDevice>, create_info: &vk::SamplerCreateInfo) -> VkResult<Self> {
-                let handle = device.create_sampler(create_info, None)?;
+        pub unsafe fn new(context: &VkContext, create_info: &vk::SamplerCreateInfo) -> VkResult<Self> {
+                let handle = context.device.create_sampler(create_info, None)?;
 
                 Ok(Self {
-                        device,
+                        device: Rc::clone(&context.device),
                         handle,
                         destroyed: Cell::new(false),
                 })

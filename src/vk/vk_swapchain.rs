@@ -465,7 +465,7 @@ impl VkSwapchain {
                                 ..vk::ImageViewCreateInfo::default()
                         };
 
-                        VkImageView::new(Rc::clone(&context.device), &color_img_view_cinfo)?
+                        VkImageView::new(context, &color_img_view_cinfo)?
                 };
                 context.set_debug_name(&color_img_view, "render_color_image_view");
 
@@ -532,7 +532,7 @@ impl VkSwapchain {
                                 ..vk::ImageViewCreateInfo::default()
                         };
 
-                        VkImageView::new(Rc::clone(&context.device), &resolve_img_view_cinfo)
+                        VkImageView::new(context, &resolve_img_view_cinfo)
                 };
 
                 let resolve_img_views = [
@@ -597,7 +597,7 @@ impl VkSwapchain {
                                 ..vk::ImageViewCreateInfo::default()
                         };
 
-                        VkImageView::new(Rc::clone(&context.device), &depth_img_view_cinfo)?
+                        VkImageView::new(context, &depth_img_view_cinfo)?
                 };
                 context.set_debug_name(&depth_img_view, "render_depth_image_view");
 
@@ -635,8 +635,7 @@ impl VkSwapchain {
                                         ..Default::default()
                                 };
 
-                                let img_view =
-                                        unsafe { VkImageView::new(Rc::clone(&context.device), &img_view_cinfo)? };
+                                let img_view = unsafe { VkImageView::new(context, &img_view_cinfo)? };
                                 context.set_debug_name(&img_view, format!("present_image_view_{}", i));
 
                                 let semaphore_cinfo = vk::SemaphoreCreateInfo::default();
