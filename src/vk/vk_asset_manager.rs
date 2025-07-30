@@ -37,20 +37,20 @@ use crate::{
                 vk_command_buffer::VkReusableCommandBuffer,
                 vk_image::{MipLevels, VkImage},
                 vk_image_subresource_range::ImageSubresourceRangeUtil,
-                vk_wrapper::{HasVkHandle, VkDevice, VkImageView, VkPhysicalDevice, VkSampler},
+                vk_wrapper::{HasVkHandle, VkDevice, VkImageView, VkSampler},
         },
         AnyResult,
 };
 
 use super::{
         vk_buffer::VkDynamicUniformBuffer,
-        vk_context::{VkContext, ENABLE_VALIDATION_LAYERS},
+        vk_context::VkContext,
         vk_descriptor_set_allocator::VkDescriptorSetAllocator,
         vk_image::{
                 GenerateMipmapsInfo, TransitionImageLayoutInfo, VkImageCreateFromImageInfo, VkImageCubemapCreateInfo,
         },
         vk_util::vk_format_from_image_format_and_color_space,
-        vk_wrapper::{VkDebugUtils, VkInstance, VkObject, VkPipeline, VkPipelineLayout, VkShaderModule, VmaAllocator},
+        vk_wrapper::{VkObject, VkPipeline, VkPipelineLayout, VkShaderModule},
 };
 
 pub struct VkMesh {
