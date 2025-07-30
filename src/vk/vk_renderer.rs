@@ -95,8 +95,7 @@ impl VkRenderer {
 
                 let shadow_map_depth_format = swapchain.depth_format;
 
-                let cube_shadow_map_color_format =
-                        Self::choose_cube_shadow_map_color_format(&context.instance, **context.pdevice)?;
+                let cube_shadow_map_color_format = Self::choose_cube_shadow_map_color_format(&context)?;
 
                 let cube_shadow_map_depth_format = shadow_map_depth_format;
 
@@ -600,15 +599,12 @@ impl VkRenderer {
                 Ok(unsafe { VkSampler::new(Rc::clone(device), &vk_sampler_cinfo)? })
         }
 
-        fn choose_cube_shadow_map_color_format(
-                instance: &VkInstance,
-                pdevice: vk::PhysicalDevice,
-        ) -> VkResult<vk::Format> {
+        fn choose_cube_shadow_map_color_format(context: &VkContext) -> VkResult<vk::Format> {
                 let candidates = [vk::Format::R32_SFLOAT, vk::Format::R16_SFLOAT];
 
                 let features = vk::FormatFeatureFlags::COLOR_ATTACHMENT;
 
-                vk_util::find_best_format_for_optimal_tiling(instance, pdevice, &candidates, features)
+                vk_util::find_best_format_for_optimal_tiling(context, &candidates, features)
         }
 
         fn create_cube_shadow_map_img_and_views(

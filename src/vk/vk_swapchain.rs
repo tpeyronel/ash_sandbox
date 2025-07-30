@@ -6,28 +6,23 @@ use bitflags::bitflags;
 use log::{debug, trace};
 
 use crate::{
-        vk::{vk_context::VkContext, vk_wrapper::VkSemaphore},
+        vk::{
+                vk_context::VkContext,
+                vk_wrapper::{HasVkHandle, VkSemaphore},
+        },
         AnyResult,
 };
 
 use super::{
         vk_image::{VkImage, VkImageCreateInfo},
         vk_util,
-        vk_wrapper::{
-                impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkDevice, VkImageView,
-                VkInstance, VkSurface, VmaAllocator,
-        },
+        vk_wrapper::{impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkImageView, VkSurface},
 };
 
 pub struct VkSwapchain {
         device_loader: swapchain::Device,
 
         window: Rc<winit::window::Window>,
-        instance: Rc<VkInstance>,
-        surface: Rc<VkSurface>,
-        physical_device: vk::PhysicalDevice,
-        device: Rc<VkDevice>,
-        allocator: Rc<VmaAllocator>,
         desired_img_count: u32,
 
         handle: vk::SwapchainKHR,
@@ -56,22 +51,12 @@ pub struct VkSwapchain {
 
 impl VkSwapchain {
         pub fn new(window: Rc<winit::window::Window>, context: &VkContext, desired_img_count: u32) -> AnyResult<Self> {
-                // TODO: cleanup
-                let instance = Rc::clone(&context.instance);
-                let surface = Rc::clone(&context.surface);
-                let physical_device = **context.pdevice;
-                let device = Rc::clone(&context.device);
-                let allocator = Rc::clone(&context.allocator);
-
-                let color_format = Self::choose_color_format(&instance, physical_device)?;
-                let depth_format = Self::choose_depth_format(&instance, physical_device)?;
-                let present_format = Self::choose_present_format(&surface, physical_device)?;
+                let color_format = Self::choose_color_format(context)?;
+                let depth_format = Self::choose_depth_format(context)?;
+                let present_format = Self::choose_present_format(context)?;
                 debug!("VkSwapchain present format ({:?})", present_format);
 
-                let surface_capabilities = unsafe {
-                        surface.instance_loader()
-                                .get_physical_device_surface_capabilities(physical_device, **surface)?
-                };
+                let surface_capabilities = context.get_physical_device_surface_capabilities()?;
 
                 let requested_img_count = Self::clamp_image_count(desired_img_count, &surface_capabilities);
                 debug!("VkSwapchain image count: {}", requested_img_count);
@@ -84,13 +69,13 @@ impl VkSwapchain {
 
                 let pre_transform = surface_capabilities.current_transform;
 
-                let present_mode = Self::choose_present_mode(&surface, physical_device)?;
+                let present_mode = Self::choose_present_mode(context)?;
                 debug!("VkSwapchain present mode: {:?}", present_mode);
 
-                let device_loader = swapchain::Device::new(&**instance, &**device);
+                let device_loader = swapchain::Device::new(&context.instance, &context.device);
 
                 let swch_cinfo = Self::swapchain_create_info(
-                        &surface,
+                        &context.surface,
                         requested_img_count,
                         present_format,
                         extent,
@@ -101,7 +86,7 @@ impl VkSwapchain {
 
                 let handle = unsafe { device_loader.create_swapchain(&swch_cinfo, None)? };
 
-                let samples = Self::choose_sample_count(&instance, physical_device);
+                let samples = Self::choose_sample_count(context);
                 debug!("Swapchain samples: {:?}", samples);
 
                 let (color_img, color_img_view) =
@@ -118,11 +103,6 @@ impl VkSwapchain {
                         device_loader,
 
                         window,
-                        instance,
-                        surface,
-                        physical_device,
-                        device,
-                        allocator,
                         desired_img_count,
 
                         handle,
@@ -160,19 +140,15 @@ impl VkSwapchain {
                 };
 
                 let old_present_format = self.present_format;
-                self.present_format = Self::choose_present_format(&self.surface, self.physical_device)?;
+                self.present_format = Self::choose_present_format(context)?;
                 recreation_info.present_format_changed = old_present_format != self.present_format;
                 if recreation_info.present_format_changed {
                         debug!("VkSwapchain present format ({:?})", self.color_format);
                 }
 
-                self.depth_format = Self::choose_depth_format(&self.instance, self.physical_device)?;
+                self.depth_format = Self::choose_depth_format(context)?;
 
-                let surface_capabilities = unsafe {
-                        self.surface
-                                .instance_loader()
-                                .get_physical_device_surface_capabilities(self.physical_device, **self.surface)?
-                };
+                let surface_capabilities = context.get_physical_device_surface_capabilities()?;
 
                 let requested_img_count = Self::clamp_image_count(self.desired_img_count, &surface_capabilities);
 
@@ -185,13 +161,13 @@ impl VkSwapchain {
                 debug!("VkSwapchain extent: {:?}", self.extent);
 
                 let old_present_mode = self.present_mode;
-                self.present_mode = Self::choose_present_mode(&self.surface, self.physical_device)?;
+                self.present_mode = Self::choose_present_mode(context)?;
                 if old_present_mode != self.present_mode {
                         debug!("VkSwapchain present mode: {:?}", self.present_mode);
                 }
 
                 let swch_cinfo = Self::swapchain_create_info(
-                        &self.surface,
+                        &context.surface,
                         requested_img_count,
                         self.present_format,
                         self.extent,
@@ -210,7 +186,7 @@ impl VkSwapchain {
                 }
 
                 let old_samples = self.samples;
-                self.samples = Self::choose_sample_count(&self.instance, self.physical_device);
+                self.samples = Self::choose_sample_count(context);
                 recreation_info.samples_changed = old_samples != self.samples;
                 if recreation_info.samples_changed {
                         debug!("VkSwapchain samples: {:?}", self.samples);
@@ -288,15 +264,15 @@ impl VkSwapchain {
                 self.device_loader.queue_present(queue, present_info)
         }
 
-        fn choose_color_format(instance: &VkInstance, physical_device: vk::PhysicalDevice) -> VkResult<vk::Format> {
+        fn choose_color_format(context: &VkContext) -> VkResult<vk::Format> {
                 let candidates = [vk::Format::R16G16B16A16_SFLOAT];
 
                 let features = vk::FormatFeatureFlags::COLOR_ATTACHMENT | vk::FormatFeatureFlags::BLIT_SRC;
 
-                vk_util::find_best_format_for_optimal_tiling(instance, physical_device, &candidates, features)
+                vk_util::find_best_format_for_optimal_tiling(context, &candidates, features)
         }
 
-        fn choose_depth_format(instance: &VkInstance, physical_device: vk::PhysicalDevice) -> VkResult<vk::Format> {
+        fn choose_depth_format(context: &VkContext) -> VkResult<vk::Format> {
                 let candidates = [
                         vk::Format::D32_SFLOAT,
                         vk::Format::D32_SFLOAT_S8_UINT,
@@ -307,16 +283,15 @@ impl VkSwapchain {
 
                 let features = vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT;
 
-                vk_util::find_best_format_for_optimal_tiling(instance, physical_device, &candidates, features)
+                vk_util::find_best_format_for_optimal_tiling(context, &candidates, features)
         }
 
-        fn choose_present_format(
-                surface: &VkSurface,
-                physical_device: vk::PhysicalDevice,
-        ) -> VkResult<vk::SurfaceFormatKHR> {
+        fn choose_present_format(context: &VkContext) -> VkResult<vk::SurfaceFormatKHR> {
                 let formats = unsafe {
-                        surface.instance_loader()
-                                .get_physical_device_surface_formats(physical_device, **surface)?
+                        context.surface.instance_loader().get_physical_device_surface_formats(
+                                context.pdevice.handle(),
+                                context.surface.handle(),
+                        )?
                 };
 
                 let find_format = |fmt: vk::Format, color_space: vk::ColorSpaceKHR| {
@@ -373,13 +348,14 @@ impl VkSwapchain {
                 }
         }
 
-        fn choose_present_mode(
-                surface: &VkSurface,
-                physical_device: vk::PhysicalDevice,
-        ) -> VkResult<vk::PresentModeKHR> {
+        fn choose_present_mode(context: &VkContext) -> VkResult<vk::PresentModeKHR> {
                 let modes = unsafe {
-                        surface.instance_loader()
-                                .get_physical_device_surface_present_modes(physical_device, **surface)?
+                        context.surface
+                                .instance_loader()
+                                .get_physical_device_surface_present_modes(
+                                        context.pdevice.handle(),
+                                        context.surface.handle(),
+                                )?
                 };
 
                 let is_present_mode_avail = |mode: vk::PresentModeKHR| modes.iter().any(|&m| m == mode);
@@ -418,9 +394,8 @@ impl VkSwapchain {
                         .old_swapchain(old_swapchain)
         }
 
-        fn choose_sample_count(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> vk::SampleCountFlags {
-                let limits = unsafe { instance.get_physical_device_properties(physical_device).limits };
-
+        fn choose_sample_count(context: &VkContext) -> vk::SampleCountFlags {
+                let limits = context.pdevice.props.limits;
                 let avail_samples = limits.framebuffer_color_sample_counts & limits.framebuffer_depth_sample_counts;
 
                 if avail_samples.contains(vk::SampleCountFlags::TYPE_64) {

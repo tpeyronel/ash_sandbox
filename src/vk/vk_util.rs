@@ -1,13 +1,13 @@
 use ash::{prelude::VkResult, vk};
 
-use crate::asset_manager::{ColorSpace, ImageFormat};
-
-use super::vk_wrapper::VkInstance;
+use crate::{
+        asset_manager::{ColorSpace, ImageFormat},
+        vk::{vk_context::VkContext, vk_wrapper::HasVkHandle},
+};
 
 /// Will choose the first suitable candidate, or return Err if none is suitable.
 pub fn find_best_format_for_optimal_tiling(
-        instance: &VkInstance,
-        physical_device: vk::PhysicalDevice,
+        context: &VkContext,
         candidates: &[vk::Format],
         features: vk::FormatFeatureFlags,
 ) -> VkResult<vk::Format> {
@@ -15,8 +15,10 @@ pub fn find_best_format_for_optimal_tiling(
                 .iter()
                 .cloned()
                 .find(|&format| {
-                        let format_props =
-                                unsafe { instance.get_physical_device_format_properties(physical_device, format) };
+                        let format_props = unsafe {
+                                context.instance
+                                        .get_physical_device_format_properties(context.pdevice.handle(), format)
+                        };
 
                         (format_props.optimal_tiling_features & features) == features
                 })

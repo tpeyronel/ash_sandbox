@@ -195,6 +195,14 @@ impl VkContext {
                 self.cmd_end_debug_utils_label(cmd_buffer);
         }
 
+        pub fn get_physical_device_surface_capabilities(&self) -> VkResult<vk::SurfaceCapabilitiesKHR> {
+                unsafe {
+                        self.surface
+                                .instance_loader()
+                                .get_physical_device_surface_capabilities(self.pdevice.handle(), self.surface.handle())
+                }
+        }
+
         fn create_instance(
                 window: &Window,
                 entry: &Rc<ash::Entry>,
