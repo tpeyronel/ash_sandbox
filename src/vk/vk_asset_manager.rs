@@ -1026,7 +1026,6 @@ impl VkAssetManager {
                                                 asset_manager,
                                                 equirectangular,
                                                 &vk_image,
-                                                size,
                                                 &mut deletion_queue,
                                         )?;
 
@@ -1298,7 +1297,6 @@ impl VkAssetManager {
                 asset_manager: &AssetManager,
                 equirectangular_image: &Image,
                 cubemap_image: &VkImage,
-                size: u32,
                 deletion_queue: &mut Vec<VkObject>,
         ) -> VkResult<()> {
                 assert_eq!(cubemap_image.format, vk::Format::R16G16B16A16_SFLOAT);
@@ -1386,36 +1384,10 @@ impl VkAssetManager {
 
                 context.device.update_descriptor_sets(&[write], &[]);
 
-                let rotations = [
-                        Mat4::from_rotation_y(std::f32::consts::TAU / 4.0),
-                        Mat4::from_rotation_y(-std::f32::consts::TAU / 4.0),
-                        Mat4::from_rotation_x(-std::f32::consts::TAU / 4.0),
-                        Mat4::from_rotation_x(std::f32::consts::TAU / 4.0),
-                        Mat4::IDENTITY,
-                        Mat4::from_rotation_y(std::f32::consts::TAU / 2.0),
-                ];
-
-                unsafe { self.cmd_buffer.begin(&context.device)? };
-                let cmd_buffer = *self.cmd_buffer;
-
-                // Transition first mip of cubemap_image to COLOR_ATTACHMENT_OPTIMAL for rendering.
-                VkImage::cmd_transition_img_layout(
-                        &context.device,
-                        *self.cmd_buffer,
-                        &TransitionImageLayoutInfo {
-                                image: **cubemap_image,
-                                old_layout: vk::ImageLayout::UNDEFINED,
-                                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                                src_stage_mask: vk::PipelineStageFlags2::NONE,
-                                src_access_mask: vk::AccessFlags2::NONE,
-                                dst_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                                dst_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                                subresource_range: vk::ImageSubresourceRange::full_color().level_count(1),
-                        },
-                );
+                self.cmd_buffer.begin(&context.device)?;
 
                 context.device.cmd_bind_descriptor_sets(
-                        cmd_buffer,
+                        self.cmd_buffer.handle(),
                         vk::PipelineBindPoint::GRAPHICS,
                         *equi_to_cube_vk_shader.graphics_pipeline_layout,
                         VkDescriptorSetIndex::World.value(),
@@ -1423,76 +1395,15 @@ impl VkAssetManager {
                         &[],
                 );
 
-                let scissor = vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: vk::Extent2D {
-                                width: size,
-                                height: size,
-                        },
-                };
-
-                let viewport = vk::Viewport {
-                        x: 0.0,
-                        y: 0.0,
-                        width: size as f32,
-                        height: size as f32,
-                        min_depth: 0.0,
-                        max_depth: 1.0,
-                };
-
-                context.device.cmd_set_scissor(cmd_buffer, 0, scissor.ref_into_slice());
-                context.device
-                        .cmd_set_viewport(cmd_buffer, 0, viewport.ref_into_slice());
-
-                context.device
-                        .cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, equi_to_cube_vk_pipeline);
-
-                for i in 0..6usize {
-                        let face_image_view_cinfo = vk::ImageViewCreateInfo::default()
-                                .image(**cubemap_image)
-                                .view_type(vk::ImageViewType::TYPE_2D)
-                                .format(cubemap_image.format)
-                                .subresource_range(vk::ImageSubresourceRange {
-                                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                                        base_mip_level: 0,
-                                        level_count: 1,
-                                        base_array_layer: i as u32,
-                                        layer_count: 1,
-                                });
-
-                        let face_image_view = VkImageView::new(context, &face_image_view_cinfo)?;
-
-                        // Begin rendering.
-                        let color_attachment = vk::RenderingAttachmentInfo::default()
-                                .image_view(*face_image_view)
-                                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                                .load_op(vk::AttachmentLoadOp::DONT_CARE)
-                                .store_op(vk::AttachmentStoreOp::STORE);
-
-                        let rendering_info = vk::RenderingInfo::default()
-                                .render_area(scissor)
-                                .layer_count(1)
-                                .color_attachments(color_attachment.ref_into_slice());
-
-                        context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
-
-                        // Push the corresponding rotation for this face.
-                        context.device.cmd_push_constants(
-                                cmd_buffer,
-                                *equi_to_cube_vk_shader.graphics_pipeline_layout,
-                                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                                0,
-                                rotations[i].as_bytes(),
-                        );
-
-                        // Draw (fullscreen triangle).
-                        context.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
-
-                        // End rendering.
-                        context.device.cmd_end_rendering(cmd_buffer);
-
-                        deletion_queue.push(VkObject::ImageView(face_image_view));
-                }
+                self.cmd_render_cubemap(
+                        context,
+                        self.cmd_buffer.handle(),
+                        equi_to_cube_vk_pipeline.handle(),
+                        equi_to_cube_vk_shader.graphics_pipeline_layout.handle(),
+                        cubemap_image,
+                        0,
+                        deletion_queue,
+                )?;
 
                 Ok(())
         }
