@@ -11,7 +11,7 @@ use vk_mem::Alloc;
 use crate::{
         asset_manager::{Image, ImageFlags},
         util::{RefIntoBytesSlice, RefIntoSlice},
-        vk::{vk_image_subresource_range::ImageSubresourceRangeUtil, vk_wrapper::HasVkHandle},
+        vk::{vk_context::VkContext, vk_image_subresource_range::ImageSubresourceRangeUtil, vk_wrapper::HasVkHandle},
 };
 
 use super::{
@@ -109,7 +109,7 @@ impl HasVkHandle<vk::Image> for &VkImage {
 }
 
 impl VkImage {
-        pub unsafe fn new(allocator: Rc<VmaAllocator>, create_info: &VkImageCreateInfo) -> VkResult<Self> {
+        pub unsafe fn new(context: &VkContext, create_info: &VkImageCreateInfo) -> VkResult<Self> {
                 let (handle, alloc) = {
                         let mut vk_img_cinfo = vk::ImageCreateInfo {
                                 flags: create_info.flags,
@@ -150,11 +150,11 @@ impl VkImage {
                                 ..Default::default()
                         };
 
-                        allocator.create_image(&vk_img_cinfo, &alloc_cinfo)?
+                        context.allocator.create_image(&vk_img_cinfo, &alloc_cinfo)?
                 };
 
                 Ok(Self {
-                        allocator,
+                        allocator: Rc::clone(&context.allocator),
                         handle,
                         alloc,
                         destroyed: Cell::new(false),
@@ -167,13 +167,7 @@ impl VkImage {
                 })
         }
 
-        pub unsafe fn from_image(
-                instance: &ash::Instance,
-                pdevice: vk::PhysicalDevice,
-                device: &ash::Device,
-                allocator: Rc<VmaAllocator>,
-                cinfo: &VkImageCreateFromImageInfo,
-        ) -> VkResult<Self> {
+        pub unsafe fn from_image(context: &VkContext, cinfo: &VkImageCreateFromImageInfo) -> VkResult<Self> {
                 let image = cinfo.image;
 
                 let src_format = vk_format_from_image_format_and_color_space(image.format, image.color_space);
@@ -228,15 +222,15 @@ impl VkImage {
                                 preferred_flags: Default::default(),
                         };
 
-                        VkImage::new(Rc::clone(&allocator), &vk_image_cinfo)?
+                        VkImage::new(context, &vk_image_cinfo)?
                 };
 
                 let mut deletion_queue = vec![];
-                cinfo.setup_cmd_buffer.begin(device)?;
+                cinfo.setup_cmd_buffer.begin(&context.device)?;
                 let cmd_buffer = **cinfo.setup_cmd_buffer;
 
                 Self::cmd_transition_img_layout(
-                        device,
+                        &context.device,
                         cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: *vk_image,
@@ -252,7 +246,7 @@ impl VkImage {
 
                 let dst_layer_stride = dst_format.compute_stride_with_mipmaps(image.width, image.height, mip_levels);
                 let buffer_size = (image.layers * dst_layer_stride) as vk::DeviceSize;
-                let staging_buffer = VkBuffer::new_transfer_src(device, Rc::clone(&allocator), buffer_size)?;
+                let staging_buffer = VkBuffer::new_transfer_src(context, buffer_size)?;
 
                 let mut offset = 0;
                 let mut copies = vec![];
@@ -320,7 +314,7 @@ impl VkImage {
                 }
                 staging_buffer.unmap_memory();
 
-                device.cmd_copy_buffer_to_image(
+                context.device.cmd_copy_buffer_to_image(
                         cmd_buffer,
                         *staging_buffer,
                         *vk_image,
@@ -331,26 +325,26 @@ impl VkImage {
                 deletion_queue.push(VkObject::Buffer(staging_buffer));
 
                 if mips_to_copy != mip_levels {
-                        Self::cmd_gen_mipmaps(&GenerateMipmapsInfo {
-                                instance,
-                                pdevice,
-                                device,
+                        Self::cmd_gen_mipmaps(
+                                context,
                                 cmd_buffer,
-                                image: *vk_image,
-                                image_format: vk_image.format,
-                                width: vk_image.width,
-                                height: vk_image.height,
-                                mip_levels,
-                                old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                                src_stage_mask: vk::PipelineStageFlags2::TRANSFER,
-                                src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
-                                dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                                dst_access_mask: vk::AccessFlags2::SHADER_READ,
-                        });
+                                &GenerateMipmapsInfo {
+                                        image: *vk_image,
+                                        image_format: vk_image.format,
+                                        width: vk_image.width,
+                                        height: vk_image.height,
+                                        mip_levels,
+                                        old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                        src_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                        src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+                                        dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                                        dst_access_mask: vk::AccessFlags2::SHADER_READ,
+                                },
+                        );
                 } else {
                         Self::cmd_transition_img_layout(
-                                device,
+                                &context.device,
                                 cmd_buffer,
                                 &TransitionImageLayoutInfo {
                                         image: *vk_image,
@@ -366,7 +360,7 @@ impl VkImage {
                 }
 
                 cinfo.setup_cmd_buffer
-                        .end_and_submit(device, cinfo.transfer_queue, &[], &[], &[])?;
+                        .end_and_submit(&context.device, cinfo.transfer_queue, &[], &[], &[])?;
 
                 cinfo.setup_cmd_buffer.wait(u64::MAX)?;
                 for o in deletion_queue.into_iter().rev() {
@@ -376,13 +370,7 @@ impl VkImage {
                 Ok(vk_image)
         }
 
-        pub unsafe fn from_data(
-                instance: &ash::Instance,
-                pdevice: vk::PhysicalDevice,
-                device: &ash::Device,
-                allocator: Rc<VmaAllocator>,
-                cinfo: &VkImageCreateFromDataInfo,
-        ) -> VkResult<Self> {
+        pub unsafe fn from_data(context: &VkContext, cinfo: &VkImageCreateFromDataInfo) -> VkResult<Self> {
                 let src_format = cinfo.data_format;
                 let dst_format = cinfo.format;
                 let mip_levels = cinfo.mip_levels.to_value(cinfo.width, cinfo.height);
@@ -411,16 +399,16 @@ impl VkImage {
                         preferred_flags: Default::default(),
                 };
 
-                let vk_img = VkImage::new(Rc::clone(&allocator), &vk_img_cinfo)?;
+                let vk_img = VkImage::new(context, &vk_img_cinfo)?;
 
-                let load_strategy = Self::figure_load_strategy(instance, pdevice, src_format, dst_format);
+                let load_strategy = Self::figure_load_strategy(context, src_format, dst_format);
 
                 let mut deletion_queue = vec![];
-                cinfo.setup_cmd_buffer.begin(device)?;
+                cinfo.setup_cmd_buffer.begin(&context.device)?;
                 let cmd_buffer = **cinfo.setup_cmd_buffer;
 
                 Self::cmd_transition_img_layout(
-                        device,
+                        &context.device,
                         cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: *vk_img,
@@ -438,8 +426,7 @@ impl VkImage {
                         VkLoadStrategy::StagingBufferDirect | VkLoadStrategy::StagingBufferConvert => {
                                 let buffer_size =
                                         (cinfo.width * cinfo.height * dst_format.bytes_per_pixel()) as vk::DeviceSize;
-                                let staging_buffer =
-                                        VkBuffer::new_transfer_src(device, Rc::clone(&allocator), buffer_size)?;
+                                let staging_buffer = VkBuffer::new_transfer_src(context, buffer_size)?;
 
                                 if load_strategy == VkLoadStrategy::StagingBufferDirect {
                                         staging_buffer.write_bytes(cinfo.data)?;
@@ -497,7 +484,7 @@ impl VkImage {
                                 staging_buffer.unmap_memory();
 
                                 Self::cmd_copy_buffer_to_image(
-                                        device,
+                                        &context.device,
                                         cmd_buffer,
                                         cinfo.width,
                                         cinfo.height,
@@ -541,26 +528,26 @@ impl VkImage {
                 }
 
                 // This is missing check of mip_levels > 1 i think.
-                Self::cmd_gen_mipmaps(&GenerateMipmapsInfo {
-                        instance,
-                        pdevice,
-                        device,
+                Self::cmd_gen_mipmaps(
+                        context,
                         cmd_buffer,
-                        image: *vk_img,
-                        image_format: vk_img.format,
-                        width: vk_img.width,
-                        height: vk_img.height,
-                        mip_levels: vk_img.mip_levels,
-                        old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                        src_stage_mask: vk::PipelineStageFlags2::TRANSFER,
-                        src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
-                        dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                        dst_access_mask: vk::AccessFlags2::SHADER_READ,
-                });
+                        &GenerateMipmapsInfo {
+                                image: *vk_img,
+                                image_format: vk_img.format,
+                                width: vk_img.width,
+                                height: vk_img.height,
+                                mip_levels: vk_img.mip_levels,
+                                old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::TRANSFER,
+                                src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+                                dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                                dst_access_mask: vk::AccessFlags2::SHADER_READ,
+                        },
+                );
 
                 cinfo.setup_cmd_buffer
-                        .end_and_submit(device, cinfo.transfer_queue, &[], &[], &[])?;
+                        .end_and_submit(&context.device, cinfo.transfer_queue, &[], &[], &[])?;
 
                 cinfo.setup_cmd_buffer.wait(u64::MAX)?;
                 for o in deletion_queue.into_iter().rev() {
@@ -572,13 +559,12 @@ impl VkImage {
 
         #[rustfmt::skip]
         unsafe fn figure_load_strategy(
-                instance: &ash::Instance,
-                pdevice: vk::PhysicalDevice,
+                context: &VkContext,
                 src_fmt: vk::Format,
                 dst_fmt: vk::Format,
         ) -> VkLoadStrategy {
-                let src_fmt_props = instance.get_physical_device_format_properties(pdevice, src_fmt);
-                let dst_fmt_props = instance.get_physical_device_format_properties(pdevice, dst_fmt);
+                let src_fmt_props = context.instance.get_physical_device_format_properties(context.pdevice.handle(), src_fmt);
+                let dst_fmt_props = context.instance.get_physical_device_format_properties(context.pdevice.handle(), dst_fmt);
 
                 if src_fmt == dst_fmt && dst_fmt_props.optimal_tiling_features.contains(vk::FormatFeatureFlags::TRANSFER_DST) {
                         return VkLoadStrategy::StagingBufferDirect;
@@ -597,7 +583,7 @@ impl VkImage {
                 panic!("no suitable load strategy from {:?} to {:?}", src_fmt, dst_fmt);
         }
 
-        pub unsafe fn new_cubemap(allocator: &Rc<VmaAllocator>, cinfo: &VkImageCubemapCreateInfo) -> VkResult<VkImage> {
+        pub unsafe fn new_cubemap(context: &VkContext, cinfo: &VkImageCubemapCreateInfo) -> VkResult<VkImage> {
                 let mip_levels = cinfo.mip_levels.to_value(cinfo.size, cinfo.size);
 
                 let image_cinfo = VkImageCreateInfo {
@@ -625,7 +611,7 @@ impl VkImage {
                         preferred_flags: Default::default(),
                 };
 
-                Self::new(Rc::clone(allocator), &image_cinfo)
+                Self::new(context, &image_cinfo)
         }
 
         pub unsafe fn set_debug_name(&self, device: &VkDevice, debug_utils: &VkDebugUtils, name: &str) -> VkResult<()> {
@@ -749,11 +735,14 @@ impl VkImage {
         /// other mip levels do not matter as they will be overwritten.
         ///
         /// POST: minfo.image.(all_mip_levels, all_layers) will be in minfo.new_layout layout.
-        pub fn cmd_gen_mipmaps(minfo: &GenerateMipmapsInfo) {
+        pub fn cmd_gen_mipmaps(context: &VkContext, cmd_buffer: vk::CommandBuffer, minfo: &GenerateMipmapsInfo) {
                 assert!(
                         unsafe {
-                                minfo.instance
-                                        .get_physical_device_format_properties(minfo.pdevice, minfo.image_format)
+                                context.instance
+                                        .get_physical_device_format_properties(
+                                                context.pdevice.handle(),
+                                                minfo.image_format,
+                                        )
                                         .optimal_tiling_features
                                         .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR)
                         },
@@ -762,8 +751,8 @@ impl VkImage {
 
                 // Transition first mip level to TRANSFER_SRC_OPTIMAL.
                 Self::cmd_transition_img_layout(
-                        minfo.device,
-                        minfo.cmd_buffer,
+                        &context.device,
+                        cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: minfo.image,
                                 old_layout: minfo.old_layout,
@@ -778,8 +767,8 @@ impl VkImage {
 
                 // Transition mip levels 1.. to TRANSFER_DST_OPTIMAL.
                 Self::cmd_transition_img_layout(
-                        minfo.device,
-                        minfo.cmd_buffer,
+                        &context.device,
+                        cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: minfo.image,
                                 old_layout: vk::ImageLayout::UNDEFINED,
@@ -824,8 +813,8 @@ impl VkImage {
                         blit.dst_offsets[1].z = 1;
 
                         unsafe {
-                                minfo.device.cmd_blit_image(
-                                        minfo.cmd_buffer,
+                                context.device.cmd_blit_image(
+                                        cmd_buffer,
                                         minfo.image,
                                         vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                                         minfo.image,
@@ -838,8 +827,8 @@ impl VkImage {
                         // Transition the mip level we just created inito TRANSFER_SRC_OPTIMAL for the next mip level.
                         // We could skip this for the last mip level but we don't care.
                         Self::cmd_transition_img_layout(
-                                minfo.device,
-                                minfo.cmd_buffer,
+                                &context.device,
+                                cmd_buffer,
                                 &TransitionImageLayoutInfo {
                                         image: minfo.image,
                                         old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -861,8 +850,8 @@ impl VkImage {
                 // Now all mip levels are in TRANSFER_SRC_OPTIMAL.
                 // Transition all of them into minfo.new_layout.
                 Self::cmd_transition_img_layout(
-                        minfo.device,
-                        minfo.cmd_buffer,
+                        &context.device,
+                        cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: minfo.image,
                                 old_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
@@ -892,11 +881,7 @@ pub struct TransitionImageLayoutInfo {
         pub subresource_range: vk::ImageSubresourceRange,
 }
 
-pub struct GenerateMipmapsInfo<'a> {
-        pub instance: &'a ash::Instance,
-        pub pdevice: vk::PhysicalDevice,
-        pub device: &'a ash::Device,
-        pub cmd_buffer: vk::CommandBuffer,
+pub struct GenerateMipmapsInfo {
         pub image: vk::Image,
         pub image_format: vk::Format,
         pub width: u32,

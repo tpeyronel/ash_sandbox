@@ -166,27 +166,27 @@ pub struct VkAssetManager {
 
 impl VkAssetManager {
         pub fn new(
-                vk_context: &mut VkContext,
+                context: &mut VkContext,
                 swapchain_samples: vk::SampleCountFlags,
                 concurrent_frames: usize,
         ) -> AnyResult<Self> {
                 assert!(concurrent_frames > 0, "Frames in flight must be greater to zero");
 
-                let dst_set_allocator = VkDescriptorSetAllocator::new(Rc::clone(&vk_context.device))?;
+                let dst_set_allocator = VkDescriptorSetAllocator::new(Rc::clone(&context.device))?;
                 let mut frame_dst_set_allocators = vec![];
                 for _ in 0..concurrent_frames {
-                        frame_dst_set_allocators.push(VkDescriptorSetAllocator::new(Rc::clone(&vk_context.device))?);
+                        frame_dst_set_allocators.push(VkDescriptorSetAllocator::new(Rc::clone(&context.device))?);
                 }
                 let cmd_buffer =
-                        VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
+                        VkReusableCommandBuffer::new(Rc::clone(&context.device), Rc::clone(&context.cmd_pool))?;
 
                 Ok(Self {
-                        instance: Rc::clone(&vk_context.instance),
-                        pdevice: Rc::clone(&vk_context.pdevice),
-                        device: Rc::clone(&vk_context.device),
-                        debug_utils: vk_context.debug_utils.as_ref().map(|d| Rc::clone(d)),
-                        allocator: Rc::clone(&vk_context.allocator),
-                        transfer_queue: vk_context.queues.graphics,
+                        instance: Rc::clone(&context.instance),
+                        pdevice: Rc::clone(&context.pdevice),
+                        device: Rc::clone(&context.device),
+                        debug_utils: context.debug_utils.as_ref().map(|d| Rc::clone(d)),
+                        allocator: Rc::clone(&context.allocator),
+                        transfer_queue: context.queues.graphics,
                         dst_set_allocator,
                         frame_dst_set_allocators,
                         cmd_buffer,
@@ -211,6 +211,7 @@ impl VkAssetManager {
 
         pub fn process_asset_manager_events(
                 &mut self,
+                context: &VkContext,
                 asset_manager: &AssetManager,
                 asset_manager_event_rx: &Receiver<AssetManagerEvent>,
         ) -> AnyResult<()> {
@@ -218,7 +219,7 @@ impl VkAssetManager {
                         match e {
                                 AssetManagerEvent::MeshChanged(_) => (),
                                 AssetManagerEvent::MeshInserted(mesh_id) => {
-                                        self.on_mesh_updated(asset_manager, mesh_id)?;
+                                        self.on_mesh_updated(context, asset_manager, mesh_id)?;
                                 },
                                 AssetManagerEvent::MeshRemoved(_) => todo!(),
                                 AssetManagerEvent::ModelInserted(_) => (),
@@ -226,7 +227,7 @@ impl VkAssetManager {
                                 AssetManagerEvent::ModelRemoved(_) => todo!(),
                                 AssetManagerEvent::ImageChanged(_) => (),
                                 AssetManagerEvent::ImageInserted(image_id) => {
-                                        self.on_image_updated(asset_manager, image_id)?;
+                                        self.on_image_updated(context, asset_manager, image_id)?;
                                 },
                                 AssetManagerEvent::ImageRemoved(_) => todo!(),
                                 AssetManagerEvent::SamplerChanged(_) => (),
@@ -239,11 +240,11 @@ impl VkAssetManager {
                                 AssetManagerEvent::TextureRemoved(_) => todo!(),
                                 AssetManagerEvent::MaterialChanged(_) => (),
                                 AssetManagerEvent::MaterialInserted(material_id) => {
-                                        self.on_material_updated(asset_manager, material_id)?;
+                                        self.on_material_updated(context, asset_manager, material_id)?;
                                 },
                                 AssetManagerEvent::MaterialRemoved(_) => todo!(),
                                 AssetManagerEvent::ShaderResourceInserted(shader_resource_id) => {
-                                        self.on_shader_resource_inserted(asset_manager, shader_resource_id)?;
+                                        self.on_shader_resource_inserted(context, asset_manager, shader_resource_id)?;
                                 },
                                 AssetManagerEvent::ShaderResourceChanged(_) => todo!(),
                                 AssetManagerEvent::ShaderResourceRemoved(_) => todo!(),
@@ -254,7 +255,7 @@ impl VkAssetManager {
                                 AssetManagerEvent::ShaderRemoved(_) => todo!(),
                                 AssetManagerEvent::CubemapChanged(_) => (),
                                 AssetManagerEvent::CubemapInserted(cubemap_id) => {
-                                        self.on_cubemap_updated(asset_manager, cubemap_id)?;
+                                        self.on_cubemap_updated(context, asset_manager, cubemap_id)?;
                                 },
                                 AssetManagerEvent::CubemapRemoved(_) => todo!(),
                         }
@@ -352,21 +353,31 @@ impl VkAssetManager {
                 unsafe { VkPipelineLayout::new(device, &layout_cinfo) }
         }
 
-        fn on_mesh_updated(&mut self, asset_manager: &AssetManager, mesh_id: MeshId) -> AnyResult<()> {
+        fn on_mesh_updated(
+                &mut self,
+                context: &VkContext,
+                asset_manager: &AssetManager,
+                mesh_id: MeshId,
+        ) -> AnyResult<()> {
                 if self.meshes.contains_key(mesh_id) {
                         // TODO: handle mesh update.
                         todo!();
                 } else {
-                        self.create_vk_mesh(asset_manager, mesh_id)?;
+                        self.create_vk_mesh(context, asset_manager, mesh_id)?;
                 }
 
                 Ok(())
         }
 
-        fn on_image_updated(&mut self, asset_manager: &AssetManager, image_id: ImageId) -> AnyResult<()> {
+        fn on_image_updated(
+                &mut self,
+                context: &VkContext,
+                asset_manager: &AssetManager,
+                image_id: ImageId,
+        ) -> AnyResult<()> {
                 if self.images.contains_key(image_id) {
                         todo!();
-                } else if let Some(vk_image) = self.create_vk_image_from_image(asset_manager, image_id)? {
+                } else if let Some(vk_image) = self.create_vk_image_from_image(context, asset_manager, image_id)? {
                         self.images.insert(image_id, vk_image);
                 }
 
@@ -383,7 +394,12 @@ impl VkAssetManager {
                 Ok(())
         }
 
-        fn on_material_updated(&mut self, asset_manager: &AssetManager, material_id: MaterialId) -> AnyResult<()> {
+        fn on_material_updated(
+                &mut self,
+                context: &VkContext,
+                asset_manager: &AssetManager,
+                material_id: MaterialId,
+        ) -> AnyResult<()> {
                 match self.materials.get(material_id) {
                         Some(_vk_material) => {
                                 let _material = match asset_manager.get_material(material_id) {
@@ -395,7 +411,7 @@ impl VkAssetManager {
                         },
                         None => {
                                 if let Some(vk_material) =
-                                        self.create_vk_material_from_material(asset_manager, material_id)?
+                                        self.create_vk_material_from_material(context, asset_manager, material_id)?
                                 {
                                         self.materials.insert(material_id, vk_material);
                                 }
@@ -407,6 +423,7 @@ impl VkAssetManager {
 
         fn on_shader_resource_inserted(
                 &mut self,
+                context: &VkContext,
                 asset_manager: &AssetManager,
                 shader_resource_id: ShaderResourceId,
         ) -> AnyResult<()> {
@@ -422,8 +439,7 @@ impl VkAssetManager {
                                 let buffers = (0..self.concurrent_frames)
                                         .map(|_| {
                                                 VkBuffer::new_uniform_buffer(
-                                                        &self.device,
-                                                        Rc::clone(&self.allocator),
+                                                        context,
                                                         declaration.compute_size() as vk::DeviceSize,
                                                 )
                                         })
@@ -434,17 +450,16 @@ impl VkAssetManager {
                                 VkShaderResourceType::UniformBuffer
                         },
                         (ShaderResourceType::Struct(declaration), ShaderResourceProvider::Mesh) => {
-                                let buffers = (0..self.concurrent_frames)
-                                        .map(|_| {
-                                                VkDynamicUniformBuffer::new(
-                                                        &self.pdevice,
-                                                        &self.device,
-                                                        Rc::clone(&self.allocator),
-                                                        declaration.compute_size(),
-                                                        1024,
-                                                )
-                                        })
-                                        .collect::<AnyResult<Vec<VkDynamicUniformBuffer>>>()?;
+                                let buffers =
+                                        (0..self.concurrent_frames)
+                                                .map(|_| {
+                                                        VkDynamicUniformBuffer::new(
+                                                                context,
+                                                                declaration.compute_size(),
+                                                                1024,
+                                                        )
+                                                })
+                                                .collect::<AnyResult<Vec<VkDynamicUniformBuffer>>>()?;
 
                                 self.shader_resource_dynamic_buffers
                                         .insert(shader_resource_id.clone(), buffers);
@@ -946,7 +961,12 @@ impl VkAssetManager {
                 Ok(dst_sets)
         }
 
-        fn on_cubemap_updated(&mut self, asset_manager: &AssetManager, cubemap_id: CubemapId) -> AnyResult<()> {
+        fn on_cubemap_updated(
+                &mut self,
+                context: &VkContext,
+                asset_manager: &AssetManager,
+                cubemap_id: CubemapId,
+        ) -> AnyResult<()> {
                 let cubemap = match asset_manager.get_cubemap(cubemap_id) {
                         Some(cubemap) => cubemap,
                         None => return Ok(()),
@@ -986,13 +1006,7 @@ impl VkAssetManager {
                                                 transfer_queue: self.transfer_queue,
                                         };
 
-                                        VkImage::from_image(
-                                                &self.instance,
-                                                **self.pdevice,
-                                                &self.device,
-                                                Rc::clone(&self.allocator),
-                                                &cinfo,
-                                        )?
+                                        VkImage::from_image(context, &cinfo)?
                                 },
                                 Cubemap::Equirectangular(equirectangular) => {
                                         let vk_cubemap_cinfo = VkImageCubemapCreateInfo {
@@ -1002,9 +1016,10 @@ impl VkAssetManager {
                                                 additional_usage_flags,
                                         };
 
-                                        let vk_image = VkImage::new_cubemap(&self.allocator, &vk_cubemap_cinfo)?;
+                                        let vk_image = VkImage::new_cubemap(context, &vk_cubemap_cinfo)?;
 
                                         self.cmd_transfer_equirectangular_into_cubemap(
+                                                context,
                                                 asset_manager,
                                                 equirectangular,
                                                 &vk_image,
@@ -1012,23 +1027,24 @@ impl VkAssetManager {
                                                 &mut deletion_queue,
                                         )?;
 
-                                        VkImage::cmd_gen_mipmaps(&GenerateMipmapsInfo {
-                                                instance: &self.instance,
-                                                pdevice: **self.pdevice,
-                                                device: &self.device,
-                                                cmd_buffer: *self.cmd_buffer,
-                                                image: vk_image.handle(),
-                                                image_format: vk_image.format,
-                                                width: vk_image.width,
-                                                height: vk_image.height,
-                                                mip_levels: vk_image.mip_levels,
-                                                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                                                src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                                                src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                                                dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                                                dst_access_mask: vk::AccessFlags2::SHADER_READ,
-                                        });
+                                        VkImage::cmd_gen_mipmaps(
+                                                context,
+                                                self.cmd_buffer.handle(),
+                                                &GenerateMipmapsInfo {
+                                                        image: vk_image.handle(),
+                                                        image_format: vk_image.format,
+                                                        width: vk_image.width,
+                                                        height: vk_image.height,
+                                                        mip_levels: vk_image.mip_levels,
+                                                        old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                                        src_stage_mask:
+                                                                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                                        src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                                        dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                                                        dst_access_mask: vk::AccessFlags2::SHADER_READ,
+                                                },
+                                        );
 
                                         self.cmd_buffer.end_and_submit(
                                                 &self.device,
@@ -1102,6 +1118,7 @@ impl VkAssetManager {
                         self.cmd_buffer.begin(&self.device)?;
 
                         irradiance_image = self.gen_irrandiace_map_for(
+                                context,
                                 asset_manager,
                                 &vk_image,
                                 &vk_image_view,
@@ -1109,6 +1126,7 @@ impl VkAssetManager {
                         )?;
 
                         prefiltered_image = self.gen_prefiltered_map_for(
+                                context,
                                 asset_manager,
                                 &vk_image,
                                 &vk_image_view,
@@ -1295,6 +1313,7 @@ impl VkAssetManager {
         /// `cubemap_image` must be in vk::Format::R16G16B16A16_SFLOAT format
         unsafe fn cmd_transfer_equirectangular_into_cubemap(
                 &self,
+                context: &VkContext,
                 asset_manager: &AssetManager,
                 equirectangular_image: &Image,
                 cubemap_image: &VkImage,
@@ -1310,13 +1329,7 @@ impl VkAssetManager {
                         transfer_queue: self.transfer_queue,
                 };
 
-                let equirectangular_vk_image = VkImage::from_image(
-                        &self.instance,
-                        **self.pdevice,
-                        &self.device,
-                        Rc::clone(&self.allocator),
-                        &equirectangular_cinfo,
-                )?;
+                let equirectangular_vk_image = VkImage::from_image(context, &equirectangular_cinfo)?;
 
                 let equirectangular_vk_image_view_cinfo = vk::ImageViewCreateInfo {
                         image: *equirectangular_vk_image,
@@ -1504,6 +1517,7 @@ impl VkAssetManager {
 
         unsafe fn gen_irrandiace_map_for(
                 &self,
+                context: &VkContext,
                 asset_manager: &AssetManager,
                 environment_image: &VkImage,
                 environment_image_view: &VkImageView,
@@ -1547,7 +1561,7 @@ impl VkAssetManager {
                         additional_usage_flags: vk::ImageUsageFlags::COLOR_ATTACHMENT,
                 };
 
-                let irradiance_image = VkImage::new_cubemap(&self.allocator, &irradiance_image_cinfo)?;
+                let irradiance_image = VkImage::new_cubemap(context, &irradiance_image_cinfo)?;
 
                 let irradiance_shader_id = asset_manager.shader_names()["irradiance-shader"];
                 let irradiance_shader = &self.shaders[irradiance_shader_id];
@@ -1602,29 +1616,30 @@ impl VkAssetManager {
                         deletion_queue,
                 )?;
 
-                VkImage::cmd_gen_mipmaps(&GenerateMipmapsInfo {
-                        instance: &self.instance,
-                        pdevice: **self.pdevice,
-                        device: &self.device,
-                        cmd_buffer: *self.cmd_buffer,
-                        image: irradiance_image.handle(),
-                        image_format: irradiance_image.format,
-                        width: irradiance_image.width,
-                        height: irradiance_image.height,
-                        mip_levels: irradiance_image.mip_levels,
-                        old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                        src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                        src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                        dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                        dst_access_mask: vk::AccessFlags2::SHADER_READ,
-                });
+                VkImage::cmd_gen_mipmaps(
+                        context,
+                        self.cmd_buffer.handle(),
+                        &GenerateMipmapsInfo {
+                                image: irradiance_image.handle(),
+                                image_format: irradiance_image.format,
+                                width: irradiance_image.width,
+                                height: irradiance_image.height,
+                                mip_levels: irradiance_image.mip_levels,
+                                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                                src_stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                src_access_mask: vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                dst_stage_mask: vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                                dst_access_mask: vk::AccessFlags2::SHADER_READ,
+                        },
+                );
 
                 Ok(irradiance_image)
         }
 
         unsafe fn gen_prefiltered_map_for(
                 &mut self,
+                context: &VkContext,
                 asset_manager: &AssetManager,
                 environment_image: &VkImage,
                 environment_image_view: &VkImageView,
@@ -1666,7 +1681,7 @@ impl VkAssetManager {
                         additional_usage_flags: vk::ImageUsageFlags::COLOR_ATTACHMENT,
                 };
 
-                let prefiltered_image = VkImage::new_cubemap(&self.allocator, &prefiltered_image_cinfo)?;
+                let prefiltered_image = VkImage::new_cubemap(context, &prefiltered_image_cinfo)?;
 
                 let prefilter_shader_id = asset_manager.shader_names()["prefilter-shader"];
                 let prefilter_shader = &self.shaders[prefilter_shader_id];
@@ -1721,11 +1736,7 @@ impl VkAssetManager {
                         let roughness = (mip as f32) / ((prefiltered_image.mip_levels - 1) as f32);
 
                         let params_buffer_size = std::mem::size_of::<PrefilterParams>() as vk::DeviceSize;
-                        let params_buffer = VkBuffer::new_uniform_buffer(
-                                &self.device,
-                                Rc::clone(&self.allocator),
-                                params_buffer_size,
-                        )?;
+                        let params_buffer = VkBuffer::new_uniform_buffer(context, params_buffer_size)?;
 
                         let params = PrefilterParams {
                                 roughness_and_env_map_size: Vec2::new(roughness, environment_image.width as f32),
@@ -1904,19 +1915,24 @@ impl VkAssetManager {
                 Ok(())
         }
 
-        fn create_vk_mesh(&mut self, asset_manager: &AssetManager, mesh_id: MeshId) -> AnyResult<()> {
+        fn create_vk_mesh(
+                &mut self,
+                context: &VkContext,
+                asset_manager: &AssetManager,
+                mesh_id: MeshId,
+        ) -> AnyResult<()> {
                 let mesh = match asset_manager.get_mesh(mesh_id) {
                         Some(mesh) => mesh,
                         None => return Ok(()),
                 };
 
-                let positions = self.create_vk_vertex_buffer(&mesh.positions)?;
-                let tex_coords = self.create_vk_vertex_buffer(&mesh.tex_coords)?;
-                let normals = self.create_vk_vertex_buffer(&mesh.normals)?;
-                let tangents = self.create_vk_vertex_buffer(&mesh.tangents)?;
+                let positions = self.create_vk_vertex_buffer(context, &mesh.positions)?;
+                let tex_coords = self.create_vk_vertex_buffer(context, &mesh.tex_coords)?;
+                let normals = self.create_vk_vertex_buffer(context, &mesh.normals)?;
+                let tangents = self.create_vk_vertex_buffer(context, &mesh.tangents)?;
                 let indices = match &mesh.indices {
-                        IndicesVec::U16(indices) => self.create_vk_index_buffer(indices)?,
-                        IndicesVec::U32(indices) => self.create_vk_index_buffer(indices)?,
+                        IndicesVec::U16(indices) => self.create_vk_index_buffer(context, indices)?,
+                        IndicesVec::U32(indices) => self.create_vk_index_buffer(context, indices)?,
                 };
 
                 self.meshes.insert(
@@ -1933,12 +1949,12 @@ impl VkAssetManager {
                 Ok(())
         }
 
-        fn create_vk_vertex_buffer<T>(&mut self, data: &[T]) -> AnyResult<VkBuffer> {
-                self.create_vk_buffer(data, BufferUsageFlags::VERTEX_BUFFER)
+        fn create_vk_vertex_buffer<T>(&mut self, context: &VkContext, data: &[T]) -> AnyResult<VkBuffer> {
+                self.create_vk_buffer(context, data, BufferUsageFlags::VERTEX_BUFFER)
         }
 
-        fn create_vk_index_buffer<T: VkIndex>(&mut self, data: &[T]) -> AnyResult<VkIndexBuffer> {
-                let buffer = self.create_vk_buffer(data, BufferUsageFlags::INDEX_BUFFER)?;
+        fn create_vk_index_buffer<T: VkIndex>(&mut self, context: &VkContext, data: &[T]) -> AnyResult<VkIndexBuffer> {
+                let buffer = self.create_vk_buffer(context, data, BufferUsageFlags::INDEX_BUFFER)?;
 
                 Ok(VkIndexBuffer {
                         buffer,
@@ -1947,21 +1963,24 @@ impl VkAssetManager {
                 })
         }
 
-        fn create_vk_buffer<T>(&mut self, data: &[T], buffer_usage: BufferUsageFlags) -> AnyResult<VkBuffer> {
+        fn create_vk_buffer<T>(
+                &mut self,
+                context: &VkContext,
+                data: &[T],
+                buffer_usage: BufferUsageFlags,
+        ) -> AnyResult<VkBuffer> {
                 let vk_buffer_cinfo = VkImmutableBufferCreateInfo {
-                        device: &self.device,
-                        allocator: Rc::clone(&self.allocator),
-                        cmd_buffer: &self.cmd_buffer,
                         transfer_queue: self.transfer_queue,
                         buffer_usage,
                         data: BufferData::FullSlice(data),
                 };
 
-                VkBuffer::new_immutable(vk_buffer_cinfo)
+                VkBuffer::new_immutable(context, &self.cmd_buffer, vk_buffer_cinfo)
         }
 
         fn create_vk_image_from_image(
                 &self,
+                context: &VkContext,
                 asset_manager: &AssetManager,
                 image_id: ImageId,
         ) -> AnyResult<Option<VkModelImage>> {
@@ -1977,15 +1996,7 @@ impl VkAssetManager {
                         transfer_queue: self.transfer_queue,
                 };
 
-                let vk_image = unsafe {
-                        VkImage::from_image(
-                                &self.instance,
-                                **self.pdevice,
-                                &self.device,
-                                Rc::clone(&self.allocator),
-                                &vk_image_cinfo,
-                        )?
-                };
+                let vk_image = unsafe { VkImage::from_image(context, &vk_image_cinfo)? };
 
                 if ENABLE_VALIDATION_LAYERS {
                         let name = match &image.name {
@@ -2055,6 +2066,7 @@ impl VkAssetManager {
 
         fn create_vk_material_from_material(
                 &mut self,
+                context: &VkContext,
                 asset_manager: &AssetManager,
                 material_id: MaterialId,
         ) -> AnyResult<Option<VkMaterial>> {
@@ -2103,8 +2115,7 @@ impl VkAssetManager {
                                                 };
 
                                                 let buffer = VkBuffer::new_uniform_buffer(
-                                                        &self.device,
-                                                        Rc::clone(&self.allocator),
+                                                        context,
                                                         declaration.compute_size() as vk::DeviceSize,
                                                 )?;
 

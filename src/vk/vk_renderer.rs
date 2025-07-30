@@ -16,7 +16,7 @@ use super::{
         vk_image::{TransitionImageLayoutInfo, VkImage, VkImageCreateInfo},
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
         vk_util,
-        vk_wrapper::{VkDevice, VkImageView, VkInstance, VkSampler, VkSemaphore, VmaAllocator},
+        vk_wrapper::{VkDevice, VkImageView, VkInstance, VkSampler, VkSemaphore},
 };
 use crate::{
         application::{InterpGlobalTransform, ShaderSettings},
@@ -48,7 +48,7 @@ pub struct VkRenderer {
         window: Rc<Window>,
         asset_manager_event_rx: Receiver<AssetManagerEvent>,
 
-        vk_context: VkContext,
+        context: VkContext,
         vk_asset_manager: VkAssetManager,
 
         swapchain: VkSwapchain,
@@ -86,54 +86,43 @@ impl VkRenderer {
                 imguic: &mut imgui::Context,
                 asset_manager_event_rx: Receiver<AssetManagerEvent>,
         ) -> AnyResult<Self> {
-                let mut vk_context = VkContext::new(Rc::clone(&window))?;
+                let mut context = VkContext::new(Rc::clone(&window))?;
 
-                let swapchain = VkSwapchain::new(Rc::clone(&window), &vk_context, DESIRED_SWAPCHAIN_IMG_COUNT)?;
+                let swapchain = VkSwapchain::new(Rc::clone(&window), &context, DESIRED_SWAPCHAIN_IMG_COUNT)?;
                 trace!("Created VkSwapchain");
 
-                let resolve_sampler = Self::create_resolve_sampler(&vk_context.device)?;
+                let resolve_sampler = Self::create_resolve_sampler(&context.device)?;
 
                 let shadow_map_depth_format = swapchain.depth_format;
 
                 let cube_shadow_map_color_format =
-                        Self::choose_cube_shadow_map_color_format(&vk_context.instance, **vk_context.pdevice)?;
+                        Self::choose_cube_shadow_map_color_format(&context.instance, **context.pdevice)?;
 
                 let cube_shadow_map_depth_format = shadow_map_depth_format;
 
-                let (shadow_map_depth_img, shadow_map_depth_img_view) = Self::create_shadow_map_depth_img_and_view(
-                        Rc::clone(&vk_context.device),
-                        Rc::clone(&vk_context.allocator),
-                        shadow_map_depth_format,
-                )?;
+                let (shadow_map_depth_img, shadow_map_depth_img_view) =
+                        Self::create_shadow_map_depth_img_and_view(&context, shadow_map_depth_format)?;
 
-                let shadow_map_sampler = Self::create_shadow_map_sampler(&vk_context.device)?;
+                let shadow_map_sampler = Self::create_shadow_map_sampler(&context.device)?;
 
                 let (cube_shadow_map_img, cube_shadow_map_img_view, cube_shadow_map_img_views) =
-                        Self::create_cube_shadow_map_img_and_views(
-                                &vk_context.device,
-                                &vk_context.allocator,
-                                cube_shadow_map_color_format,
-                        )?;
+                        Self::create_cube_shadow_map_img_and_views(&context, cube_shadow_map_color_format)?;
 
                 let (cube_shadow_map_depth_img, cube_shadow_map_depth_img_view) =
-                        Self::create_cube_shadow_map_depth_img_and_view(
-                                &vk_context.device,
-                                &vk_context.allocator,
-                                cube_shadow_map_depth_format,
-                        )?;
+                        Self::create_cube_shadow_map_depth_img_and_view(&context, cube_shadow_map_depth_format)?;
 
-                let cube_shadow_map_sampler = Self::create_cube_shadow_map_sampler(&vk_context.device)?;
+                let cube_shadow_map_sampler = Self::create_cube_shadow_map_sampler(&context.device)?;
 
                 let setup_cmd_buffer =
-                        VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
+                        VkReusableCommandBuffer::new(Rc::clone(&context.device), Rc::clone(&context.cmd_pool))?;
                 trace!("Allocated VkCommandBuffers");
 
                 let max_concurrent_frames = MAX_CONCURRENT_FRAMES;
                 let frames_data = (0..max_concurrent_frames)
-                        .map(|_| VkFrameData::new(&mut vk_context))
+                        .map(|_| VkFrameData::new(&mut context))
                         .collect::<AnyResult<Vec<VkFrameData>>>()?;
 
-                let vk_asset_manager = VkAssetManager::new(&mut vk_context, swapchain.samples, max_concurrent_frames)?;
+                let vk_asset_manager = VkAssetManager::new(&mut context, swapchain.samples, max_concurrent_frames)?;
                 trace!("Created VkAssetManager");
 
                 let imgui_renderer_options = imgui_rs_vulkan_renderer::Options {
@@ -145,11 +134,11 @@ impl VkRenderer {
                 };
 
                 let imgui_renderer = Some(imgui_rs_vulkan_renderer::Renderer::with_default_allocator(
-                        &**vk_context.instance,
-                        **vk_context.pdevice,
-                        (**vk_context.device).clone(),
-                        vk_context.queues.graphics,
-                        **vk_context.cmd_pool,
+                        &**context.instance,
+                        **context.pdevice,
+                        (**context.device).clone(),
+                        context.queues.graphics,
+                        **context.cmd_pool,
                         imgui_rs_vulkan_renderer::DynamicRendering {
                                 color_attachment_format: swapchain.resolve_imgs[0].format,
                                 depth_attachment_format: None,
@@ -162,7 +151,7 @@ impl VkRenderer {
                         window,
                         asset_manager_event_rx,
 
-                        vk_context,
+                        context,
                         vk_asset_manager,
 
                         swapchain,
@@ -199,6 +188,7 @@ impl VkRenderer {
 impl Renderer for VkRenderer {
         fn draw_world(&mut self, world: &mut World, imgui_draw_data: &imgui::DrawData) -> AnyResult<()> {
                 self.vk_asset_manager.process_asset_manager_events(
+                        &self.context,
                         world.get_resource::<AssetManager>().unwrap(),
                         &self.asset_manager_event_rx,
                 )?;
@@ -458,7 +448,7 @@ impl Renderer for VkRenderer {
 
         fn destroy(&mut self) -> AnyResult<()> {
                 unsafe {
-                        let _ = self.vk_context.device.device_wait_idle();
+                        let _ = self.context.device.device_wait_idle();
                         drop(self.imgui_renderer.take().unwrap());
                         self.frames_data.clear();
                         self.cube_shadow_map_sampler.destroy();
@@ -474,7 +464,7 @@ impl Renderer for VkRenderer {
                         self.resolve_sampler.destroy();
                         self.swapchain.destroy();
                         self.vk_asset_manager.destroy();
-                        self.vk_context.destroy();
+                        self.context.destroy();
                 }
 
                 Ok(())
@@ -502,9 +492,9 @@ impl VkRenderer {
                 trace!("Recreating VkSwapchain...");
                 scoped_timer!("Recreated VkSwapchain in: ", Millis);
 
-                unsafe { self.vk_context.device.device_wait_idle()? };
+                unsafe { self.context.device.device_wait_idle()? };
 
-                let _srecreation_info = self.swapchain.recreate(&self.vk_context)?;
+                let _srecreation_info = self.swapchain.recreate(&self.context)?;
 
                 self.swapchain_outdated_causes = VkSwapchainOutdatedCauseFlags::NONE;
 
@@ -535,8 +525,7 @@ impl VkRenderer {
         }
 
         fn create_shadow_map_depth_img_and_view(
-                device: Rc<VkDevice>,
-                allocator: Rc<VmaAllocator>,
+                context: &VkContext,
                 depth_format: vk::Format,
         ) -> VkResult<(VkImage, VkImageView)> {
                 let img = unsafe {
@@ -563,7 +552,7 @@ impl VkRenderer {
                                 preferred_flags: Default::default(),
                         };
 
-                        VkImage::new(allocator, &img_cinfo)?
+                        VkImage::new(context, &img_cinfo)?
                 };
 
                 let img_view = unsafe {
@@ -582,7 +571,7 @@ impl VkRenderer {
                                 ..vk::ImageViewCreateInfo::default()
                         };
 
-                        VkImageView::new(device, &img_view_cinfo)?
+                        VkImageView::new(Rc::clone(&context.device), &img_view_cinfo)?
                 };
 
                 Ok((img, img_view))
@@ -623,8 +612,7 @@ impl VkRenderer {
         }
 
         fn create_cube_shadow_map_img_and_views(
-                device: &Rc<VkDevice>,
-                allocator: &Rc<VmaAllocator>,
+                context: &VkContext,
                 cube_shadow_map_format: vk::Format,
         ) -> VkResult<(VkImage, VkImageView, [VkImageView; 6])> {
                 let img = unsafe {
@@ -651,7 +639,7 @@ impl VkRenderer {
                                 preferred_flags: Default::default(),
                         };
 
-                        VkImage::new(Rc::clone(allocator), &img_cinfo)?
+                        VkImage::new(context, &img_cinfo)?
                 };
 
                 let mut img_view_cinfo = vk::ImageViewCreateInfo {
@@ -669,13 +657,13 @@ impl VkRenderer {
                         ..vk::ImageViewCreateInfo::default()
                 };
 
-                let img_view = unsafe { VkImageView::new(Rc::clone(device), &img_view_cinfo)? };
+                let img_view = unsafe { VkImageView::new(Rc::clone(&context.device), &img_view_cinfo)? };
 
                 img_view_cinfo.view_type = vk::ImageViewType::TYPE_2D;
                 img_view_cinfo.subresource_range.layer_count = 1;
                 let mut mk_img_view = |l| unsafe {
                         img_view_cinfo.subresource_range.base_array_layer = l;
-                        VkImageView::new(Rc::clone(device), &img_view_cinfo)
+                        VkImageView::new(Rc::clone(&context.device), &img_view_cinfo)
                 };
 
                 let img_views = [
@@ -691,8 +679,7 @@ impl VkRenderer {
         }
 
         fn create_cube_shadow_map_depth_img_and_view(
-                device: &Rc<VkDevice>,
-                allocator: &Rc<VmaAllocator>,
+                context: &VkContext,
                 cube_shadow_map_depth_format: vk::Format,
         ) -> VkResult<(VkImage, VkImageView)> {
                 let img = unsafe {
@@ -719,7 +706,7 @@ impl VkRenderer {
                                 preferred_flags: Default::default(),
                         };
 
-                        VkImage::new(Rc::clone(allocator), &img_cinfo)?
+                        VkImage::new(context, &img_cinfo)?
                 };
 
                 let img_view_cinfo = vk::ImageViewCreateInfo {
@@ -737,7 +724,7 @@ impl VkRenderer {
                         ..vk::ImageViewCreateInfo::default()
                 };
 
-                let img_view = unsafe { VkImageView::new(Rc::clone(device), &img_view_cinfo)? };
+                let img_view = unsafe { VkImageView::new(Rc::clone(&context.device), &img_view_cinfo)? };
 
                 Ok((img, img_view))
         }
@@ -806,12 +793,10 @@ impl VkRenderer {
                 self.recreate_swapchain_maybe()?;
                 let frame_data = &mut self.frames_data[self.framei];
 
-                self.vk_context
+                self.context
                         .device
                         .wait_for_fences(&[*frame_data.draw_cmd_buffer.fence], true, u64::MAX)?;
-                self.vk_context
-                        .device
-                        .reset_fences(&[*frame_data.draw_cmd_buffer.fence])?;
+                self.context.device.reset_fences(&[*frame_data.draw_cmd_buffer.fence])?;
 
                 let imagei = {
                         let result = self.swapchain.acquire_next_image(
@@ -839,7 +824,7 @@ impl VkRenderer {
                         }
                 };
 
-                self.vk_context.device.reset_command_buffer(
+                self.context.device.reset_command_buffer(
                         *frame_data.draw_cmd_buffer,
                         vk::CommandBufferResetFlags::RELEASE_RESOURCES,
                 )?;
@@ -847,7 +832,7 @@ impl VkRenderer {
                 let cmd_buffer_binfo =
                         vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
-                self.vk_context
+                self.context
                         .device
                         .begin_command_buffer(*frame_data.draw_cmd_buffer, &cmd_buffer_binfo)?;
 
@@ -861,7 +846,7 @@ impl VkRenderer {
                         .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE);
 
                 let dependency_info = vk::DependencyInfo::default().memory_barriers(memory_barrier.ref_into_slice());
-                self.vk_context
+                self.context
                         .device
                         .cmd_pipeline_barrier2(*frame_data.draw_cmd_buffer, &dependency_info);
 
@@ -887,7 +872,7 @@ impl VkRenderer {
 
                 {
                         VkImage::cmd_transition_img_layout(
-                                &self.vk_context.device,
+                                &self.context.device,
                                 cmd_buffer,
                                 &TransitionImageLayoutInfo {
                                         image: *self.swapchain.color_img,
@@ -902,7 +887,7 @@ impl VkRenderer {
                         );
 
                         VkImage::cmd_transition_img_layout(
-                                &self.vk_context.device,
+                                &self.context.device,
                                 cmd_buffer,
                                 &TransitionImageLayoutInfo {
                                         image: *self.swapchain.depth_img,
@@ -919,7 +904,7 @@ impl VkRenderer {
                         );
 
                         VkImage::cmd_transition_img_layout(
-                                &self.vk_context.device,
+                                &self.context.device,
                                 cmd_buffer,
                                 &TransitionImageLayoutInfo {
                                         image: *self.swapchain.resolve_imgs[0],
@@ -957,13 +942,13 @@ impl VkRenderer {
                                 .color_attachments(color_attachment.ref_into_slice())
                                 .depth_attachment(&depth_attachment);
 
-                        self.vk_context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
+                        self.context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
                 }
 
-                self.vk_context
+                self.context
                         .device
                         .cmd_set_viewport(cmd_buffer, 0, slice::from_ref(&self.swapchain.viewport));
-                self.vk_context
+                self.context
                         .device
                         .cmd_set_scissor(cmd_buffer, 0, slice::from_ref(&self.swapchain.scissor));
 
@@ -988,7 +973,7 @@ impl VkRenderer {
                         self.draw_shader_group(asset_manager, cmd_buffer, shader_id, shader_group)?;
                 }
 
-                self.vk_context.device.cmd_end_rendering(cmd_buffer);
+                self.context.device.cmd_end_rendering(cmd_buffer);
 
                 Ok(())
         }
@@ -1000,7 +985,7 @@ impl VkRenderer {
                 shader_id: ShaderId,
                 shader_group: &SecondaryMap<MaterialId, Vec<VkMeshInstance>>,
         ) -> VkResult<()> {
-                let device = &*self.vk_context.device;
+                let device = &*self.context.device;
                 let framei = self.framei;
 
                 let vk_shader = &self.vk_asset_manager.shaders[shader_id];
@@ -1038,7 +1023,7 @@ impl VkRenderer {
                 material_id: MaterialId,
                 material_group: &Vec<VkMeshInstance>,
         ) -> VkResult<()> {
-                let device = &*self.vk_context.device;
+                let device = &*self.context.device;
                 let framei = self.framei;
                 let material = &asset_manager.material(material_id);
                 let vk_material = &self.vk_asset_manager.materials[material_id];
@@ -1082,7 +1067,7 @@ impl VkRenderer {
                 vk_shader: &VkShader,
                 vk_mesh_instance: &VkMeshInstance,
         ) {
-                let device = &*self.vk_context.device;
+                let device = &*self.context.device;
                 let framei = self.framei;
                 let vk_mesh = &self.vk_asset_manager.meshes[vk_mesh_instance.mesh];
 
@@ -1123,7 +1108,7 @@ impl VkRenderer {
                 let cmd_buffer = *frame_data.draw_cmd_buffer;
 
                 VkImage::cmd_transition_img_layout(
-                        &self.vk_context.device,
+                        &self.context.device,
                         cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: *self.swapchain.resolve_imgs[0],
@@ -1138,7 +1123,7 @@ impl VkRenderer {
                 );
 
                 VkImage::cmd_transition_img_layout(
-                        &self.vk_context.device,
+                        &self.context.device,
                         cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: *self.swapchain.resolve_imgs[1],
@@ -1164,7 +1149,7 @@ impl VkRenderer {
                                 .layer_count(1)
                                 .color_attachments(color_attachment.ref_into_slice());
 
-                        self.vk_context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
+                        self.context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
                 }
 
                 let hdr_shader_id = asset_manager.shader_names()["hdr-shader"];
@@ -1176,7 +1161,7 @@ impl VkRenderer {
                         vk::Format::UNDEFINED,
                 )?;
 
-                self.vk_context
+                self.context
                         .device
                         .cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, hdr_vk_pipeline);
 
@@ -1190,22 +1175,22 @@ impl VkRenderer {
                         max_depth: 1.0,
                 };
 
-                self.vk_context
+                self.context
                         .device
                         .cmd_set_viewport(cmd_buffer, 0, viewport.ref_into_slice());
 
-                self.vk_context
+                self.context
                         .device
                         .cmd_set_scissor(cmd_buffer, 0, self.swapchain.scissor.ref_into_slice());
 
                 Self::update_world_descriptors(
-                        &self.vk_context.device,
+                        &self.context.device,
                         &self.world_shader_resource_descriptors_data,
                         self.framei,
                         hdr_vk_shader,
                 );
 
-                self.vk_context.device.cmd_bind_descriptor_sets(
+                self.context.device.cmd_bind_descriptor_sets(
                         cmd_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
                         *hdr_vk_shader.graphics_pipeline_layout,
@@ -1214,14 +1199,14 @@ impl VkRenderer {
                         &[],
                 );
 
-                self.vk_context.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
+                self.context.device.cmd_draw(cmd_buffer, 3, 1, 0, 0);
 
                 self.imgui_renderer
                         .as_mut()
                         .unwrap()
                         .cmd_draw(cmd_buffer, imgui_draw_data)?;
 
-                self.vk_context.device.cmd_end_rendering(cmd_buffer);
+                self.context.device.cmd_end_rendering(cmd_buffer);
 
                 Ok(())
         }
@@ -1233,7 +1218,7 @@ impl VkRenderer {
 
                 /* Prepare resolve image for copying from */
                 VkImage::cmd_transition_img_layout(
-                        &self.vk_context.device,
+                        &self.context.device,
                         cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: *self.swapchain.resolve_imgs[1],
@@ -1249,7 +1234,7 @@ impl VkRenderer {
 
                 /* Prepare present image for copying into */
                 VkImage::cmd_transition_img_layout(
-                        &self.vk_context.device,
+                        &self.context.device,
                         cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: present_img_data.img,
@@ -1264,7 +1249,7 @@ impl VkRenderer {
                 );
 
                 VkImage::cmd_copy_image_to_image(
-                        &self.vk_context.device,
+                        &self.context.device,
                         cmd_buffer,
                         self.swapchain.extent.width,
                         self.swapchain.extent.height,
@@ -1275,7 +1260,7 @@ impl VkRenderer {
 
                 // Prepare swapchain image for presentation
                 VkImage::cmd_transition_img_layout(
-                        &self.vk_context.device,
+                        &self.context.device,
                         cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: present_img_data.img,
@@ -1289,7 +1274,7 @@ impl VkRenderer {
                         },
                 );
 
-                self.vk_context.device.end_command_buffer(cmd_buffer)?;
+                self.context.device.end_command_buffer(cmd_buffer)?;
 
                 {
                         let wait_semaphore_info = vk::SemaphoreSubmitInfo::default()
@@ -1306,15 +1291,15 @@ impl VkRenderer {
                                 .command_buffer_infos(command_buffer_info.ref_into_slice())
                                 .signal_semaphore_infos(signal_semaphore_info.ref_into_slice());
 
-                        self.vk_context.device.queue_submit2(
-                                self.vk_context.queues.graphics,
+                        self.context.device.queue_submit2(
+                                self.context.queues.graphics,
                                 &[submit_info],
                                 *frame_data.draw_cmd_buffer.fence,
                         )?;
                 }
 
                 match self.swapchain.queue_present(
-                        self.vk_context.queues.present,
+                        self.context.queues.present,
                         &vk::PresentInfoKHR::default()
                                 .wait_semaphores(&[*present_img_data.render_finished_semaphore])
                                 .swapchains(&[*self.swapchain])
@@ -1458,7 +1443,7 @@ impl VkRenderer {
                 };
 
                 VkImage::cmd_transition_img_layout(
-                        &self.vk_context.device,
+                        &self.context.device,
                         cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: *self.cube_shadow_map_img,
@@ -1473,7 +1458,7 @@ impl VkRenderer {
                 );
 
                 VkImage::cmd_transition_img_layout(
-                        &self.vk_context.device,
+                        &self.context.device,
                         cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: *self.cube_shadow_map_depth_img,
@@ -1511,14 +1496,14 @@ impl VkRenderer {
                                         .color_attachments(color_attachment.ref_into_slice())
                                         .depth_attachment(&depth_attachment);
 
-                                self.vk_context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
+                                self.context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
                         }
 
-                        self.vk_context
+                        self.context
                                 .device
                                 .cmd_set_viewport(cmd_buffer, 0, slice::from_ref(&shadow_map_viewport));
 
-                        self.vk_context
+                        self.context
                                 .device
                                 .cmd_set_scissor(cmd_buffer, 0, slice::from_ref(&shadow_map_rect));
 
@@ -1531,13 +1516,13 @@ impl VkRenderer {
                                 self.cube_shadow_map_depth_img.format,
                         )?;
 
-                        self.vk_context.device.cmd_bind_pipeline(
+                        self.context.device.cmd_bind_pipeline(
                                 cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
                                 cube_shadow_map_pipeline,
                         );
 
-                        self.vk_context.device.cmd_push_constants(
+                        self.context.device.cmd_push_constants(
                                 cmd_buffer,
                                 *cube_shadow_map_shader.graphics_pipeline_layout,
                                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
@@ -1545,7 +1530,7 @@ impl VkRenderer {
                                 (i as u32).as_bytes(),
                         );
 
-                        self.vk_context.device.cmd_bind_descriptor_sets(
+                        self.context.device.cmd_bind_descriptor_sets(
                                 cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
                                 *cube_shadow_map_shader.graphics_pipeline_layout,
@@ -1566,12 +1551,12 @@ impl VkRenderer {
                                 }
                         }
 
-                        self.vk_context.device.cmd_end_rendering(cmd_buffer);
+                        self.context.device.cmd_end_rendering(cmd_buffer);
                 }
 
                 // Prepare cube shadow map image for reading in shader.
                 VkImage::cmd_transition_img_layout(
-                        &self.vk_context.device,
+                        &self.context.device,
                         cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: *self.cube_shadow_map_img,
@@ -1618,7 +1603,7 @@ impl VkRenderer {
                 };
 
                 VkImage::cmd_transition_img_layout(
-                        &self.vk_context.device,
+                        &self.context.device,
                         cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: *self.shadow_map_depth_img,
@@ -1647,14 +1632,14 @@ impl VkRenderer {
                                 .layer_count(1)
                                 .depth_attachment(&depth_attachment);
 
-                        self.vk_context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
+                        self.context.device.cmd_begin_rendering(cmd_buffer, &rendering_info);
                 }
 
-                self.vk_context
+                self.context
                         .device
                         .cmd_set_viewport(cmd_buffer, 0, slice::from_ref(&shadow_map_viewport));
 
-                self.vk_context
+                self.context
                         .device
                         .cmd_set_scissor(cmd_buffer, 0, slice::from_ref(&shadow_map_rect));
 
@@ -1667,13 +1652,11 @@ impl VkRenderer {
                         self.shadow_map_depth_img.format,
                 )?;
 
-                self.vk_context.device.cmd_bind_pipeline(
-                        cmd_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        shadow_map_pipeline,
-                );
+                self.context
+                        .device
+                        .cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, shadow_map_pipeline);
 
-                self.vk_context.device.cmd_bind_descriptor_sets(
+                self.context.device.cmd_bind_descriptor_sets(
                         cmd_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
                         *shadow_map_shader.graphics_pipeline_layout,
@@ -1690,10 +1673,10 @@ impl VkRenderer {
                         }
                 }
 
-                self.vk_context.device.cmd_end_rendering(cmd_buffer);
+                self.context.device.cmd_end_rendering(cmd_buffer);
 
                 VkImage::cmd_transition_img_layout(
-                        &self.vk_context.device,
+                        &self.context.device,
                         cmd_buffer,
                         &TransitionImageLayoutInfo {
                                 image: *self.shadow_map_depth_img,
@@ -1786,12 +1769,12 @@ struct VkFrameData {
 }
 
 impl VkFrameData {
-        fn new(vk_context: &mut VkContext) -> AnyResult<Self> {
+        fn new(context: &mut VkContext) -> AnyResult<Self> {
                 let semaphore_cinfo = vk::SemaphoreCreateInfo::default();
-                let img_available_semaphore = unsafe { VkSemaphore::new(&vk_context.device, &semaphore_cinfo)? };
+                let img_available_semaphore = unsafe { VkSemaphore::new(&context.device, &semaphore_cinfo)? };
 
                 let draw_cmd_buffer =
-                        VkReusableCommandBuffer::new(Rc::clone(&vk_context.device), Rc::clone(&vk_context.cmd_pool))?;
+                        VkReusableCommandBuffer::new(Rc::clone(&context.device), Rc::clone(&context.cmd_pool))?;
 
                 Ok(Self {
                         img_available_semaphore,

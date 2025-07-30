@@ -5,20 +5,18 @@ use ash::{prelude::VkResult, vk};
 use log::trace;
 use vk_mem::Alloc;
 
-use crate::{vk::vk_wrapper::HasVkHandle, AnyResult};
+use crate::{
+        vk::{vk_context::VkContext, vk_wrapper::HasVkHandle},
+        AnyResult,
+};
 
 use super::{
         vk_command_buffer::VkReusableCommandBuffer,
-        vk_wrapper::{
-                impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkPhysicalDevice, VmaAllocator,
-        },
+        vk_wrapper::{impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VmaAllocator},
 };
 
 #[derive(Clone)]
 pub struct VkBufferCreateInfo<'a> {
-        pub device: &'a ash::Device,
-        pub allocator: Rc<VmaAllocator>,
-
         pub buffer_size: vk::DeviceSize,
         pub buffer_usage: vk::BufferUsageFlags,
         pub mem_usage: vma::MemoryUsage,
@@ -40,10 +38,6 @@ pub enum BufferData<'a, T> {
 }
 
 pub struct VkImmutableBufferCreateInfo<'a, T> {
-        pub device: &'a ash::Device,
-        pub allocator: Rc<VmaAllocator>,
-
-        pub cmd_buffer: &'a VkReusableCommandBuffer,
         pub transfer_queue: vk::Queue,
         pub buffer_usage: vk::BufferUsageFlags,
         pub data: BufferData<'a, T>,
@@ -61,7 +55,7 @@ pub struct VkBuffer {
 }
 
 impl VkBuffer {
-        pub fn new(create_info: VkBufferCreateInfo) -> VkResult<Self> {
+        pub fn new(context: &VkContext, create_info: VkBufferCreateInfo) -> VkResult<Self> {
                 let mut handle_cinfo = vk::BufferCreateInfo::default()
                         .size(create_info.buffer_size)
                         .usage(create_info.buffer_usage);
@@ -85,10 +79,10 @@ impl VkBuffer {
                         ..Default::default()
                 };
 
-                let (handle, alloc) = unsafe { create_info.allocator.create_buffer(&handle_cinfo, &alloc_cinfo)? };
+                let (handle, alloc) = unsafe { context.allocator.create_buffer(&handle_cinfo, &alloc_cinfo)? };
 
                 Ok(Self {
-                        allocator: create_info.allocator,
+                        allocator: Rc::clone(&context.allocator),
                         handle,
                         alloc,
                         destroyed: Cell::new(false),
@@ -97,7 +91,11 @@ impl VkBuffer {
                 })
         }
 
-        pub fn new_immutable<T>(create_info: VkImmutableBufferCreateInfo<T>) -> AnyResult<Self> {
+        pub fn new_immutable<T>(
+                context: &VkContext,
+                cmd_buffer: &VkReusableCommandBuffer,
+                create_info: VkImmutableBufferCreateInfo<T>,
+        ) -> AnyResult<Self> {
                 let buffer_data = match create_info.data {
                         BufferData::FullSlice(s) => unsafe {
                                 std::slice::from_raw_parts(s.as_ptr() as *const u8, s.len() * std::mem::size_of::<T>())
@@ -111,8 +109,6 @@ impl VkBuffer {
                 let buffer_size = buffer_data.len() as vk::DeviceSize;
 
                 let staging_buffer_cinfo = VkBufferCreateInfo {
-                        device: create_info.device,
-                        allocator: Rc::clone(&create_info.allocator),
                         buffer_size,
                         buffer_usage: vk::BufferUsageFlags::TRANSFER_SRC,
                         mem_usage: vma::MemoryUsage::CpuOnly,
@@ -123,14 +119,12 @@ impl VkBuffer {
                         q_family_indices: None,
                 };
 
-                let staging_buffer = VkBuffer::new(staging_buffer_cinfo)?;
+                let staging_buffer = VkBuffer::new(context, staging_buffer_cinfo)?;
 
                 staging_buffer.write_bytes(buffer_data)?;
                 staging_buffer.unmap_memory();
 
                 let buffer_cinfo = VkBufferCreateInfo {
-                        device: create_info.device,
-                        allocator: create_info.allocator,
                         buffer_size,
                         buffer_usage: vk::BufferUsageFlags::TRANSFER_DST | create_info.buffer_usage,
                         mem_usage: vma::MemoryUsage::GpuOnly,
@@ -140,9 +134,9 @@ impl VkBuffer {
                         mem_type_bits: 0,
                         q_family_indices: None,
                 };
-                let buffer = VkBuffer::new(buffer_cinfo)?;
+                let buffer = VkBuffer::new(context, buffer_cinfo)?;
 
-                create_info.cmd_buffer.record_and_submit(
+                cmd_buffer.record_and_submit(
                         create_info.transfer_queue,
                         &[],
                         &[],
@@ -161,21 +155,15 @@ impl VkBuffer {
                 )?;
 
                 unsafe {
-                        create_info.cmd_buffer.wait(u64::MAX)?;
+                        cmd_buffer.wait(u64::MAX)?;
                         staging_buffer.destroy();
                 }
 
                 Ok(buffer)
         }
 
-        pub fn new_uniform_buffer(
-                device: &ash::Device,
-                allocator: Rc<VmaAllocator>,
-                buffer_size: vk::DeviceSize,
-        ) -> VkResult<Self> {
+        pub fn new_uniform_buffer(context: &VkContext, buffer_size: vk::DeviceSize) -> VkResult<Self> {
                 let cinfo = VkBufferCreateInfo {
-                        device,
-                        allocator,
                         buffer_size,
                         buffer_usage: vk::BufferUsageFlags::UNIFORM_BUFFER,
                         mem_usage: vma::MemoryUsage::CpuToGpu,
@@ -186,18 +174,12 @@ impl VkBuffer {
                         q_family_indices: None,
                 };
 
-                VkBuffer::new(cinfo)
+                VkBuffer::new(context, cinfo)
         }
 
-        pub fn new_transfer_src(
-                device: &ash::Device,
-                allocator: Rc<VmaAllocator>,
-                buffer_size: vk::DeviceSize,
-        ) -> VkResult<VkBuffer> {
+        pub fn new_transfer_src(context: &VkContext, buffer_size: vk::DeviceSize) -> VkResult<VkBuffer> {
                 let staging_buffer = {
                         let buffer_cinfo = VkBufferCreateInfo {
-                                device,
-                                allocator,
                                 buffer_size,
                                 buffer_usage: vk::BufferUsageFlags::TRANSFER_SRC,
                                 mem_usage: vma::MemoryUsage::CpuOnly,
@@ -209,7 +191,7 @@ impl VkBuffer {
                                 q_family_indices: None,
                         };
 
-                        VkBuffer::new(buffer_cinfo)?
+                        VkBuffer::new(context, buffer_cinfo)?
                 };
 
                 Ok(staging_buffer)
@@ -313,16 +295,10 @@ pub struct VkDynamicUniformBuffer {
 }
 
 impl VkDynamicUniformBuffer {
-        pub fn new(
-                pdevice: &VkPhysicalDevice,
-                device: &ash::Device,
-                allocator: Rc<VmaAllocator>,
-                element_size: usize,
-                capacity: usize,
-        ) -> AnyResult<Self> {
-                let element_padded_size = pdevice.calc_padded_size(element_size);
+        pub fn new(context: &VkContext, element_size: usize, capacity: usize) -> AnyResult<Self> {
+                let element_padded_size = context.pdevice.calc_padded_size(element_size);
                 let buffer_size = (element_padded_size * capacity) as vk::DeviceSize;
-                let buffer = VkBuffer::new_uniform_buffer(device, allocator, buffer_size)?;
+                let buffer = VkBuffer::new_uniform_buffer(context, buffer_size)?;
 
                 Ok(Self {
                         buffer,
