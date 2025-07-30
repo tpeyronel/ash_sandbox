@@ -455,46 +455,6 @@ impl_destroyable_expr!(VkSampler, vk::Sampler, |s: &VkSampler| s
         .device
         .destroy_sampler(s.handle, None));
 
-pub struct VkFramebuffer {
-        device: Rc<VkDevice>,
-        handle: vk::Framebuffer,
-        destroyed: Cell<bool>,
-}
-
-impl VkFramebuffer {
-        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::FramebufferCreateInfo) -> VkResult<Self> {
-                Ok(Self {
-                        device: Rc::clone(device),
-                        handle: device.create_framebuffer(create_info, None)?,
-                        destroyed: Cell::new(false),
-                })
-        }
-}
-
-impl_destroyable_expr!(VkFramebuffer, vk::Framebuffer, |s: &VkFramebuffer| s
-        .device
-        .destroy_framebuffer(s.handle, None));
-
-pub struct VkRenderPass {
-        device: Rc<VkDevice>,
-        handle: vk::RenderPass,
-        destroyed: Cell<bool>,
-}
-
-impl VkRenderPass {
-        pub unsafe fn new(device: &Rc<VkDevice>, create_info: &vk::RenderPassCreateInfo) -> VkResult<Self> {
-                Ok(Self {
-                        device: Rc::clone(device),
-                        handle: device.create_render_pass(create_info, None)?,
-                        destroyed: Cell::new(false),
-                })
-        }
-}
-
-impl_destroyable_expr!(VkRenderPass, vk::RenderPass, |s: &VkRenderPass| s
-        .device
-        .destroy_render_pass(s.handle, None));
-
 pub struct VkCommandPool {
         device: Rc<VkDevice>,
 
@@ -653,7 +613,6 @@ pub enum VkObject {
         Image(VkImage),
         ImageView(VkImageView),
         Sampler(VkSampler),
-        Framebuffer(VkFramebuffer),
 }
 
 impl VkObject {
@@ -663,7 +622,6 @@ impl VkObject {
                         VkObject::Image(i) => i.destroy(),
                         VkObject::ImageView(iv) => iv.destroy(),
                         VkObject::Sampler(s) => s.destroy(),
-                        VkObject::Framebuffer(f) => f.destroy(),
                 }
         }
 }
