@@ -162,6 +162,39 @@ impl VkContext {
                 });
         }
 
+        #[allow(unused)]
+        pub fn cmd_begin_debug_utils_label(&self, cmd_buffer: vk::CommandBuffer, label: impl AsRef<str>) {
+                self.debug_utils.as_ref().inspect(|debug_utils| {
+                        let label = CString::new(label.as_ref()).unwrap();
+                        let label_info = vk::DebugUtilsLabelEXT::default().label_name(label.as_c_str());
+
+                        unsafe {
+                                debug_utils
+                                        .device_loader()
+                                        .cmd_begin_debug_utils_label(cmd_buffer, &label_info)
+                        };
+                });
+        }
+
+        #[allow(unused)]
+        pub fn cmd_end_debug_utils_label(&self, cmd_buffer: vk::CommandBuffer) {
+                self.debug_utils.as_ref().inspect(|debug_utils| {
+                        unsafe { debug_utils.device_loader().cmd_end_debug_utils_label(cmd_buffer) };
+                });
+        }
+
+        #[allow(unused)]
+        pub fn cmd_debug_utils_label_scope(
+                &self,
+                cmd_buffer: vk::CommandBuffer,
+                label: impl AsRef<str>,
+                f: impl FnOnce(),
+        ) {
+                self.cmd_begin_debug_utils_label(cmd_buffer, label);
+                f();
+                self.cmd_end_debug_utils_label(cmd_buffer);
+        }
+
         fn create_instance(
                 window: &Window,
                 entry: &Rc<ash::Entry>,
