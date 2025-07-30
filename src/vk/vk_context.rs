@@ -358,7 +358,7 @@ unsafe extern "system" fn vk_debug_callback(
         }
 
         let callback_data = *p_callback_data;
-        let message_id_number: i32 = callback_data.message_id_number as i32;
+        let message_id_number = callback_data.message_id_number;
 
         let message_id_name = if callback_data.p_message_id_name.is_null() {
                 Cow::from("")
@@ -373,13 +373,20 @@ unsafe extern "system" fn vk_debug_callback(
         };
 
         let display = format!(
-                "Vulkan {:?}:\n{:?} [{} ({})] : {}\n\n",
+                "Vulkan {:?}:\n{:?} [{} ({})]: {}\n\n",
                 message_severity,
                 message_type,
                 message_id_name,
                 &message_id_number.to_string(),
                 message,
         );
+
+        // This filters out a specific synchronization error about present-after-write hazard
+        // which i think is a bug in the validation layer.
+        // TODO: remove once the bug is fixed.
+        if message_id_number == -512052050 {
+                return vk::FALSE;
+        }
 
         let mut stdout = io::stdout();
         let _ = stdout.flush();
