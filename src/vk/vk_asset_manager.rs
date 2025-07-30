@@ -1713,7 +1713,9 @@ impl VkAssetManager {
                 deletion_queue: &mut Vec<VkObject>,
         ) -> VkResult<()> {
                 // calculate size of mip
+                // TODO: possibly wrong, should follow formula as in https://stackoverflow.com/a/77176427.
                 let size = (target.width as f32 * 0.5f32.powi(mip_level as i32)) as u32;
+                assert!(target.width.is_power_of_two()); // assert to make sure above problem doesn't happen.
 
                 let scissor = vk::Rect2D {
                         offset: vk::Offset2D { x: 0, y: 0 },
