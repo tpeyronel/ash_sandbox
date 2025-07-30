@@ -1325,6 +1325,20 @@ impl VkRenderer {
                         .device
                         .begin_command_buffer(*frame_data.draw_cmd_buffer, &cmd_buffer_binfo)?;
 
+                // Wait for previous frame to finish before starting the new one.
+                // TODO: this barrier is to prevent frame-to-frame hazards for all the different attachments.
+                // Should probably find another way.
+                let memory_barrier = vk::MemoryBarrier2::default()
+                        .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                        .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+                        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                        .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE);
+
+                let dependency_info = vk::DependencyInfo::default().memory_barriers(memory_barrier.ref_into_slice());
+                self.vk_context
+                        .device
+                        .cmd_pipeline_barrier2(*frame_data.draw_cmd_buffer, &dependency_info);
+
                 Ok(BeginFrameResult::Draw { imagei })
         }
 
@@ -1749,28 +1763,29 @@ impl VkRenderer {
                         },
                 );
 
-                self.vk_context.device.end_command_buffer(*frame_data.draw_cmd_buffer)?;
+                self.vk_context.device.end_command_buffer(cmd_buffer)?;
 
-                let wait_semaphore_info = vk::SemaphoreSubmitInfo::default()
-                        .semaphore(*frame_data.img_available_semaphore)
-                        .stage_mask(vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::TRANSFER);
+                {
+                        let wait_semaphore_info = vk::SemaphoreSubmitInfo::default()
+                                .semaphore(*frame_data.img_available_semaphore)
+                                .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS);
 
-                let command_buffer_info =
-                        vk::CommandBufferSubmitInfo::default().command_buffer(*frame_data.draw_cmd_buffer);
+                        let command_buffer_info = vk::CommandBufferSubmitInfo::default().command_buffer(cmd_buffer);
 
-                let signal_semaphore_info =
-                        vk::SemaphoreSubmitInfo::default().semaphore(*present_img_data.render_finished_semaphore);
+                        let signal_semaphore_info = vk::SemaphoreSubmitInfo::default()
+                                .semaphore(*present_img_data.render_finished_semaphore);
 
-                let submit_info = vk::SubmitInfo2::default()
-                        .wait_semaphore_infos(wait_semaphore_info.ref_into_slice())
-                        .command_buffer_infos(command_buffer_info.ref_into_slice())
-                        .signal_semaphore_infos(signal_semaphore_info.ref_into_slice());
+                        let submit_info = vk::SubmitInfo2::default()
+                                .wait_semaphore_infos(wait_semaphore_info.ref_into_slice())
+                                .command_buffer_infos(command_buffer_info.ref_into_slice())
+                                .signal_semaphore_infos(signal_semaphore_info.ref_into_slice());
 
-                self.vk_context.device.queue_submit2(
-                        self.vk_context.queues.graphics,
-                        &[submit_info],
-                        *frame_data.draw_cmd_buffer.fence,
-                )?;
+                        self.vk_context.device.queue_submit2(
+                                self.vk_context.queues.graphics,
+                                &[submit_info],
+                                *frame_data.draw_cmd_buffer.fence,
+                        )?;
+                }
 
                 match self.swapchain.queue_present(
                         self.vk_context.queues.present,
