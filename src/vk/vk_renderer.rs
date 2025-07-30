@@ -1554,6 +1554,7 @@ impl VkRenderer {
                 }
 
                 // Prepare cube shadow map image for reading in shader.
+                // TODO: should this be done in draw_scene()?
                 VkImage::cmd_transition_img_layout(
                         &self.context.device,
                         cmd_buffer,
@@ -1675,6 +1676,7 @@ impl VkRenderer {
 
                 self.context.device.cmd_end_rendering(cmd_buffer);
 
+                // TODO: should this be done in draw_scene()?
                 VkImage::cmd_transition_img_layout(
                         &self.context.device,
                         cmd_buffer,
