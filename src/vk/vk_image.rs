@@ -1,4 +1,4 @@
-use std::{cell::Cell, ffi::CString, ops::Deref, rc::Rc};
+use std::{cell::Cell, ops::Deref, rc::Rc};
 
 use ash::{
         prelude::VkResult,
@@ -19,10 +19,7 @@ use super::{
         vk_command_buffer::VkReusableCommandBuffer,
         vk_format::VkFormatProperties,
         vk_util::{vk_format_from_image_format_and_color_space, BytesPerPixel},
-        vk_wrapper::{
-                impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkDebugUtils, VkDevice, VkObject,
-                VmaAllocator,
-        },
+        vk_wrapper::{impl_destroyable_deref, impl_destroyable_drop, impl_destroyable_expr, VkObject, VmaAllocator},
 };
 
 #[allow(dead_code)]
