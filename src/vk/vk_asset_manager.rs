@@ -463,6 +463,9 @@ impl VkAssetManager {
 
                                 VkShaderResourceType::UniformBufferDynamic
                         },
+                        (ShaderResourceType::Struct(_), ShaderResourceProvider::RenderPass) => {
+                                VkShaderResourceType::UniformBuffer
+                        },
                         (ShaderResourceType::Image2D, ShaderResourceProvider::World) => {
                                 VkShaderResourceType::CombinedImageSampler
                         },
@@ -477,9 +480,6 @@ impl VkAssetManager {
                                 VkShaderResourceType::CombinedImageSampler
                         },
                         (ShaderResourceType::ImageCube, ShaderResourceProvider::Mesh) => todo!(),
-                        (ShaderResourceType::Struct(_), ShaderResourceProvider::RenderPass) => {
-                                VkShaderResourceType::UniformBuffer
-                        },
                         (ShaderResourceType::Image2D, ShaderResourceProvider::RenderPass) => {
                                 VkShaderResourceType::CombinedImageSampler
                         },
@@ -741,15 +741,7 @@ impl VkAssetManager {
                         let binding = next_bindings[set];
                         next_bindings[set] = binding + 1;
 
-                        let descriptor_type = match vk_resource.resource_type {
-                                VkShaderResourceType::UniformBuffer => vk::DescriptorType::UNIFORM_BUFFER,
-                                VkShaderResourceType::UniformBufferDynamic => {
-                                        vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC
-                                },
-                                VkShaderResourceType::CombinedImageSampler => {
-                                        vk::DescriptorType::COMBINED_IMAGE_SAMPLER
-                                },
-                        };
+                        let descriptor_type = vk_resource.resource_type.descriptor_type();
 
                         let binding_description = VkShaderResourceBindingDescription {
                                 set,
@@ -884,7 +876,7 @@ impl VkAssetManager {
 
                                         for (dst_set, buffer) in Iterator::zip(dst_sets.iter(), buffers.iter()) {
                                                 let buffer_info = vk::DescriptorBufferInfo {
-                                                        buffer: **buffer,
+                                                        buffer: buffer.handle(),
                                                         offset: 0,
                                                         range: vk::WHOLE_SIZE,
                                                 };

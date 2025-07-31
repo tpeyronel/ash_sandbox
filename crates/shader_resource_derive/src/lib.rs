@@ -6,8 +6,6 @@ use syn::{parse_macro_input, spanned::Spanned, DeriveInput};
 pub fn derive_shader_struct_declaration_provider(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let input = parse_macro_input!(input as DeriveInput);
 
-        assert_repr_c(&input);
-
         let name = &input.ident;
         let declaration = shader_struct_declaration(&input);
 
@@ -26,27 +24,9 @@ pub fn derive_shader_struct_declaration_provider(input: proc_macro::TokenStream)
         output
 }
 
-fn assert_repr_c(input: &DeriveInput) {
-        let mut repr_c = false;
-        for attr in &input.attrs {
-                if attr.path().is_ident("repr") {
-                        let _ = attr.parse_nested_meta(|meta| {
-                                // #[repr(C)]
-                                if meta.path.is_ident("C") {
-                                        repr_c = true;
-                                }
-
-                                Ok(())
-                        });
-                }
-        }
-
-        assert!(repr_c, "struct is not marked with #[repr(C)]");
-}
-
 fn shader_struct_declaration(input: &DeriveInput) -> TokenStream {
         let type_name = &input.ident.to_string();
-        let fields = shader_struct_declaration_fields(&input.data);
+        let fields = shader_struct_declaration_fields(input);
 
         quote! {
                 crate::shader_resource::ShaderStructDeclaration {
@@ -58,14 +38,26 @@ fn shader_struct_declaration(input: &DeriveInput) -> TokenStream {
         }
 }
 
-fn shader_struct_declaration_fields(data: &syn::Data) -> TokenStream {
+fn shader_struct_declaration_fields(input: &DeriveInput) -> TokenStream {
+        let data = &input.data;
+
         match data {
-                syn::Data::Enum(_) | syn::Data::Union(_) => {
-                        panic!("ShaderStruct must only be derived for structs")
-                },
+                syn::Data::Enum(_) | syn::Data::Union(_) => syn::Error::new_spanned(
+                        &input.ident,
+                        "#[derive(ShaderStruct)] must only be used with named structs",
+                )
+                .to_compile_error(),
                 syn::Data::Struct(data) => match &data.fields {
-                        syn::Fields::Unnamed(_) => panic!("fields must be named"),
-                        syn::Fields::Unit => panic!("must contain at least one field"),
+                        syn::Fields::Unit => syn::Error::new_spanned(
+                                &input.ident,
+                                "#[derive(ShaderStruct)] must not be used with unit structs",
+                        )
+                        .to_compile_error(),
+                        syn::Fields::Unnamed(_) => syn::Error::new_spanned(
+                                &input.ident,
+                                "#[derive(ShaderStruct)] must not be used with unnamed structs",
+                        )
+                        .to_compile_error(),
                         syn::Fields::Named(fields) => {
                                 let children = fields.named.iter().map(|f| shader_struct_field(f));
 

@@ -1,6 +1,7 @@
 use std::{cell::Cell, ops::Deref, rc::Rc};
 
 use ash::{prelude::VkResult, vk};
+use bytemuck::NoUninit;
 #[allow(unused_imports)]
 use log::trace;
 use vk_mem::Alloc;
@@ -198,31 +199,23 @@ impl VkBuffer {
         }
 
         #[allow(dead_code)]
-        pub fn write<T: 'static>(&self, value: &T) -> VkResult<()> {
+        pub fn write<T: NoUninit>(&self, value: &T) -> VkResult<()> {
                 self.write_offsetted(value, 0)
         }
 
         #[allow(dead_code)]
-        pub fn write_offsetted<T: 'static>(&self, value: &T, offset: usize) -> VkResult<()> {
-                let data = value as *const _ as *const u8;
-                let len = std::mem::size_of::<T>();
-                let bytes = unsafe { std::slice::from_raw_parts(data, len) };
-
-                self.write_bytes_offsetted(bytes, offset)
+        pub fn write_offsetted<T: NoUninit>(&self, value: &T, offset: usize) -> VkResult<()> {
+                self.write_bytes_offsetted(bytemuck::bytes_of(value), offset)
         }
 
         #[allow(dead_code)]
-        pub fn write_slice<T: 'static>(&self, data: &[T]) -> VkResult<()> {
+        pub fn write_slice<T: NoUninit>(&self, data: &[T]) -> VkResult<()> {
                 self.write_slice_offsetted(data, 0)
         }
 
         #[allow(dead_code)]
-        pub fn write_slice_offsetted<T: 'static>(&self, data: &[T], offset: usize) -> VkResult<()> {
-                let data_bytes = data.as_ptr() as *const u8;
-                let len = data.len() * std::mem::size_of::<T>();
-                let bytes = unsafe { std::slice::from_raw_parts(data_bytes, len) };
-
-                self.write_bytes_offsetted(bytes, offset)
+        pub fn write_slice_offsetted<T: NoUninit>(&self, data: &[T], offset: usize) -> VkResult<()> {
+                self.write_bytes_offsetted(bytemuck::cast_slice(data), offset)
         }
 
         #[allow(dead_code)]
@@ -313,7 +306,7 @@ impl VkDynamicUniformBuffer {
         }
 
         // Writes data to buffer with the specified index. Returns the element's offset.
-        pub fn write<T: 'static>(&self, value: &T, index: usize) -> VkResult<usize> {
+        pub fn write<T: NoUninit>(&self, value: &T, index: usize) -> VkResult<usize> {
                 assert!(
                         index < self.capacity,
                         "Write to buffer with capacity {} invalid with index {}",

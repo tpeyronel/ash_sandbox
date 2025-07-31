@@ -1,5 +1,7 @@
 use std::{fmt::Display, ops::Deref, sync::Arc};
 
+use bytemuck::NoUninit;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ShaderResourceId(Arc<str>);
 
@@ -101,7 +103,7 @@ impl ShaderStructDeclaration {
         }
 }
 
-pub trait ShaderStruct {
+pub trait ShaderStruct: NoUninit {
         fn shader_struct_declaration() -> ShaderStructDeclaration;
 }
 

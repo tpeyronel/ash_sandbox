@@ -1,4 +1,5 @@
 use bevy_ecs::prelude::World;
+use bytemuck::NoUninit;
 use shader_resource_derive::ShaderStruct;
 
 use crate::{my_glm::Vec2, AnyResult};
@@ -9,8 +10,8 @@ pub trait Renderer {
         fn destroy(&mut self) -> AnyResult<()>;
 }
 
-#[derive(ShaderStruct)]
 #[repr(C)]
+#[derive(Clone, Copy, NoUninit, ShaderStruct)]
 pub struct PrefilterParams {
         pub roughness_and_env_map_size: Vec2,
 }

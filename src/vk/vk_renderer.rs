@@ -27,7 +27,7 @@ use crate::{
         model_instance_manager::ModelInstance,
         my_glm::*,
         renderer::Renderer,
-        shader_resource::ShaderResourceId,
+        shader_resource::{ShaderResourceId, ShaderResourceType, ShaderStruct},
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_BRDF_LUT, SHADER_RESOURCE_CUBE_SHADOW_MAP,
                 SHADER_RESOURCE_INPUT_FRAMEBUFFER, SHADER_RESOURCE_IRRADIANCE_MAP, SHADER_RESOURCE_MATERIAL_DATA,
@@ -43,6 +43,8 @@ use crate::{
         constants::{DESIRED_SWAPCHAIN_IMG_COUNT, MAX_CONCURRENT_FRAMES},
         AnyResult,
 };
+
+use bytemuck::NoUninit;
 
 pub struct VkRenderer {
         window: Rc<Window>,
@@ -205,6 +207,7 @@ impl Renderer for VkRenderer {
 
                 Self::write_struct_resource(
                         self.framei,
+                        world.get_resource::<AssetManager>().unwrap(),
                         &self.vk_asset_manager,
                         &SHADER_RESOURCE_SHADER_SETTINGS,
                         world.get_resource::<ShaderSettings>().unwrap(),
@@ -233,6 +236,7 @@ impl Renderer for VkRenderer {
 
                 Self::write_struct_resource(
                         self.framei,
+                        world.get_resource::<AssetManager>().unwrap(),
                         &self.vk_asset_manager,
                         &SHADER_RESOURCE_WORLD_MATRICES,
                         &world_matrices,
@@ -317,6 +321,7 @@ impl Renderer for VkRenderer {
 
                 Self::write_struct_resource(
                         self.framei,
+                        world.get_resource::<AssetManager>().unwrap(),
                         &self.vk_asset_manager,
                         &SHADER_RESOURCE_WORLD_LIGHTS,
                         &world_lights,
@@ -334,6 +339,7 @@ impl Renderer for VkRenderer {
 
                 Self::write_struct_resource(
                         self.framei,
+                        world.get_resource::<AssetManager>().unwrap(),
                         &self.vk_asset_manager,
                         &SHADER_RESOURCE_BILLBOARD_DATA,
                         &billboard_data,
@@ -729,14 +735,25 @@ impl VkRenderer {
                 Self::create_shadow_map_sampler(context)
         }
 
-        // TODO: check that T is compatible with the shader resource type.
-        fn write_struct_resource<T: 'static>(
+        fn write_struct_resource<T: ShaderStruct>(
                 framei: usize,
+                asset_manager: &AssetManager,
                 vk_asset_manager: &VkAssetManager,
                 resource_id: &ShaderResourceId,
                 data: &T,
         ) -> AnyResult<()> {
+                let resource = asset_manager.shader_resources().get(resource_id).unwrap();
                 let vk_resource = vk_asset_manager.shader_resources.get(resource_id).unwrap();
+
+                let ShaderResourceType::Struct(declaration) = &resource.resource_type else {
+                        panic!("called write_struct_resource for non-struct resource!");
+                };
+
+                assert_eq!(
+                        T::shader_struct_declaration(),
+                        *declaration,
+                        "write_struct_resource called with type different from resource type!"
+                );
 
                 match vk_resource.resource_type {
                         VkShaderResourceType::UniformBuffer => {
@@ -1801,7 +1818,7 @@ enum BeginFrameResult {
 
 #[allow(dead_code)]
 #[repr(C)]
-#[derive(ShaderStruct)]
+#[derive(Clone, Copy, NoUninit, ShaderStruct)]
 // TODO: move out of this file (as it is not vulkan specific).
 pub struct WorldMatrices {
         view_pos: Vec4,
@@ -1812,7 +1829,7 @@ pub struct WorldMatrices {
 
 #[allow(dead_code)]
 #[repr(C)]
-#[derive(ShaderStruct)]
+#[derive(Clone, Copy, NoUninit, ShaderStruct)]
 struct WorldDirectionalLight {
         vp: Mat4,
         direction: Vec4,
@@ -1821,7 +1838,7 @@ struct WorldDirectionalLight {
 
 #[allow(dead_code)]
 #[repr(C)]
-#[derive(ShaderStruct)]
+#[derive(Clone, Copy, NoUninit, ShaderStruct)]
 struct WorldPointLight {
         vp_mats: [Mat4; 6],
         pos: Vec4,
@@ -1831,7 +1848,7 @@ struct WorldPointLight {
 
 #[allow(dead_code)]
 #[repr(C)]
-#[derive(ShaderStruct)]
+#[derive(Clone, Copy, NoUninit, ShaderStruct)]
 struct WorldSpotlight {
         pos: Vec4,
         dir: Vec4, // xyz=direction w=angle
@@ -1841,7 +1858,7 @@ struct WorldSpotlight {
 
 #[allow(dead_code)]
 #[repr(C)]
-#[derive(ShaderStruct)]
+#[derive(Clone, Copy, NoUninit, ShaderStruct)]
 pub struct WorldLights {
         dir_light: WorldDirectionalLight,
         point_light: WorldPointLight,
@@ -1850,7 +1867,7 @@ pub struct WorldLights {
 
 #[allow(dead_code)]
 #[repr(C)]
-#[derive(ShaderStruct)]
+#[derive(Clone, Copy, NoUninit, ShaderStruct)]
 pub struct MaterialData {
         pub ambient_color: Vec4,
         pub diffuse_color: Vec4,
@@ -1861,7 +1878,7 @@ pub struct MaterialData {
 
 #[allow(dead_code)]
 #[repr(C)]
-#[derive(ShaderStruct)]
+#[derive(Clone, Copy, NoUninit, ShaderStruct)]
 pub struct BillboardData {
         billboard_center: Vec4,
         billboard_scale: Vec4,
@@ -1871,7 +1888,7 @@ pub struct BillboardData {
 
 #[allow(dead_code)]
 #[repr(C)]
-#[derive(ShaderStruct)]
+#[derive(Clone, Copy, NoUninit, ShaderStruct)]
 pub struct ObjectMatrices {
         model: Mat4,
         mvp: Mat4,

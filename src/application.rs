@@ -4,6 +4,7 @@ use std::{
         time::{Duration, Instant},
 };
 
+use bytemuck::NoUninit;
 use crossbeam_channel::Receiver;
 use shader_resource_derive::ShaderStruct;
 use tps_counter::TPSCounter;
@@ -1286,7 +1287,7 @@ fn register_event<T: Resource>(world: &mut World, schedule: &mut Schedule) {
 }
 
 #[repr(C)]
-#[derive(ShaderStruct)]
+#[derive(Clone, Copy, NoUninit, ShaderStruct)]
 pub struct ShaderSettings {
         pub alt_normals: Vec2u,
         pub gamma_and_exposure: Vec2,
