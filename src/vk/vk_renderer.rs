@@ -188,9 +188,11 @@ impl VkRenderer {
 
 impl Renderer for VkRenderer {
         fn draw_world(&mut self, world: &mut World, imgui_draw_data: &imgui::DrawData) -> AnyResult<()> {
+                let asset_manager = world.remove_resource::<AssetManager>().unwrap();
+
                 self.vk_asset_manager.process_asset_manager_events(
                         &self.context,
-                        world.get_resource::<AssetManager>().unwrap(),
+                        &asset_manager,
                         &self.asset_manager_event_rx,
                 )?;
 
@@ -207,7 +209,7 @@ impl Renderer for VkRenderer {
 
                 Self::write_struct_resource(
                         self.framei,
-                        world.get_resource::<AssetManager>().unwrap(),
+                        &asset_manager,
                         &self.vk_asset_manager,
                         &SHADER_RESOURCE_SHADER_SETTINGS,
                         world.get_resource::<ShaderSettings>().unwrap(),
@@ -236,7 +238,7 @@ impl Renderer for VkRenderer {
 
                 Self::write_struct_resource(
                         self.framei,
-                        world.get_resource::<AssetManager>().unwrap(),
+                        &asset_manager,
                         &self.vk_asset_manager,
                         &SHADER_RESOURCE_WORLD_MATRICES,
                         &world_matrices,
@@ -321,7 +323,7 @@ impl Renderer for VkRenderer {
 
                 Self::write_struct_resource(
                         self.framei,
-                        world.get_resource::<AssetManager>().unwrap(),
+                        &asset_manager,
                         &self.vk_asset_manager,
                         &SHADER_RESOURCE_WORLD_LIGHTS,
                         &world_lights,
@@ -339,13 +341,11 @@ impl Renderer for VkRenderer {
 
                 Self::write_struct_resource(
                         self.framei,
-                        world.get_resource::<AssetManager>().unwrap(),
+                        &asset_manager,
                         &self.vk_asset_manager,
                         &SHADER_RESOURCE_BILLBOARD_DATA,
                         &billboard_data,
                 )?;
-
-                let asset_manager = world.remove_resource::<AssetManager>().unwrap();
 
                 /* Write BRDF LUT texture. This is done every frame, but it could be done just once. */
                 let brdf_lut_texture = asset_manager.texture(asset_manager.brdf_lut);
