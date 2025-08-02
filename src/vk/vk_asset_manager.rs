@@ -429,10 +429,7 @@ impl VkAssetManager {
                 };
 
                 let vk_shader_resource_type = match (&shader_resource.resource_type, shader_resource.provider) {
-                        (
-                                ShaderResourceType::Struct(declaration),
-                                ShaderResourceProvider::World | ShaderResourceProvider::Material,
-                        ) => {
+                        (ShaderResourceType::Struct(declaration), ShaderResourceProvider::World) => {
                                 let buffers = (0..self.concurrent_frames)
                                         .map(|_| {
                                                 VkBuffer::new_uniform_buffer(
@@ -463,9 +460,12 @@ impl VkAssetManager {
 
                                 VkShaderResourceType::UniformBufferDynamic
                         },
-                        (ShaderResourceType::Struct(_), ShaderResourceProvider::RenderPass) => {
-                                VkShaderResourceType::UniformBuffer
-                        },
+                        // We don't create any backing buffers here as they are either stored
+                        // in VkMaterial (for Material providers) or elsewhere (for RenderPass providers)
+                        (
+                                ShaderResourceType::Struct(_),
+                                ShaderResourceProvider::RenderPass | ShaderResourceProvider::Material,
+                        ) => VkShaderResourceType::UniformBuffer,
                         (ShaderResourceType::Image2D, ShaderResourceProvider::World) => {
                                 VkShaderResourceType::CombinedImageSampler
                         },
