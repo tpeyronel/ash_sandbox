@@ -178,6 +178,21 @@ impl VkBuffer {
                 VkBuffer::new(context, cinfo)
         }
 
+        pub fn new_storage_buffer(context: &VkContext, buffer_size: vk::DeviceSize) -> VkResult<Self> {
+                let cinfo = VkBufferCreateInfo {
+                        buffer_size,
+                        buffer_usage: vk::BufferUsageFlags::STORAGE_BUFFER,
+                        mem_usage: vma::MemoryUsage::CpuToGpu,
+                        alloc_flags: vma::AllocationCreateFlags::empty(),
+                        req_mem_flags: vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+                        pref_mem_flags: Default::default(),
+                        mem_type_bits: 0,
+                        q_family_indices: None,
+                };
+
+                VkBuffer::new(context, cinfo)
+        }
+
         pub fn new_transfer_src(context: &VkContext, buffer_size: vk::DeviceSize) -> VkResult<VkBuffer> {
                 let staging_buffer = {
                         let buffer_cinfo = VkBufferCreateInfo {
@@ -196,6 +211,10 @@ impl VkBuffer {
                 };
 
                 Ok(staging_buffer)
+        }
+
+        pub fn size(&self) -> usize {
+                self.size_in_bytes as usize
         }
 
         #[allow(dead_code)]
