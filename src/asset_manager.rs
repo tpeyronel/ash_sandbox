@@ -31,21 +31,16 @@ use crate::{
         my_glm::*,
         renderer::PrefilterParams,
         shader_preprocessor::{PreprocessedShaderStage, ShaderPreprocessor},
-        shader_resource::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType},
-        shader_resource_registry::ShaderResourceRegistry,
-        shader_resources::{
-                SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_BRDF_LUT, SHADER_RESOURCE_CUBE_SHADOW_MAP,
-                SHADER_RESOURCE_ENVIRONMENT_MAP, SHADER_RESOURCE_EQUIRECTANGULAR_MAP,
-                SHADER_RESOURCE_INPUT_FRAMEBUFFER, SHADER_RESOURCE_IRRADIANCE_MAP,
-                SHADER_RESOURCE_MATERIAL_BASE_COLOR_TEXTURE, SHADER_RESOURCE_MATERIAL_DATA,
-                SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE, SHADER_RESOURCE_MATERIAL_METALLIC_ROUGHNESS_TEXTURE,
-                SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE, SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE,
-                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_PREFILTERED_MAP, SHADER_RESOURCE_PREFILTER_PARAMS,
-                SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX,
-                SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES,
+        shader_resource::{
+                ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType, ShaderStruct,
+                ShaderStructDeclaration, ShaderStructFieldType, ShaderStructFieldTypeProvider,
         },
-        util::{self, default, RefIntoBytesSlice},
-        vk::vk_renderer::{BillboardData, MaterialData, ObjectMatrices, WorldLights, WorldMatrices},
+        shader_resource_registry::ShaderResourceRegistry,
+        shader_resources::*,
+        util::{self, default},
+        vk::vk_renderer::{
+                BillboardData, MaterialData, ObjectMatrices, WorldLights, WorldMatrices, WorldPointLightNoShadow,
+        },
         AnyResult,
 };
 
@@ -132,15 +127,15 @@ impl Material {
                         r if *r == *SHADER_RESOURCE_MATERIAL_DIFFUSE_TEXTURE
                                 || *r == *SHADER_RESOURCE_MATERIAL_BASE_COLOR_TEXTURE =>
                         {
-                                f(Some(ShaderResourceData::Image2D(self.base_color_texture)))
+                                f(Some(ShaderResourceData::Texture(self.base_color_texture)))
                         },
                         r if *r == *SHADER_RESOURCE_MATERIAL_SPECULAR_TEXTURE
                                 || *r == *SHADER_RESOURCE_MATERIAL_METALLIC_ROUGHNESS_TEXTURE =>
                         {
-                                f(Some(ShaderResourceData::Image2D(self.metallic_roughness_texture)))
+                                f(Some(ShaderResourceData::Texture(self.metallic_roughness_texture)))
                         },
                         r if *r == *SHADER_RESOURCE_MATERIAL_NORMAL_TEXTURE => {
-                                f(Some(ShaderResourceData::Image2D(self.normal_texture)))
+                                f(Some(ShaderResourceData::Texture(self.normal_texture)))
                         },
                         r if *r == *SHADER_RESOURCE_MATERIAL_DATA => {
                                 let data = MaterialData {
@@ -157,7 +152,7 @@ impl Material {
                                         ),
                                 };
 
-                                f(Some(ShaderResourceData::StructData(unsafe { data.as_bytes() })))
+                                f(Some(ShaderResourceData::from_shader_struct(&data)))
                         },
                         _ => f(None),
                 }
@@ -178,8 +173,33 @@ impl Material {
 
 #[derive(Debug)]
 pub enum ShaderResourceData<'a> {
-        StructData(&'a [u8]),
-        Image2D(TextureId),
+        StructData {
+                declaration: ShaderStructDeclaration,
+                data: &'a [u8],
+        },
+        StructArrayData {
+                element_type: ShaderStructFieldType,
+                len: usize,
+                data: &'a [u8],
+        },
+        Texture(TextureId),
+}
+
+impl<'a> ShaderResourceData<'a> {
+        pub fn from_shader_struct<T: ShaderStruct>(shader_struct: &'a T) -> Self {
+                Self::StructData {
+                        declaration: T::shader_struct_declaration(),
+                        data: bytemuck::bytes_of(shader_struct),
+                }
+        }
+
+        pub fn from_shader_struct_field_array<T: ShaderStructFieldTypeProvider>(slice: &'a [T]) -> Self {
+                Self::StructArrayData {
+                        element_type: T::shader_struct_field_type(),
+                        len: slice.len(),
+                        data: bytemuck::cast_slice(slice),
+                }
+        }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1405,6 +1425,12 @@ impl AssetManager {
                         SHADER_RESOURCE_WORLD_LIGHTS.clone(),
                         ShaderResourceProvider::World,
                 );
+
+                assets.shader_resources
+                        .register_dynamic_array::<WorldPointLightNoShadow>(
+                                SHADER_RESOURCE_WORLD_POINT_LIGHTS.clone(),
+                                ShaderResourceProvider::World,
+                        );
 
                 assets.shader_resources.register_struct::<BillboardData>(
                         SHADER_RESOURCE_BILLBOARD_DATA.clone(),

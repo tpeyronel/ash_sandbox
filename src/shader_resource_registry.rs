@@ -2,7 +2,10 @@ use hashbrown::HashMap;
 
 use crate::{
         asset_manager::{AssetManagerEvent, Observable},
-        shader_resource::{ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType, ShaderStruct},
+        shader_resource::{
+                ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType, ShaderStruct,
+                ShaderStructFieldTypeProvider,
+        },
 };
 
 #[derive(Debug)]
@@ -34,6 +37,20 @@ impl ShaderResourceRegistry {
                 self.register(ShaderResource {
                         id,
                         resource_type: ShaderResourceType::Struct(T::shader_struct_declaration()),
+                        provider,
+                })
+        }
+
+        pub fn register_dynamic_array<T: ShaderStructFieldTypeProvider>(
+                &mut self,
+                id: ShaderResourceId,
+                provider: ShaderResourceProvider,
+        ) {
+                self.register(ShaderResource {
+                        id,
+                        resource_type: ShaderResourceType::DynamicArray {
+                                element_type: T::shader_struct_field_type(),
+                        },
                         provider,
                 })
         }

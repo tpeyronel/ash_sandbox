@@ -11,7 +11,7 @@ use crate::{
 };
 
 static DIRECTIVE_RESOURCE_REGEX: Lazy<Regex> = lazy_regex!(
-        r"^#resource\s+([a-zA-Z_][a-zA-Z_0-9]*)\s+([a-zA-Z_][a-zA-Z_0-9]*)\s+:\s+([a-zA-Z_][a-zA-Z_0-9]*)\s*;\s*$"
+        r"^#resource\s+([a-zA-Z_][a-zA-Z_0-9]*(?:\[\])?)\s+([a-zA-Z_][a-zA-Z_0-9]*)\s+:\s+([a-zA-Z_][a-zA-Z_0-9]*)\s*;\s*$"
 );
 
 pub struct ShaderPreprocessor {}
@@ -49,12 +49,22 @@ impl ShaderPreprocessor {
                                 } => {
                                         let resource = shader_resources.get(&resource_id).unwrap();
 
-                                        if let ShaderResourceType::Struct(declaration) = &resource.resource_type {
-                                                Self::write_required_struct_declarations_rec(
-                                                        &mut declared_structs,
-                                                        declaration,
-                                                        part,
-                                                );
+                                        match &resource.resource_type {
+                                                ShaderResourceType::Struct(declaration) => {
+                                                        Self::write_children_struct_declarations_rec(
+                                                                &mut declared_structs,
+                                                                declaration,
+                                                                part,
+                                                        );
+                                                },
+                                                ShaderResourceType::DynamicArray { element_type } => {
+                                                        Self::write_struct_field_declarations_rec(
+                                                                &mut declared_structs,
+                                                                element_type,
+                                                                part,
+                                                        );
+                                                },
+                                                _ => (),
                                         }
 
                                         resources.push(ShaderResourceRequirement {
@@ -101,7 +111,7 @@ impl ShaderPreprocessor {
                                         ShaderLoadError::UnknownShaderResourceId(resource_id.deref().to_owned())
                                 })?;
 
-                                assert_eq!(resource.resource_type.glsl_type_name(), type_name);
+                                assert_eq!(resource.resource_type.resource_type_name(), type_name);
 
                                 ShaderDirective::Resource {
                                         resource_id: resource.id.clone(), // Use resource.id.clone() to avoid having multiple strings
@@ -114,27 +124,47 @@ impl ShaderPreprocessor {
                 Ok(Some(directive))
         }
 
-        fn write_required_struct_declarations_rec(
+        fn write_children_struct_declarations_rec(
                 declared_structs: &mut HashMap<String, ShaderStructDeclaration>,
                 declaration: &ShaderStructDeclaration,
                 out: &mut String,
         ) {
                 for f in &declaration.fields {
-                        let ShaderStructFieldType::Struct(child_declaration) = &f.field_type else {
-                                continue;
-                        };
-
-                        Self::write_required_struct_declarations_rec(declared_structs, child_declaration, out);
-
-                        if let Some(declared) = declared_structs.get(&child_declaration.type_name) {
-                                assert_eq!(declared, child_declaration); // Check that expected type is correct.
-                                continue;
-                        }
-
-                        declared_structs.insert(child_declaration.type_name.clone(), child_declaration.clone());
-
-                        *out += &child_declaration.glsl_type_declaration();
+                        Self::write_struct_field_declarations_rec(declared_structs, &f.field_type, out);
                 }
+        }
+
+        fn write_struct_field_declarations_rec(
+                declared_structs: &mut HashMap<String, ShaderStructDeclaration>,
+                field_type: &ShaderStructFieldType,
+                out: &mut String,
+        ) {
+                match field_type {
+                        ShaderStructFieldType::Struct(declaration) => {
+                                Self::write_struct_declarations_rec(declared_structs, declaration, out);
+                        },
+                        ShaderStructFieldType::Array { element_type, .. } => {
+                                Self::write_struct_field_declarations_rec(declared_structs, &element_type, out);
+                        },
+                        _ => (),
+                };
+        }
+
+        fn write_struct_declarations_rec(
+                declared_structs: &mut HashMap<String, ShaderStructDeclaration>,
+                declaration: &ShaderStructDeclaration,
+                out: &mut String,
+        ) {
+                Self::write_children_struct_declarations_rec(declared_structs, declaration, out);
+
+                if let Some(declared) = declared_structs.get(&declaration.type_name) {
+                        assert_eq!(declared, declaration); // Check that expected type is correct.
+                        return;
+                }
+
+                declared_structs.insert(declaration.type_name.clone(), declaration.clone());
+
+                *out += &declaration.glsl_type_declaration();
         }
 }
 

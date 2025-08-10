@@ -10,34 +10,35 @@ use shader_resource_derive::ShaderStruct;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use super::{
-        vk_asset_manager::{VkAssetManager, VkCubemap, VkDescriptorSetIndex, VkShader, VkShaderResourceType},
+        vk_asset_manager::{VkAssetManager, VkDescriptorSetIndex, VkShader},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
         vk_image::{TransitionImageLayoutInfo, VkImage, VkImageCreateInfo},
         vk_swapchain::{VkSwapchain, VkSwapchainOutdatedCauseFlags},
         vk_util,
-        vk_wrapper::{VkDevice, VkImageView, VkSampler, VkSemaphore},
+        vk_wrapper::{VkImageView, VkSampler, VkSemaphore},
 };
 use crate::{
         application::{InterpGlobalTransform, ShaderSettings},
-        asset_manager::{AssetManager, AssetManagerEvent, MaterialId, MaterialMesh, MeshId, ShaderId},
+        asset_manager::{
+                AssetManager, AssetManagerEvent, CubemapId, MaterialId, MaterialMesh, MeshId, ShaderId,
+                ShaderResourceData,
+        },
         components::{ActiveCamera, DirectionalLight, PointLight, ProjectionCamera, Spotlight},
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE, SHADOW_MAP_HEIGHT, SHADOW_MAP_WIDTH},
-        hashmap::HashMap,
         model_instance_manager::ModelInstance,
         my_glm::*,
         renderer::Renderer,
-        shader_resource::{ShaderResourceId, ShaderResourceType, ShaderStruct},
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_BRDF_LUT, SHADER_RESOURCE_CUBE_SHADOW_MAP,
                 SHADER_RESOURCE_INPUT_FRAMEBUFFER, SHADER_RESOURCE_IRRADIANCE_MAP, SHADER_RESOURCE_MATERIAL_DATA,
                 SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_PREFILTERED_MAP, SHADER_RESOURCE_SHADER_SETTINGS,
                 SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS,
-                SHADER_RESOURCE_WORLD_MATRICES,
+                SHADER_RESOURCE_WORLD_MATRICES, SHADER_RESOURCE_WORLD_POINT_LIGHTS,
         },
         skybox::Skybox,
         util::{RefIntoBytesSlice, RefIntoSlice},
-        vk::vk_image_subresource_range::ImageSubresourceRangeUtil,
+        vk::{vk_image_subresource_range::ImageSubresourceRangeUtil, vk_wrapper::HasVkHandle},
 };
 use crate::{
         constants::{DESIRED_SWAPCHAIN_IMG_COUNT, MAX_CONCURRENT_FRAMES},
@@ -78,8 +79,6 @@ pub struct VkRenderer {
 
         creation_instant: Instant,
         framei: usize,
-
-        world_shader_resource_descriptors_data: HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
 }
 
 impl VkRenderer {
@@ -180,8 +179,6 @@ impl VkRenderer {
                         creation_instant: Instant::now(),
 
                         framei: 0,
-
-                        world_shader_resource_descriptors_data: HashMap::new(),
                 })
         }
 }
@@ -207,12 +204,12 @@ impl Renderer for VkRenderer {
                         BeginFrameResult::Skip => return Ok(()),
                 };
 
-                Self::write_struct_resource(
-                        self.framei,
+                self.vk_asset_manager.provide_shader_resource(
+                        &self.context,
                         &asset_manager,
-                        &self.vk_asset_manager,
                         &SHADER_RESOURCE_SHADER_SETTINGS,
-                        world.get_resource::<ShaderSettings>().unwrap(),
+                        &ShaderResourceData::from_shader_struct(world.get_resource::<ShaderSettings>().unwrap()),
+                        self.framei,
                 )?;
 
                 let PhysicalSize { width, height } = self.window.inner_size();
@@ -236,12 +233,30 @@ impl Renderer for VkRenderer {
                         vp: proj_mat * view_mat,
                 };
 
-                Self::write_struct_resource(
-                        self.framei,
+                self.vk_asset_manager.provide_shader_resource(
+                        &self.context,
                         &asset_manager,
-                        &self.vk_asset_manager,
                         &SHADER_RESOURCE_WORLD_MATRICES,
-                        &world_matrices,
+                        &ShaderResourceData::from_shader_struct(&world_matrices),
+                        self.framei,
+                )?;
+
+                let point_lights: Vec<_> = world
+                        .query::<(&InterpGlobalTransform, &PointLight)>()
+                        .iter(world)
+                        .map(|(transform, light)| WorldPointLightNoShadow {
+                                pos: Vec4::from((transform.0.translation, 1.0)),
+                                color: Vec4::from((light.color, 1.0)),
+                                kc_kl_kq: Vec4::new(light.kc, light.kl, light.kq, 0.0),
+                        })
+                        .collect();
+
+                self.vk_asset_manager.provide_shader_resource(
+                        &self.context,
+                        &asset_manager,
+                        &SHADER_RESOURCE_WORLD_POINT_LIGHTS,
+                        &ShaderResourceData::from_shader_struct_field_array(&point_lights),
+                        self.framei,
                 )?;
 
                 let (light_transform, point_light) = world
@@ -321,12 +336,12 @@ impl Renderer for VkRenderer {
                         spotlight,
                 };
 
-                Self::write_struct_resource(
-                        self.framei,
+                self.vk_asset_manager.provide_shader_resource(
+                        &self.context,
                         &asset_manager,
-                        &self.vk_asset_manager,
                         &SHADER_RESOURCE_WORLD_LIGHTS,
-                        &world_lights,
+                        &ShaderResourceData::from_shader_struct(&world_lights),
+                        self.framei,
                 )?;
 
                 let camera_right = Vec4::from((camera_orien * Vec3::RIGHT, 0.0));
@@ -339,26 +354,22 @@ impl Renderer for VkRenderer {
                         camera_up,
                 };
 
-                Self::write_struct_resource(
-                        self.framei,
+                self.vk_asset_manager.provide_shader_resource(
+                        &self.context,
                         &asset_manager,
-                        &self.vk_asset_manager,
                         &SHADER_RESOURCE_BILLBOARD_DATA,
-                        &billboard_data,
+                        &ShaderResourceData::from_shader_struct(&billboard_data),
+                        self.framei,
                 )?;
 
                 /* Write BRDF LUT texture. This is done every frame, but it could be done just once. */
-                let brdf_lut_texture = asset_manager.texture(asset_manager.brdf_lut);
-                let brdf_lut_image = &self.vk_asset_manager.images[brdf_lut_texture.image];
-                let brdf_lut_sampler = &self.vk_asset_manager.samplers[brdf_lut_texture.sampler];
-
-                Self::write_image_resource(
-                        &self.vk_asset_manager,
+                self.vk_asset_manager.provide_shader_resource(
+                        &self.context,
+                        &asset_manager,
                         &SHADER_RESOURCE_BRDF_LUT,
-                        *brdf_lut_image.image_view,
-                        **brdf_lut_sampler,
-                        &mut self.world_shader_resource_descriptors_data,
-                );
+                        &ShaderResourceData::Texture(asset_manager.brdf_lut),
+                        self.framei,
+                )?;
 
                 let mut vk_render_scene = VkRenderScene {
                         skybox_object_matrices_offset: None,
@@ -368,12 +379,7 @@ impl Renderer for VkRenderer {
                 let mut buffer_transform_idx = 0;
 
                 if let Some(skybox) = world.get_resource::<Skybox>() {
-                        let vk_skybox = &self.vk_asset_manager.cubemaps[skybox.0];
-                        Self::update_skybox(
-                                &self.vk_asset_manager,
-                                &mut self.world_shader_resource_descriptors_data,
-                                vk_skybox,
-                        );
+                        Self::update_skybox(&asset_manager, &mut self.vk_asset_manager, skybox.0, self.framei)?;
 
                         let object_matrices_dynamic_offset = {
                                 let model = Mat4::IDENTITY;
@@ -406,29 +412,29 @@ impl Renderer for VkRenderer {
                         &mut vk_render_scene,
                 )?;
 
-                Self::write_image_resource(
-                        &self.vk_asset_manager,
+                self.vk_asset_manager.provide_texture_shader_resource_directly(
+                        &asset_manager,
                         &SHADER_RESOURCE_SHADOW_MAP,
-                        *self.shadow_map_depth_img_view,
-                        *self.shadow_map_sampler,
-                        &mut self.world_shader_resource_descriptors_data,
-                );
+                        self.shadow_map_depth_img_view.handle(),
+                        self.shadow_map_sampler.handle(),
+                        self.framei,
+                )?;
 
-                Self::write_image_resource(
-                        &self.vk_asset_manager,
+                self.vk_asset_manager.provide_texture_shader_resource_directly(
+                        &asset_manager,
                         &SHADER_RESOURCE_CUBE_SHADOW_MAP,
-                        *self.cube_shadow_map_img_view,
-                        *self.cube_shadow_map_sampler,
-                        &mut self.world_shader_resource_descriptors_data,
-                );
+                        self.cube_shadow_map_img_view.handle(),
+                        self.cube_shadow_map_sampler.handle(),
+                        self.framei,
+                )?;
 
-                Self::write_image_resource(
-                        &self.vk_asset_manager,
+                self.vk_asset_manager.provide_texture_shader_resource_directly(
+                        &asset_manager,
                         &SHADER_RESOURCE_INPUT_FRAMEBUFFER,
-                        *self.swapchain.resolve_img_views[0],
-                        *self.resolve_sampler,
-                        &mut self.world_shader_resource_descriptors_data,
-                );
+                        self.swapchain.resolve_img_views[0].handle(),
+                        self.resolve_sampler.handle(),
+                        self.framei,
+                )?;
 
                 unsafe {
                         self.map_point_shadows(&asset_manager, &vk_render_scene)?;
@@ -735,60 +741,6 @@ impl VkRenderer {
                 Self::create_shadow_map_sampler(context)
         }
 
-        fn write_struct_resource<T: ShaderStruct>(
-                framei: usize,
-                asset_manager: &AssetManager,
-                vk_asset_manager: &VkAssetManager,
-                resource_id: &ShaderResourceId,
-                data: &T,
-        ) -> AnyResult<()> {
-                let resource = asset_manager.shader_resources().get(resource_id).unwrap();
-                let vk_resource = vk_asset_manager.shader_resources.get(resource_id).unwrap();
-
-                let ShaderResourceType::Struct(declaration) = &resource.resource_type else {
-                        panic!("called write_struct_resource for non-struct resource!");
-                };
-
-                assert_eq!(
-                        T::shader_struct_declaration(),
-                        *declaration,
-                        "write_struct_resource called with type different from resource type!"
-                );
-
-                match vk_resource.resource_type {
-                        VkShaderResourceType::UniformBuffer => {
-                                let buffers = vk_asset_manager.shader_resource_buffers.get(resource_id).unwrap();
-                                let buffer = &buffers[framei];
-
-                                buffer.write(data)?;
-                        },
-                        VkShaderResourceType::UniformBufferDynamic => todo!(),
-                        VkShaderResourceType::CombinedImageSampler => panic!(),
-                }
-
-                Ok(())
-        }
-
-        fn write_image_resource(
-                vk_asset_manager: &VkAssetManager,
-                resource_id: &ShaderResourceId,
-                image_view: vk::ImageView,
-                sampler: vk::Sampler,
-                world_shader_resource_descriptors_data: &mut HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
-        ) {
-                let vk_resource = vk_asset_manager.shader_resources.get(resource_id).unwrap();
-
-                match vk_resource.resource_type {
-                        VkShaderResourceType::UniformBuffer => panic!(),
-                        VkShaderResourceType::UniformBufferDynamic => panic!(),
-                        VkShaderResourceType::CombinedImageSampler => {
-                                let data = ShaderResourceDescriptorData::Image2D { image_view, sampler };
-
-                                world_shader_resource_descriptors_data.insert(resource_id.clone(), data);
-                        },
-                }
-        }
-
         fn should_render(&self) -> bool {
                 if self.is_window_minimized() {
                         return false;
@@ -1011,7 +963,8 @@ impl VkRenderer {
                 )?;
                 device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, vk_pipeline);
 
-                Self::update_world_descriptors(device, &self.world_shader_resource_descriptors_data, framei, vk_shader);
+                self.vk_asset_manager
+                        .update_world_descriptor_set(&self.context, vk_shader, framei);
 
                 device.cmd_bind_descriptor_sets(
                         cmd_buffer,
@@ -1198,12 +1151,8 @@ impl VkRenderer {
                         .device
                         .cmd_set_scissor(cmd_buffer, 0, self.swapchain.scissor.ref_into_slice());
 
-                Self::update_world_descriptors(
-                        &self.context.device,
-                        &self.world_shader_resource_descriptors_data,
-                        self.framei,
-                        hdr_vk_shader,
-                );
+                self.vk_asset_manager
+                        .update_world_descriptor_set(&self.context, hdr_vk_shader, self.framei);
 
                 self.context.device.cmd_bind_descriptor_sets(
                         cmd_buffer,
@@ -1489,6 +1438,12 @@ impl VkRenderer {
                         },
                 );
 
+                let cube_shadow_map_shader_id = asset_manager.shader_names()["cube-shadow-map"];
+                let cube_shadow_map_shader = &self.vk_asset_manager.shaders[cube_shadow_map_shader_id];
+
+                self.vk_asset_manager
+                        .update_world_descriptor_set(&self.context, cube_shadow_map_shader, self.framei);
+
                 for i in 0..6 {
                         {
                                 let color_attachment = vk::RenderingAttachmentInfo::default()
@@ -1522,8 +1477,6 @@ impl VkRenderer {
                                 .device
                                 .cmd_set_scissor(cmd_buffer, 0, slice::from_ref(&shadow_map_rect));
 
-                        let cube_shadow_map_shader_id = asset_manager.shader_names()["cube-shadow-map"];
-                        let cube_shadow_map_shader = &self.vk_asset_manager.shaders[cube_shadow_map_shader_id];
                         let cube_shadow_map_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
                                 &self.context,
                                 asset_manager,
@@ -1670,6 +1623,9 @@ impl VkRenderer {
                         self.shadow_map_depth_img.format,
                 )?;
 
+                self.vk_asset_manager
+                        .update_world_descriptor_set(&self.context, shadow_map_shader, self.framei);
+
                 self.context
                         .device
                         .cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, shadow_map_pipeline);
@@ -1712,70 +1668,46 @@ impl VkRenderer {
                 Ok(())
         }
 
-        fn update_world_descriptors(
-                device: &VkDevice,
-                world_shader_resource_descriptors_data: &HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
-                framei: usize,
-                vk_shader: &VkShader,
-        ) {
-                for (resource_id, binding) in &vk_shader.shader_resource_bindings {
-                        if binding.set != VkDescriptorSetIndex::World {
-                                continue;
-                        }
-
-                        if binding.descriptor_type == vk::DescriptorType::COMBINED_IMAGE_SAMPLER {
-                                let &ShaderResourceDescriptorData::Image2D { image_view, sampler } =
-                                        world_shader_resource_descriptors_data.get(resource_id).unwrap()
-                                else {
-                                        panic!();
-                                };
-
-                                let image_info = vk::DescriptorImageInfo {
-                                        sampler,
-                                        image_view,
-                                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                                };
-
-                                let write = vk::WriteDescriptorSet::default()
-                                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                                        .dst_set(vk_shader.world_dst_set[framei])
-                                        .dst_binding(binding.binding)
-                                        .dst_array_element(0)
-                                        .image_info(image_info.ref_into_slice());
-
-                                unsafe { device.update_descriptor_sets(&[write], &[]) };
-                        }
-                }
-        }
-
         fn update_skybox(
-                vk_asset_manager: &VkAssetManager,
-                world_shader_resource_descriptors_data: &mut HashMap<ShaderResourceId, ShaderResourceDescriptorData>,
-                skybox: &VkCubemap,
-        ) {
-                Self::write_image_resource(
-                        vk_asset_manager,
+                asset_manager: &AssetManager,
+                vk_asset_manager: &mut VkAssetManager,
+                cubemap_id: CubemapId,
+                framei: usize,
+        ) -> VkResult<()> {
+                let vk_skybox = &vk_asset_manager.cubemaps[cubemap_id];
+
+                let environment_image_view = vk_skybox.environment_image_view.handle();
+                let environment_sampler = vk_skybox.environment_sampler.handle();
+                let irradiance_image_view = vk_skybox.irradiance_image_view.handle();
+                let irradiance_sampler = vk_skybox.irradiance_sampler.handle();
+                let prefiltered_image_view = vk_skybox.prefiltered_image_view.handle();
+                let prefiltered_sampler = vk_skybox.prefiltered_sampler.handle();
+
+                vk_asset_manager.provide_texture_shader_resource_directly(
+                        asset_manager,
                         &SHADER_RESOURCE_SKYBOX,
-                        *skybox.environment_image_view,
-                        *skybox.environment_sampler,
-                        world_shader_resource_descriptors_data,
-                );
+                        environment_image_view,
+                        environment_sampler,
+                        framei,
+                )?;
 
-                Self::write_image_resource(
-                        vk_asset_manager,
+                vk_asset_manager.provide_texture_shader_resource_directly(
+                        asset_manager,
                         &SHADER_RESOURCE_IRRADIANCE_MAP,
-                        *skybox.irradiance_image_view,
-                        *skybox.irradiance_sampler,
-                        world_shader_resource_descriptors_data,
-                );
+                        irradiance_image_view,
+                        irradiance_sampler,
+                        framei,
+                )?;
 
-                Self::write_image_resource(
-                        vk_asset_manager,
+                vk_asset_manager.provide_texture_shader_resource_directly(
+                        asset_manager,
                         &SHADER_RESOURCE_PREFILTERED_MAP,
-                        *skybox.prefiltered_image_view,
-                        *skybox.prefiltered_sampler,
-                        world_shader_resource_descriptors_data,
-                );
+                        prefiltered_image_view,
+                        prefiltered_sampler,
+                        framei,
+                )?;
+
+                Ok(())
         }
 }
 
@@ -1849,6 +1781,15 @@ struct WorldPointLight {
 #[allow(dead_code)]
 #[repr(C)]
 #[derive(Clone, Copy, NoUninit, ShaderStruct)]
+pub struct WorldPointLightNoShadow {
+        pos: Vec4,
+        color: Vec4,
+        kc_kl_kq: Vec4,
+}
+
+#[allow(dead_code)]
+#[repr(C)]
+#[derive(Clone, Copy, NoUninit, ShaderStruct)]
 struct WorldSpotlight {
         pos: Vec4,
         dir: Vec4, // xyz=direction w=angle
@@ -1907,13 +1848,6 @@ struct MatricesMMvp {
 struct UniformLights {
         light_pos: Vec4,
         light_color: Vec4,
-}
-
-enum ShaderResourceDescriptorData {
-        Image2D {
-                image_view: vk::ImageView,
-                sampler: vk::Sampler,
-        },
 }
 
 struct VkRenderScene {

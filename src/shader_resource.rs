@@ -1,7 +1,5 @@
 use std::{fmt::Display, ops::Deref, sync::Arc};
 
-use bytemuck::NoUninit;
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ShaderResourceId(Arc<str>);
 
@@ -41,20 +39,29 @@ pub struct ShaderResource {
 #[derive(Debug, Clone)]
 pub enum ShaderResourceType {
         Struct(ShaderStructDeclaration),
+        DynamicArray { element_type: ShaderStructFieldType },
         Image2D,
         ImageCube,
 }
 
 impl ShaderResourceType {
-        pub fn glsl_type_name<'a>(&'a self) -> &'a str {
+        /// This is the type qualifier that is written to the left of the resource name before processing.
+        /// This is not always similar to glsl_type_qualifier.
+        pub fn resource_type_name(&self) -> String {
                 match self {
-                        ShaderResourceType::Struct(ShaderStructDeclaration { type_name, .. }) => &type_name,
-                        ShaderResourceType::Image2D => "sampler2D",
-                        ShaderResourceType::ImageCube => "samplerCube",
+                        ShaderResourceType::DynamicArray { element_type } => {
+                                // TODO: this is weird if element_type is Array.
+                                format!("{}[]", element_type.glsl_type_name())
+                        },
+                        ShaderResourceType::Struct(shader_struct_declaration) => {
+                                shader_struct_declaration.type_name.clone()
+                        },
+                        ShaderResourceType::Image2D => "sampler2D".into(),
+                        ShaderResourceType::ImageCube => "samplerCube".into(),
                 }
         }
 
-        pub fn glsl_complete_type(&self) -> String {
+        pub fn glsl_type_qualifier(&self, set: u32, binding: u32) -> String {
                 match self {
                         ShaderResourceType::Struct(ShaderStructDeclaration { type_name, fields }) => {
                                 let body: String = fields
@@ -65,9 +72,21 @@ impl ShaderResourceType {
                                         .collect::<Vec<String>>()
                                         .join("\n");
 
-                                format!("{} {{\n{}\n}}", type_name, body)
+                                format!("uniform {}_{}_{} {{\n{}\n}}", type_name, set, binding, body)
                         },
-                        _ => self.glsl_type_name().to_owned(),
+                        ShaderResourceType::DynamicArray { element_type } => {
+                                // TODO: this doesn't work if element_type is Array.
+                                format!(
+                                        "readonly buffer {}Array_{}_{} {{\n\tuint len;\n\t{} data[];\n}}",
+                                        element_type.glsl_type_name(),
+                                        set,
+                                        binding,
+                                        element_type.glsl_type_name(),
+                                )
+                        },
+                        ShaderResourceType::Image2D | ShaderResourceType::ImageCube => {
+                                format!("uniform {}", self.resource_type_name())
+                        },
                 }
         }
 }
@@ -103,7 +122,7 @@ impl ShaderStructDeclaration {
         }
 }
 
-pub trait ShaderStruct: NoUninit {
+pub trait ShaderStruct: bytemuck::NoUninit {
         fn shader_struct_declaration() -> ShaderStructDeclaration;
 }
 
@@ -162,7 +181,7 @@ impl ShaderStructFieldType {
         }
 }
 
-pub trait ShaderStructFieldTypeProvider {
+pub trait ShaderStructFieldTypeProvider: bytemuck::NoUninit {
         fn shader_struct_field_type() -> ShaderStructFieldType;
 }
 
@@ -205,9 +224,10 @@ where
         }
 }
 
-impl<T, const N: usize> ShaderStructFieldTypeProvider for [T; N]
+impl<T: bytemuck::NoUninit, const N: usize> ShaderStructFieldTypeProvider for [T; N]
 where
         T: ShaderStructFieldTypeProvider,
+        [T; N]: bytemuck::NoUninit,
 {
         fn shader_struct_field_type() -> ShaderStructFieldType {
                 ShaderStructFieldType::Array {

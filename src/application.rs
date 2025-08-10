@@ -760,26 +760,35 @@ fn spawn_entities(mut commands: Commands) {
 
         // commands.add(CmdAddModelInstanceByName::from_str(grass_plane, "grass-plane"));
 
-        let light = commands
-                .spawn()
-                .insert(Transform {
-                        translation: Vec3::new(1.5, 1.0, 1.5),
-                        rotation: Quat::IDENTITY,
-                        scale: Vec3::splat(0.25),
-                })
-                .insert(PointLight {
-                        color: Vec3::new(0.9, 1.0, 0.9),
-                        kc: 1.0,
-                        kl: 0.0,
-                        kq: 1.0,
-                })
-                // .insert(OrbitalVelocity {
-                //         origin: Vec3::splat(0.0),
-                //         velocity: Vec3::Y * 45.0f32.to_radians(),
-                // })
-                .id();
+        let point_light_positions = [
+                Vec3::new(-1.5, 1.0, -1.5),
+                Vec3::new(1.5, 1.0, -1.5),
+                Vec3::new(-1.5, 1.0, 1.5),
+                Vec3::new(1.5, 1.0, 1.5),
+        ];
 
-        // commands.add(CmdAddModelInstanceByName::from_str(light, "lit-icosphere"));
+        for translation in point_light_positions {
+                let light = commands
+                        .spawn()
+                        .insert(Transform {
+                                translation,
+                                rotation: Quat::IDENTITY,
+                                scale: Vec3::splat(0.25),
+                        })
+                        .insert(PointLight {
+                                color: Vec3::new(0.9, 1.0, 0.9),
+                                kc: 1.0,
+                                kl: 0.0,
+                                kq: 1.0,
+                        })
+                        .insert(OrbitalVelocity {
+                                origin: Vec3::splat(0.0),
+                                velocity: Vec3::Y * 45.0f32.to_radians(),
+                        })
+                        .id();
+
+                commands.add(CmdAddModelInstanceByName::from_str(light, "lit-icosphere"));
+        }
 
         let _dir_light = commands
                 .spawn()
