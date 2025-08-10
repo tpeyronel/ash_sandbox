@@ -257,7 +257,9 @@ impl VkQueueFamilyIndices {
                 }
 
                 let supports_graphics_and_compute = |_i: usize, q_fam_props: &vk::QueueFamilyProperties| {
-                        q_fam_props.queue_flags.contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE)
+                        q_fam_props
+                                .queue_flags
+                                .contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE)
                 };
 
                 let supports_present = |i: usize, _q_fam_props: &vk::QueueFamilyProperties| unsafe {
@@ -283,7 +285,10 @@ impl VkQueueFamilyIndices {
                 let present = find_queue_family(&q_families_props, supports_present);
 
                 if let (Some(graphics), Some(present)) = (graphics_and_compute, present) {
-                        return Some(Self { graphics_and_compute: graphics, present });
+                        return Some(Self {
+                                graphics_and_compute: graphics,
+                                present,
+                        });
                 }
 
                 None
@@ -514,6 +519,20 @@ impl VkPipeline {
                         device: Rc::clone(device),
                         handle: device
                                 .create_graphics_pipelines(pipeline_cache, std::slice::from_ref(create_info), None)
+                                .map_err(|(_, vk_result)| vk_result)?[0],
+                        destroyed: Cell::new(false),
+                })
+        }
+
+        pub unsafe fn new_compute(
+                device: &Rc<VkDevice>,
+                pipeline_cache: vk::PipelineCache,
+                create_info: &vk::ComputePipelineCreateInfo,
+        ) -> VkResult<Self> {
+                Ok(Self {
+                        device: Rc::clone(device),
+                        handle: device
+                                .create_compute_pipelines(pipeline_cache, std::slice::from_ref(create_info), None)
                                 .map_err(|(_, vk_result)| vk_result)?[0],
                         destroyed: Cell::new(false),
                 })
