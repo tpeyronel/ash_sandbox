@@ -296,18 +296,18 @@ impl VkContext {
 
                 let queue_priorities;
 
-                let device_q_cinfos = if q_family_i.graphics == q_family_i.present {
+                let device_q_cinfos = if q_family_i.graphics_and_compute == q_family_i.present {
                         queue_priorities = vec![1.0];
 
                         vec![vk::DeviceQueueCreateInfo::default()
-                                .queue_family_index(q_family_i.graphics)
+                                .queue_family_index(q_family_i.graphics_and_compute)
                                 .queue_priorities(&queue_priorities)]
                 } else {
                         queue_priorities = vec![0.75, 0.25];
 
                         vec![
                                 vk::DeviceQueueCreateInfo::default()
-                                        .queue_family_index(q_family_i.graphics)
+                                        .queue_family_index(q_family_i.graphics_and_compute)
                                         .queue_priorities(&queue_priorities[0..1]),
                                 vk::DeviceQueueCreateInfo::default()
                                         .queue_family_index(q_family_i.present)
@@ -324,7 +324,7 @@ impl VkContext {
                 let device = unsafe { Rc::new(VkDevice::new(instance, physical_device, &device_cinfo)?) };
 
                 let queues = VkQueues {
-                        graphics: unsafe { device.get_device_queue(q_family_i.graphics, 0) },
+                        graphics: unsafe { device.get_device_queue(q_family_i.graphics_and_compute, 0) },
                         present: unsafe { device.get_device_queue(q_family_i.present, 0) },
                 };
 
@@ -347,7 +347,7 @@ impl VkContext {
         ) -> VkResult<Rc<VkCommandPool>> {
                 let cmd_pool_cinfo = vk::CommandPoolCreateInfo::default()
                         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-                        .queue_family_index(q_family_i.graphics);
+                        .queue_family_index(q_family_i.graphics_and_compute);
 
                 Ok(Rc::new(unsafe { VkCommandPool::new(device, &cmd_pool_cinfo)? }))
         }

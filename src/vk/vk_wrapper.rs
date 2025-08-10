@@ -229,7 +229,7 @@ impl Deref for VkPhysicalDevice {
 
 #[derive(Debug)]
 pub struct VkQueueFamilyIndices {
-        pub graphics: u32,
+        pub graphics_and_compute: u32,
         pub present: u32,
 }
 
@@ -256,8 +256,8 @@ impl VkQueueFamilyIndices {
                                 .next()
                 }
 
-                let supports_graphics = |_i: usize, q_fam_props: &vk::QueueFamilyProperties| {
-                        q_fam_props.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+                let supports_graphics_and_compute = |_i: usize, q_fam_props: &vk::QueueFamilyProperties| {
+                        q_fam_props.queue_flags.contains(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE)
                 };
 
                 let supports_present = |i: usize, _q_fam_props: &vk::QueueFamilyProperties| unsafe {
@@ -267,23 +267,23 @@ impl VkQueueFamilyIndices {
                 };
 
                 let supports_both = |i: usize, q_fam_props: &vk::QueueFamilyProperties| {
-                        supports_graphics(i, q_fam_props) && supports_present(i, q_fam_props)
+                        supports_graphics_and_compute(i, q_fam_props) && supports_present(i, q_fam_props)
                 };
 
                 let graphics_and_present = find_queue_family(&q_families_props, supports_both);
 
                 if let Some(graphics_and_present) = graphics_and_present {
                         return Some(Self {
-                                graphics: graphics_and_present,
+                                graphics_and_compute: graphics_and_present,
                                 present: graphics_and_present,
                         });
                 }
 
-                let graphics = find_queue_family(&q_families_props, supports_graphics);
+                let graphics_and_compute = find_queue_family(&q_families_props, supports_graphics_and_compute);
                 let present = find_queue_family(&q_families_props, supports_present);
 
-                if let (Some(graphics), Some(present)) = (graphics, present) {
-                        return Some(Self { graphics, present });
+                if let (Some(graphics), Some(present)) = (graphics_and_compute, present) {
+                        return Some(Self { graphics_and_compute: graphics, present });
                 }
 
                 None
