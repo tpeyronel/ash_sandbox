@@ -1,4 +1,5 @@
 use ash::{prelude::VkResult, vk};
+use glam::Vec4Swizzles;
 use slotmap::SecondaryMap;
 use std::{rc::Rc, slice, time::Instant};
 
@@ -10,7 +11,7 @@ use shader_resource_derive::ShaderStruct;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use super::{
-        vk_asset_manager::{VkAssetManager, VkDescriptorSetIndex, VkShader},
+        vk_asset_manager::{VkAssetManager, VkDescriptorSetIndex},
         vk_command_buffer::VkReusableCommandBuffer,
         vk_context::VkContext,
         vk_image::{TransitionImageLayoutInfo, VkImage, VkImageCreateInfo},
@@ -28,17 +29,20 @@ use crate::{
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE, SHADOW_MAP_HEIGHT, SHADOW_MAP_WIDTH},
         model_instance_manager::ModelInstance,
         my_glm::*,
-        renderer::Renderer,
+        renderer::{Cluster, Renderer},
         shader_resources::{
                 SHADER_RESOURCE_BILLBOARD_DATA, SHADER_RESOURCE_BRDF_LUT, SHADER_RESOURCE_CUBE_SHADOW_MAP,
-                SHADER_RESOURCE_INPUT_FRAMEBUFFER, SHADER_RESOURCE_IRRADIANCE_MAP, SHADER_RESOURCE_MATERIAL_DATA,
-                SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_PREFILTERED_MAP, SHADER_RESOURCE_SHADER_SETTINGS,
-                SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX, SHADER_RESOURCE_WORLD_LIGHTS,
-                SHADER_RESOURCE_WORLD_MATRICES, SHADER_RESOURCE_WORLD_POINT_LIGHTS,
+                SHADER_RESOURCE_FRUSTUM_CLUSTERS, SHADER_RESOURCE_INPUT_FRAMEBUFFER, SHADER_RESOURCE_IRRADIANCE_MAP,
+                SHADER_RESOURCE_MATERIAL_DATA, SHADER_RESOURCE_OBJECT_MATRICES, SHADER_RESOURCE_PREFILTERED_MAP,
+                SHADER_RESOURCE_SHADER_SETTINGS, SHADER_RESOURCE_SHADOW_MAP, SHADER_RESOURCE_SKYBOX,
+                SHADER_RESOURCE_WORLD_LIGHTS, SHADER_RESOURCE_WORLD_MATRICES, SHADER_RESOURCE_WORLD_POINT_LIGHTS,
         },
         skybox::Skybox,
         util::{RefIntoBytesSlice, RefIntoSlice},
-        vk::{vk_image_subresource_range::ImageSubresourceRangeUtil, vk_wrapper::HasVkHandle},
+        vk::{
+                vk_asset_manager::VkGraphicsShader, vk_image_subresource_range::ImageSubresourceRangeUtil,
+                vk_wrapper::HasVkHandle,
+        },
 };
 use crate::{
         constants::{DESIRED_SWAPCHAIN_IMG_COUNT, MAX_CONCURRENT_FRAMES},
@@ -212,6 +216,76 @@ impl Renderer for VkRenderer {
                         self.framei,
                 )?;
 
+                let cluster_grid_size = Vec3u::new(16, 9, 20);
+                let cluster_grid_size = Vec4u::from((
+                        cluster_grid_size,
+                        cluster_grid_size.x * cluster_grid_size.y * cluster_grid_size.z,
+                ));
+
+                {
+                        let clustering_workgroup_size = Vec3u::new(4, 4, 4);
+
+                        let clusters = vec![
+                                Cluster {
+                                        min_point: Vec4::ZERO,
+                                        max_point: Vec4::ZERO
+                                };
+                                cluster_grid_size.w as usize
+                        ];
+
+                        self.vk_asset_manager.provide_shader_resource(
+                                &self.context,
+                                &asset_manager,
+                                &SHADER_RESOURCE_FRUSTUM_CLUSTERS,
+                                &ShaderResourceData::from_shader_struct_field_array(&clusters),
+                                self.framei,
+                        )?;
+
+                        let cmd_buffer = self.frames_data[self.framei].draw_cmd_buffer.handle();
+
+                        let clustering_shader_id = asset_manager.shader_names()["clustering-shader"];
+                        let clustering_shader = self.vk_asset_manager.compute_shader(clustering_shader_id);
+
+                        let clustering_pipeline = self.vk_asset_manager.get_pipeline_for_compute_shader(
+                                &self.context,
+                                clustering_shader_id,
+                                clustering_workgroup_size,
+                        )?;
+
+                        let group_count =
+                                (cluster_grid_size.xyz().as_vec3() / clustering_workgroup_size.as_vec3()).ceil();
+
+                        self.vk_asset_manager.update_world_dst_set_for_compute(
+                                &self.context,
+                                clustering_shader,
+                                self.framei,
+                        );
+
+                        unsafe {
+                                self.context.device.cmd_bind_pipeline(
+                                        cmd_buffer,
+                                        vk::PipelineBindPoint::COMPUTE,
+                                        clustering_pipeline,
+                                );
+
+                                self.context.device.cmd_bind_descriptor_sets(
+                                        cmd_buffer,
+                                        vk::PipelineBindPoint::COMPUTE,
+                                        *clustering_shader.compute_pipeline_layout,
+                                        VkDescriptorSetIndex::World.value(),
+                                        &[clustering_shader.world_dst_set[self.framei]],
+                                        &[],
+                                );
+
+                                self.context.device.cmd_dispatch(
+                                        cmd_buffer,
+                                        group_count.x as u32,
+                                        group_count.y as u32,
+                                        group_count.z as u32,
+                                );
+                        }
+                }
+
                 let PhysicalSize { width, height } = self.window.inner_size();
                 let aspect_ratio = width as f32 / height as f32;
 
@@ -231,6 +305,9 @@ impl Renderer for VkRenderer {
                         view: view_mat,
                         proj: proj_mat,
                         vp: proj_mat * view_mat,
+                        inv_proj: proj_mat.inverse(),
+                        cluster_grid_size,
+                        near_far: Vec4::new(camera_projection.near(), camera_projection.far(), 0.0, 0.0),
                 };
 
                 self.vk_asset_manager.provide_shader_resource(
@@ -1760,6 +1837,9 @@ pub struct WorldMatrices {
         view: Mat4,
         proj: Mat4,
         vp: Mat4,
+        inv_proj: Mat4,
+        cluster_grid_size: Vec4u, // xyz is the cluster grid size, w is the total cluster count, i.e. x * y * z.
+        near_far: Vec4,
 }
 
 #[allow(dead_code)]

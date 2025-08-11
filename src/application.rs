@@ -354,6 +354,9 @@ impl Application {
                 //         },
                 // );
 
+                let _clustering_shader = asset_manager
+                        .load_shader_from_yaml(Path::new("res/shader/clustering_shader/clustering_shader.yaml"))?;
+
                 let _equi_to_cube_shader = asset_manager
                         .load_shader_from_yaml(Path::new("res/shader/equi_to_cube_shader/equi_to_cube_shader.yaml"))?;
 

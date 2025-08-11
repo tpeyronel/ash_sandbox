@@ -1,0 +1,89 @@
+#version 450
+#extension GL_EXT_debug_printf : enable
+
+#resource WorldMatrices u_world_matrices : WORLD_MATRICES;
+#resource Cluster[] u_out_clusters : FRUSTUM_CLUSTERS;
+
+vec4 ndc_to_view(vec4 ndc_coords) {
+    vec4 view_coords = u_world_matrices.inv_proj * ndc_coords;
+    view_coords = view_coords / view_coords.w; // Perspective projection.
+
+    return view_coords;
+}
+
+float compute_slice_depth(uint slice) {
+    float near = u_world_matrices.near_far.x;
+    float far = u_world_matrices.near_far.y;
+    uint num_slices = u_world_matrices.cluster_grid_size.z;
+
+    return near * pow(far / near, float(slice) / float(num_slices));
+}
+
+vec3 intersect_with_z_plane(vec3 direction, float z_distance) {
+    // All clusters planes are aligned in the same z direction
+    vec3 normal = vec3(0.0, 0.0, 1.0);
+    float t = z_distance / dot(normal, direction);
+
+    return t * direction;
+}
+
+uint compute_linear_cluster_index(uvec3 cluster_index, uvec3 cluster_grid_size) {
+    return cluster_index.x +
+        cluster_grid_size.x * cluster_index.y +
+        cluster_grid_size.x * cluster_grid_size.y * cluster_index.z;
+}
+
+layout (local_size_x_id = 0, local_size_y_id = 1, local_size_z_id = 2) in;
+
+void main() {
+    // NOTE: remember that eye position is (0, 0, 0) in view space.
+
+    uvec3 cluster_grid_size = u_world_matrices.cluster_grid_size.xyz;
+    // uint total_cluster_count = u_world_matrices.cluster_grid_size.w;
+
+    uvec3 cluster_index = gl_GlobalInvocationID;
+
+    if (
+        cluster_index.x >= cluster_grid_size.x
+        || cluster_index.y >= cluster_grid_size.y
+        || cluster_index.z >= cluster_grid_size.z
+    ) {
+        return;
+    }
+
+    // uvec3 workgroup_size = gl_WorkGroupSize;
+    // debugPrintfEXT("%v3u\n", workgroup_size);
+    // debugPrintfEXT("%v3u\n", cluster_grid_size);
+
+    // z is 0.0 as that is the min depth we use in the viewport.
+    vec4 bottom_left_ndc = vec4((vec2(cluster_index.xy) / vec2(cluster_grid_size.xy)) * 2.0 - 1.0, 0.0, 1.0);
+    vec4 top_right_ndc = vec4((vec2(cluster_index.xy + 1) / vec2(cluster_grid_size.xy)) * 2.0 - 1.0, 0.0, 1.0);
+
+    // debugPrintfEXT("%v3u\t%v3u\t%v4f\t%v4f\n", cluster_index, cluster_grid_size, bottom_left_ndc, top_right_ndc);
+
+    vec3 bottom_left_vs = ndc_to_view(bottom_left_ndc).xyz;
+    vec3 top_right_vs = ndc_to_view(top_right_ndc).xyz;
+
+    // debugPrintfEXT("%v3u\t%v3f\t%v3f\n", cluster_index, bottom_left_vs, top_right_vs);
+
+    float cluster_near = compute_slice_depth(cluster_index.z);
+    float cluster_far = compute_slice_depth(cluster_index.z + 1);
+
+    // debugPrintfEXT("%v3u\t%f\t%f\n", cluster_index, cluster_near, cluster_far);
+
+    vec3 bottom_left_near = intersect_with_z_plane(bottom_left_vs, cluster_near);
+    vec3 bottom_left_far = intersect_with_z_plane(bottom_left_vs, cluster_far);
+    vec3 top_right_near = intersect_with_z_plane(top_right_vs, cluster_near);
+    vec3 top_right_far = intersect_with_z_plane(top_right_vs, cluster_far);
+
+    // debugPrintfEXT("%v3u\t%v3f\t%v3f\n", cluster_index, bottom_left_far, top_right_far);
+
+    vec3 aabb_min_point = min(min(bottom_left_near, bottom_left_far), min(top_right_near, top_right_far));
+    vec3 aabb_max_point = max(max(bottom_left_near, bottom_left_far), max(top_right_near, top_right_far));
+
+    uint cluster_linear_index = compute_linear_cluster_index(cluster_index, cluster_grid_size);
+    u_out_clusters.data[cluster_linear_index].min_point = vec4(aabb_min_point, 1.0);
+    u_out_clusters.data[cluster_linear_index].max_point = vec4(aabb_max_point, 1.0);
+
+    // debugPrintfEXT("%v3u\t%v4f\t%v4f\t\n", cluster_index, u_out_clusters.data[cluster_linear_index].min_point, u_out_clusters.data[cluster_linear_index].max_point);
+}

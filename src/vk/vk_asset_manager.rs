@@ -23,7 +23,7 @@ use crate::{
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE, PREFILTER_MAP_SIZE},
         hashmap::{Entry, GetOrInsert, HashMap},
-        my_glm::{Mat4, Vec2, Vec3, Vec4},
+        my_glm::{Mat4, Vec2, Vec3, Vec3u, Vec4},
         renderer::PrefilterParams,
         shader_preprocessor::{PreprocessedShaderStage, ShaderStageSourceBuilder},
         shader_resource::{
@@ -133,13 +133,11 @@ pub struct VkComputeShader {
         pub dst_set_layouts: EnumMap<VkDescriptorSetIndex, vk::DescriptorSetLayout>,
 
         pub compute_pipeline_layout: VkPipelineLayout,
-        pub compute_pipeline: VkPipeline,
 }
 
 impl VkComputeShader {
         fn destroy(&self, device: &VkDevice) {
                 unsafe {
-                        self.compute_pipeline.destroy();
                         self.compute_pipeline_layout.destroy();
 
                         for (_, &dst_set_layout) in &self.dst_set_layouts {
@@ -171,11 +169,17 @@ pub struct VkCubemap {
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-struct ShaderConfiguration {
+struct GraphicsShaderConfiguration {
         shader_id: ShaderId,
         color_attachment_formats: Vec<vk::Format>,
         depth_attachment_format: vk::Format,
         stencil_attachment_format: vk::Format,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct ComputeShaderConfiguration {
+        shader_id: ShaderId,
+        workgroup_size: Vec3u,
 }
 
 pub struct VkAssetManager {
@@ -196,7 +200,8 @@ pub struct VkAssetManager {
         shaders: SecondaryMap<ShaderId, VkShader>,
         pub cubemaps: SecondaryMap<CubemapId, VkCubemap>,
 
-        graphic_pipelines: RefCell<HashMap<ShaderConfiguration, VkPipeline>>,
+        graphic_pipelines: RefCell<HashMap<GraphicsShaderConfiguration, VkPipeline>>,
+        compute_pipelines: RefCell<HashMap<ComputeShaderConfiguration, VkPipeline>>,
 
         pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
 
@@ -239,6 +244,7 @@ impl VkAssetManager {
                         cubemaps: SecondaryMap::new(),
 
                         graphic_pipelines: RefCell::new(HashMap::new()),
+                        compute_pipelines: RefCell::new(HashMap::new()),
 
                         shader_resources: HashMap::new(),
                         shader_resource_buffers: HashMap::new(),
@@ -330,6 +336,11 @@ impl VkAssetManager {
                         cubemap.environment_image_view.destroy();
                         cubemap.environment_image.destroy();
                 });
+
+                self.compute_pipelines
+                        .get_mut()
+                        .drain()
+                        .for_each(|(_, pipeline)| unsafe { pipeline.destroy() });
 
                 self.graphic_pipelines
                         .get_mut()
@@ -1069,12 +1080,6 @@ impl VkAssetManager {
                         shader.push_constants_size,
                 )?;
 
-                let compute_pipeline = Self::create_compute_pipeline_for_vk_compute_shader(
-                        &context.device,
-                        compute_pipeline_layout.handle(),
-                        compute_module.handle(),
-                )?;
-
                 let vk_shader = VkShader::Compute(VkComputeShader {
                         compute_module,
                         shader_resource_bindings,
@@ -1084,7 +1089,6 @@ impl VkAssetManager {
                         dst_set_layouts,
 
                         compute_pipeline_layout,
-                        compute_pipeline,
                 });
 
                 self.shaders.insert(shader_id, vk_shader);
@@ -1106,7 +1110,7 @@ impl VkAssetManager {
                         vec![color_attachment_format]
                 };
 
-                let shader_configuration = ShaderConfiguration {
+                let shader_configuration = GraphicsShaderConfiguration {
                         shader_id,
                         color_attachment_formats,
                         depth_attachment_format,
@@ -1142,6 +1146,36 @@ impl VkAssetManager {
                                 )?;
 
                                 Ok(**vacant_entry.insert(graphics_pipeline))
+                        },
+                }
+        }
+
+        pub fn get_pipeline_for_compute_shader(
+                &self,
+                context: &VkContext,
+                shader_id: ShaderId,
+                workgroup_size: Vec3u,
+        ) -> VkResult<vk::Pipeline> {
+                let shader_configuration = ComputeShaderConfiguration {
+                        shader_id,
+                        workgroup_size,
+                };
+
+                match self.compute_pipelines.borrow_mut().entry(shader_configuration) {
+                        Entry::Occupied(occupied_entry) => Ok(**occupied_entry.get()),
+                        Entry::Vacant(vacant_entry) => {
+                                let vk_shader = self.compute_shader(shader_id);
+
+                                let shader_configuration = vacant_entry.key();
+
+                                let compute_pipeline = Self::create_compute_pipeline_for_vk_compute_shader(
+                                        &context.device,
+                                        vk_shader.compute_pipeline_layout.handle(),
+                                        vk_shader.compute_module.handle(),
+                                        shader_configuration.workgroup_size,
+                                )?;
+
+                                Ok(**vacant_entry.insert(compute_pipeline))
                         },
                 }
         }
@@ -2635,13 +2669,37 @@ impl VkAssetManager {
                 device: &Rc<VkDevice>,
                 pipeline_layout: vk::PipelineLayout,
                 compute_module: vk::ShaderModule,
+                workgroup_size: Vec3u,
         ) -> VkResult<VkPipeline> {
                 let entry_point = CString::new("main").unwrap();
+
+                let specialization_map_entries = [
+                        vk::SpecializationMapEntry {
+                                constant_id: 0,
+                                offset: 0 * std::mem::size_of::<u32>() as u32,
+                                size: std::mem::size_of::<u32>(),
+                        },
+                        vk::SpecializationMapEntry {
+                                constant_id: 1,
+                                offset: 1 * std::mem::size_of::<u32>() as u32,
+                                size: std::mem::size_of::<u32>(),
+                        },
+                        vk::SpecializationMapEntry {
+                                constant_id: 2,
+                                offset: 2 * std::mem::size_of::<u32>() as u32,
+                                size: std::mem::size_of::<u32>(),
+                        },
+                ];
+
+                let specialization_info = vk::SpecializationInfo::default()
+                        .map_entries(&specialization_map_entries)
+                        .data(bytemuck::bytes_of(&workgroup_size));
 
                 let shader_stage = vk::PipelineShaderStageCreateInfo::default()
                         .stage(vk::ShaderStageFlags::COMPUTE)
                         .module(compute_module)
-                        .name(&entry_point);
+                        .name(&entry_point)
+                        .specialization_info(&specialization_info);
 
                 let graphics_pipeline_cinfo = vk::ComputePipelineCreateInfo::default()
                         .stage(shader_stage)

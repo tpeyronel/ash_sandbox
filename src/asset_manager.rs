@@ -29,7 +29,7 @@ use crate::{
         },
         hashmap::HashMap,
         my_glm::*,
-        renderer::PrefilterParams,
+        renderer::{Cluster, PrefilterParams},
         shader_preprocessor::{PreprocessedShaderStage, ShaderPreprocessor},
         shader_resource::{
                 ShaderResource, ShaderResourceId, ShaderResourceProvider, ShaderResourceType, ShaderStruct,
@@ -1478,6 +1478,11 @@ impl AssetManager {
                                 SHADER_RESOURCE_WORLD_POINT_LIGHTS.clone(),
                                 ShaderResourceProvider::World,
                         );
+
+                assets.shader_resources.register_dynamic_array::<Cluster>(
+                        SHADER_RESOURCE_FRUSTUM_CLUSTERS.clone(),
+                        ShaderResourceProvider::World,
+                );
 
                 assets.shader_resources.register_struct::<BillboardData>(
                         SHADER_RESOURCE_BILLBOARD_DATA.clone(),

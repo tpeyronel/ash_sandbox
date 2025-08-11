@@ -1,0 +1,5 @@
+---
+name: "clustering-shader"
+compute-shader: "clustering_shader.comp"
+uniforms: []
+vertex-inputs: []
