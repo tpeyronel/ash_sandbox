@@ -17,9 +17,9 @@ use slotmap::SecondaryMap;
 
 use crate::{
         asset_manager::{
-                AssetManager, AssetManagerEvent, Cubemap, CubemapId, CullMode, Image, ImageId, IndicesVec, MagFilter,
-                MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId, ShaderModule, ShaderRenderStage,
-                ShaderResourceData, TextureId, WrappingMode,
+                AssetManager, AssetManagerEvent, ComputeShader, Cubemap, CubemapId, CullMode, GraphicsShader, Image,
+                ImageId, IndicesVec, MagFilter, MaterialId, MeshId, MinFilter, SamplerId, Shader, ShaderId,
+                ShaderModule, ShaderRenderStage, ShaderResourceData, TextureId, WrappingMode,
         },
         constants::{ENABLE_ANISOTROPY, LOD_CLAMP_NONE, PREFILTER_MAP_SIZE},
         hashmap::{Entry, GetOrInsert, HashMap},
@@ -80,7 +80,21 @@ pub struct VkMaterial {
         pub buffers: HashMap<ShaderResourceId, Vec<VkBuffer>>, // One buffer per concurrent frame
 }
 
-pub struct VkShader {
+pub enum VkShader {
+        Graphics(VkGraphicsShader),
+        Compute(VkComputeShader),
+}
+
+impl VkShader {
+        fn destroy(&self, device: &VkDevice) {
+                match self {
+                        VkShader::Graphics(vk_graphics_shader) => vk_graphics_shader.destroy(device),
+                        VkShader::Compute(vk_compute_shader) => vk_compute_shader.destroy(device),
+                }
+        }
+}
+
+pub struct VkGraphicsShader {
         pub vert_module: VkShaderModule,
         pub frag_module: Option<VkShaderModule>,
         pub vertex_input_bindings: Vec<vk::VertexInputBindingDescription>,
@@ -95,7 +109,7 @@ pub struct VkShader {
         pub graphics_pipeline_layout: VkPipelineLayout,
 }
 
-impl VkShader {
+impl VkGraphicsShader {
         fn destroy(&self, device: &VkDevice) {
                 unsafe {
                         self.graphics_pipeline_layout.destroy();
@@ -110,6 +124,34 @@ impl VkShader {
         }
 }
 
+pub struct VkComputeShader {
+        pub compute_module: VkShaderModule,
+        pub shader_resource_bindings: HashMap<ShaderResourceId, VkShaderResourceBindingDescription>,
+
+        pub world_dst_set: Vec<vk::DescriptorSet>, // One per concurrent frame
+
+        pub dst_set_layouts: EnumMap<VkDescriptorSetIndex, vk::DescriptorSetLayout>,
+
+        pub compute_pipeline_layout: VkPipelineLayout,
+        pub compute_pipeline: VkPipeline,
+}
+
+impl VkComputeShader {
+        fn destroy(&self, device: &VkDevice) {
+                unsafe {
+                        self.compute_pipeline.destroy();
+                        self.compute_pipeline_layout.destroy();
+
+                        for (_, &dst_set_layout) in &self.dst_set_layouts {
+                                device.destroy_descriptor_set_layout(dst_set_layout, None);
+                        }
+
+                        self.compute_module.destroy();
+                }
+        }
+}
+
+#[derive(Debug, Clone)]
 pub struct VkShaderResourceBindingDescription {
         pub set: VkDescriptorSetIndex,
         pub binding: u32,
@@ -151,10 +193,10 @@ pub struct VkAssetManager {
         pub images: SecondaryMap<ImageId, VkModelImage>,
         pub samplers: SecondaryMap<SamplerId, VkSampler>,
         pub materials: SecondaryMap<MaterialId, VkMaterial>,
-        pub shaders: SecondaryMap<ShaderId, VkShader>,
+        shaders: SecondaryMap<ShaderId, VkShader>,
         pub cubemaps: SecondaryMap<CubemapId, VkCubemap>,
 
-        pipelines: RefCell<HashMap<ShaderConfiguration, VkPipeline>>,
+        graphic_pipelines: RefCell<HashMap<ShaderConfiguration, VkPipeline>>,
 
         pub shader_resources: HashMap<ShaderResourceId, VkShaderResource>,
 
@@ -196,7 +238,7 @@ impl VkAssetManager {
                         shaders: SecondaryMap::new(),
                         cubemaps: SecondaryMap::new(),
 
-                        pipelines: RefCell::new(HashMap::new()),
+                        graphic_pipelines: RefCell::new(HashMap::new()),
 
                         shader_resources: HashMap::new(),
                         shader_resource_buffers: HashMap::new(),
@@ -289,7 +331,7 @@ impl VkAssetManager {
                         cubemap.environment_image.destroy();
                 });
 
-                self.pipelines
+                self.graphic_pipelines
                         .get_mut()
                         .drain()
                         .for_each(|(_, pipeline)| unsafe { pipeline.destroy() });
@@ -328,12 +370,58 @@ impl VkAssetManager {
                 unsafe { self.dst_set_allocator.destroy() };
         }
 
-        pub fn update_world_descriptor_set(&self, context: &VkContext, vk_shader: &VkShader, framei: usize) {
-                let world_dst_set = vk_shader.world_dst_set[framei];
+        pub fn graphics_shader(&self, shader_id: ShaderId) -> &VkGraphicsShader {
+                match &self.shaders[shader_id] {
+                        VkShader::Graphics(graphics_shader) => graphics_shader,
+                        _ => panic!("shader {:?} is not a graphics shader", shader_id),
+                }
+        }
 
+        pub fn compute_shader(&self, shader_id: ShaderId) -> &VkComputeShader {
+                match &self.shaders[shader_id] {
+                        VkShader::Compute(compute_shader) => compute_shader,
+                        _ => panic!("shader {:?} is not a compute shader", shader_id),
+                }
+        }
+
+        pub fn update_world_dst_set_for_graphics(
+                &self,
+                context: &VkContext,
+                vk_shader: &VkGraphicsShader,
+                framei: usize,
+        ) {
+                self.update_world_descriptor_set_inner(
+                        context,
+                        vk_shader.world_dst_set[framei],
+                        &vk_shader.shader_resource_bindings,
+                        framei,
+                );
+        }
+
+        pub fn update_world_dst_set_for_compute(
+                &self,
+                context: &VkContext,
+                vk_shader: &VkComputeShader,
+                framei: usize,
+        ) {
+                self.update_world_descriptor_set_inner(
+                        context,
+                        vk_shader.world_dst_set[framei],
+                        &vk_shader.shader_resource_bindings,
+                        framei,
+                );
+        }
+
+        fn update_world_descriptor_set_inner(
+                &self,
+                context: &VkContext,
+                world_dst_set: vk::DescriptorSet,
+                shader_resource_bindings: &HashMap<ShaderResourceId, VkShaderResourceBindingDescription>,
+                framei: usize,
+        ) {
                 let mut writes: Vec<(VkDescriptorSetWriteInfo, vk::WriteDescriptorSet<'static>)> = vec![];
 
-                for (resource_id, binding) in &vk_shader.shader_resource_bindings {
+                for (resource_id, binding) in shader_resource_bindings {
                         if binding.set != VkDescriptorSetIndex::World {
                                 continue;
                         }
@@ -580,8 +668,35 @@ impl VkAssetManager {
                 dst_set_layouts: &[vk::DescriptorSetLayout],
                 push_constants_size: u32,
         ) -> VkResult<VkPipelineLayout> {
+                Self::create_pipeline_layout(
+                        device,
+                        dst_set_layouts,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        push_constants_size,
+                )
+        }
+
+        fn create_compute_pipeline_layout(
+                device: &Rc<VkDevice>,
+                dst_set_layouts: &[vk::DescriptorSetLayout],
+                push_constants_size: u32,
+        ) -> VkResult<VkPipelineLayout> {
+                Self::create_pipeline_layout(
+                        device,
+                        dst_set_layouts,
+                        vk::ShaderStageFlags::COMPUTE,
+                        push_constants_size,
+                )
+        }
+
+        fn create_pipeline_layout(
+                device: &Rc<VkDevice>,
+                dst_set_layouts: &[vk::DescriptorSetLayout],
+                push_constants_stage_flags: vk::ShaderStageFlags,
+                push_constants_size: u32,
+        ) -> VkResult<VkPipelineLayout> {
                 let push_constant_range = vk::PushConstantRange {
-                        stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        stage_flags: push_constants_stage_flags,
                         offset: 0,
                         size: push_constants_size,
                 };
@@ -764,8 +879,28 @@ impl VkAssetManager {
         ) -> AnyResult<()> {
                 let shader = asset_manager.shader(shader_id);
 
-                let shader_resource_bindings =
-                        Self::map_shader_resources(asset_manager.shader_resources(), &self.shader_resources, shader);
+                match shader {
+                        Shader::Graphics(graphics_shader) => {
+                                self.on_graphics_shader_updated(context, asset_manager, shader_id, graphics_shader)
+                        },
+                        Shader::Compute(compute_shader) => {
+                                self.on_compute_shader_updated(context, asset_manager, shader_id, compute_shader)
+                        },
+                }
+        }
+
+        fn on_graphics_shader_updated(
+                &mut self,
+                context: &VkContext,
+                asset_manager: &AssetManager,
+                shader_id: ShaderId,
+                shader: &GraphicsShader,
+        ) -> AnyResult<()> {
+                let shader_resource_bindings = Self::map_graphics_shader_resources(
+                        asset_manager.shader_resources(),
+                        &self.shader_resources,
+                        shader,
+                );
 
                 let vert_shader_source = Self::complete_shader_stage_source(
                         asset_manager.shader_resources(),
@@ -791,8 +926,11 @@ impl VkAssetManager {
                         .map(|fsp| ShaderModule::from_glsl_file(fsp))
                         .transpose()?;
 
-                let dst_set_layouts =
-                        Self::create_descriptor_set_layouts_from_bindings(&context.device, &shader_resource_bindings)?;
+                let dst_set_layouts = Self::create_dst_set_layouts_from_bindings(
+                        &context.device,
+                        &shader_resource_bindings,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                )?;
 
                 let world_dst_set_layout = dst_set_layouts[VkDescriptorSetIndex::World];
                 let material_dst_set_layout = dst_set_layouts[VkDescriptorSetIndex::Material];
@@ -865,7 +1003,7 @@ impl VkAssetManager {
                         shader.push_constants_size,
                 )?;
 
-                let vk_shader = VkShader {
+                let vk_shader = VkShader::Graphics(VkGraphicsShader {
                         vert_module,
                         frag_module,
                         vertex_input_bindings,
@@ -878,14 +1016,83 @@ impl VkAssetManager {
                         dst_set_layouts,
 
                         graphics_pipeline_layout,
-                };
+                });
 
                 self.shaders.insert(shader_id, vk_shader);
 
                 Ok(())
         }
 
-        pub fn get_pipeline_for_shader(
+        fn on_compute_shader_updated(
+                &mut self,
+                context: &VkContext,
+                asset_manager: &AssetManager,
+                shader_id: ShaderId,
+                shader: &ComputeShader,
+        ) -> AnyResult<()> {
+                let shader_resource_bindings = Self::map_compute_shader_resources(
+                        asset_manager.shader_resources(),
+                        &self.shader_resources,
+                        shader,
+                );
+
+                let compute_shader_source = Self::complete_shader_stage_source(
+                        asset_manager.shader_resources(),
+                        &shader_resource_bindings,
+                        &shader.compute_shader,
+                );
+
+                let compute_shader_path =
+                        Self::write_generated_source_to_file(&shader.compute_shader.path, &compute_shader_source);
+
+                let compute_shader_module = ShaderModule::from_glsl_file(compute_shader_path)?;
+
+                let dst_set_layouts = Self::create_dst_set_layouts_from_bindings(
+                        &context.device,
+                        &shader_resource_bindings,
+                        vk::ShaderStageFlags::COMPUTE,
+                )?;
+
+                let world_dst_set_layout = dst_set_layouts[VkDescriptorSetIndex::World];
+
+                let world_dst_set = Self::init_world_dst_set(
+                        self.concurrent_frames,
+                        &mut self.dst_set_allocator,
+                        world_dst_set_layout,
+                )?;
+
+                let compute_module = VkShaderModule::from_code(&context.device, &compute_shader_module.bin)?;
+
+                let compute_pipeline_layout = Self::create_compute_pipeline_layout(
+                        &context.device,
+                        dst_set_layouts.as_slice(),
+                        shader.push_constants_size,
+                )?;
+
+                let compute_pipeline = Self::create_compute_pipeline_for_vk_compute_shader(
+                        &context.device,
+                        compute_pipeline_layout.handle(),
+                        compute_module.handle(),
+                )?;
+
+                let vk_shader = VkShader::Compute(VkComputeShader {
+                        compute_module,
+                        shader_resource_bindings,
+
+                        world_dst_set,
+
+                        dst_set_layouts,
+
+                        compute_pipeline_layout,
+                        compute_pipeline,
+                });
+
+                self.shaders.insert(shader_id, vk_shader);
+
+                Ok(())
+        }
+
+        pub fn get_pipeline_for_graphics_shader(
                 &self,
                 context: &VkContext,
                 asset_manager: &AssetManager,
@@ -906,11 +1113,11 @@ impl VkAssetManager {
                         stencil_attachment_format: vk::Format::UNDEFINED,
                 };
 
-                match self.pipelines.borrow_mut().entry(shader_configuration) {
+                match self.graphic_pipelines.borrow_mut().entry(shader_configuration) {
                         Entry::Occupied(occupied_entry) => Ok(**occupied_entry.get()),
                         Entry::Vacant(vacant_entry) => {
-                                let shader = asset_manager.shader(shader_id);
-                                let vk_shader = &self.shaders[shader_id];
+                                let shader = asset_manager.graphics_shader(shader_id);
+                                let vk_shader = self.graphics_shader(shader_id);
 
                                 let samples = match shader.render_stage {
                                         ShaderRenderStage::Drawing => self.swapchain_samples,
@@ -939,10 +1146,10 @@ impl VkAssetManager {
                 }
         }
 
-        fn map_shader_resources(
+        fn map_graphics_shader_resources(
                 shader_resources: &ShaderResourceRegistry,
                 vk_shader_resources: &HashMap<ShaderResourceId, VkShaderResource>,
-                shader: &Shader,
+                shader: &GraphicsShader,
         ) -> HashMap<ShaderResourceId, VkShaderResourceBindingDescription> {
                 let mut next_bindings = EnumMap::from_fn(|_| 0);
                 let mut bindings = HashMap::new();
@@ -963,6 +1170,25 @@ impl VkAssetManager {
                                 &mut bindings,
                         )
                 };
+
+                return bindings;
+        }
+
+        fn map_compute_shader_resources(
+                shader_resources: &ShaderResourceRegistry,
+                vk_shader_resources: &HashMap<ShaderResourceId, VkShaderResource>,
+                shader: &ComputeShader,
+        ) -> HashMap<ShaderResourceId, VkShaderResourceBindingDescription> {
+                let mut next_bindings = EnumMap::from_fn(|_| 0);
+                let mut bindings = HashMap::new();
+
+                Self::map_shader_stage_resources(
+                        shader_resources,
+                        vk_shader_resources,
+                        &shader.compute_shader,
+                        &mut next_bindings,
+                        &mut bindings,
+                );
 
                 return bindings;
         }
@@ -1062,9 +1288,10 @@ impl VkAssetManager {
         }
 
         // TODO: return HashMap<ShaderResourceProvider, vk::DescriptorSetLayout> (?
-        fn create_descriptor_set_layouts_from_bindings(
+        fn create_dst_set_layouts_from_bindings(
                 device: &VkDevice,
                 resource_bindings: &HashMap<ShaderResourceId, VkShaderResourceBindingDescription>,
+                shader_stage_flags: vk::ShaderStageFlags,
         ) -> VkResult<EnumMap<VkDescriptorSetIndex, vk::DescriptorSetLayout>> {
                 let mut set_bindings = HashMap::<VkDescriptorSetIndex, Vec<vk::DescriptorSetLayoutBinding>>::new();
 
@@ -1073,7 +1300,7 @@ impl VkAssetManager {
                                 .binding(resource_binding.binding)
                                 .descriptor_type(resource_binding.descriptor_type)
                                 .descriptor_count(1)
-                                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
+                                .stage_flags(shader_stage_flags);
 
                         set_bindings
                                 .get_mut_or_insert_with(&resource_binding.set, || vec![])
@@ -1558,7 +1785,7 @@ impl VkAssetManager {
 
                 let equi_to_cube_shader_id = asset_manager.shader_names()["equi-to-cube-shader"];
 
-                let equi_to_cube_vk_pipeline = self.get_pipeline_for_shader(
+                let equi_to_cube_vk_pipeline = self.get_pipeline_for_graphics_shader(
                         context,
                         asset_manager,
                         equi_to_cube_shader_id,
@@ -1566,7 +1793,7 @@ impl VkAssetManager {
                         vk::Format::UNDEFINED,
                 )?;
 
-                let equi_to_cube_vk_shader = &self.shaders[equi_to_cube_shader_id];
+                let equi_to_cube_vk_shader = &self.graphics_shader(equi_to_cube_shader_id);
 
                 let equirectangular_binding = equi_to_cube_vk_shader
                         .shader_resource_bindings
@@ -1665,10 +1892,10 @@ impl VkAssetManager {
                 let irradiance_image = VkImage::new_cubemap(context, &irradiance_image_cinfo)?;
 
                 let irradiance_shader_id = asset_manager.shader_names()["irradiance-shader"];
-                let irradiance_shader = &self.shaders[irradiance_shader_id];
+                let irradiance_shader = &self.graphics_shader(irradiance_shader_id);
 
                 let irradiance_pipeline_layout = *irradiance_shader.graphics_pipeline_layout;
-                let irradiance_pipeline = self.get_pipeline_for_shader(
+                let irradiance_pipeline = self.get_pipeline_for_graphics_shader(
                         context,
                         asset_manager,
                         irradiance_shader_id,
@@ -1787,26 +2014,29 @@ impl VkAssetManager {
                 let prefiltered_image = VkImage::new_cubemap(context, &prefiltered_image_cinfo)?;
 
                 let prefilter_shader_id = asset_manager.shader_names()["prefilter-shader"];
-                let prefilter_shader = &self.shaders[prefilter_shader_id];
+                let prefilter_shader = &self.graphics_shader(prefilter_shader_id);
 
-                let prefilter_pipeline = self.get_pipeline_for_shader(
+                let prefilter_pipeline = self.get_pipeline_for_graphics_shader(
                         context,
                         asset_manager,
                         prefilter_shader_id,
                         format,
                         vk::Format::UNDEFINED,
                 )?;
+                let prefilter_dst_set_layouts = prefilter_shader.dst_set_layouts.clone();
                 let prefilter_pipeline_layout = *prefilter_shader.graphics_pipeline_layout;
 
                 let environment_map_binding = prefilter_shader
                         .shader_resource_bindings
                         .get(&SHADER_RESOURCE_ENVIRONMENT_MAP)
-                        .unwrap();
+                        .unwrap()
+                        .clone();
 
                 let prefilter_params_binding = prefilter_shader
                         .shader_resource_bindings
                         .get(&SHADER_RESOURCE_PREFILTER_PARAMS)
-                        .unwrap();
+                        .unwrap()
+                        .clone();
 
                 let image_info = vk::DescriptorImageInfo {
                         sampler: *environment_sampler,
@@ -1847,8 +2077,7 @@ impl VkAssetManager {
                         };
                         params_buffer.write(&params)?;
 
-                        let render_pass_dst_set_layout =
-                                prefilter_shader.dst_set_layouts[VkDescriptorSetIndex::RenderPass];
+                        let render_pass_dst_set_layout = prefilter_dst_set_layouts[VkDescriptorSetIndex::RenderPass];
                         let [render_pass_dst_set] = self.frame_dst_set_allocators[0]
                                 .allocate_descriptor_sets(&[render_pass_dst_set_layout])?;
 
@@ -1872,7 +2101,7 @@ impl VkAssetManager {
                         context.device.cmd_bind_descriptor_sets(
                                 cmd_buffer,
                                 vk::PipelineBindPoint::GRAPHICS,
-                                *prefilter_shader.graphics_pipeline_layout,
+                                prefilter_pipeline_layout,
                                 VkDescriptorSetIndex::RenderPass.value(),
                                 &[render_pass_dst_set],
                                 &[],
@@ -2183,7 +2412,7 @@ impl VkAssetManager {
                         return Ok(None);
                 };
 
-                let Some(vk_shader) = self.shaders.get(material.shader) else {
+                let Some(VkShader::Graphics(vk_shader)) = self.shaders.get(material.shader) else {
                         return Ok(None);
                 };
 
@@ -2398,6 +2627,25 @@ impl VkAssetManager {
                         .push_next(&mut pipeline_rendering_cinfo);
 
                 unsafe { VkPipeline::new_graphics(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
+        }
+
+        fn create_compute_pipeline_for_vk_compute_shader(
+                device: &Rc<VkDevice>,
+                pipeline_layout: vk::PipelineLayout,
+                compute_module: vk::ShaderModule,
+        ) -> VkResult<VkPipeline> {
+                let entry_point = CString::new("main").unwrap();
+
+                let shader_stage = vk::PipelineShaderStageCreateInfo::default()
+                        .stage(vk::ShaderStageFlags::COMPUTE)
+                        .module(compute_module)
+                        .name(&entry_point);
+
+                let graphics_pipeline_cinfo = vk::ComputePipelineCreateInfo::default()
+                        .stage(shader_stage)
+                        .layout(pipeline_layout);
+
+                unsafe { VkPipeline::new_compute(device, vk::PipelineCache::null(), &graphics_pipeline_cinfo) }
         }
 
         // fn vk_format_from_component_and_data_type(comp_type: ComponentType, data_type: DataType) -> vk::Format {

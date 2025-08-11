@@ -953,8 +953,8 @@ impl VkRenderer {
                 let device = &*self.context.device;
                 let framei = self.framei;
 
-                let vk_shader = &self.vk_asset_manager.shaders[shader_id];
-                let vk_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
+                let vk_shader = &self.vk_asset_manager.graphics_shader(shader_id);
+                let vk_pipeline = self.vk_asset_manager.get_pipeline_for_graphics_shader(
                         &self.context,
                         asset_manager,
                         shader_id,
@@ -964,7 +964,7 @@ impl VkRenderer {
                 device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, vk_pipeline);
 
                 self.vk_asset_manager
-                        .update_world_descriptor_set(&self.context, vk_shader, framei);
+                        .update_world_dst_set_for_graphics(&self.context, vk_shader, framei);
 
                 device.cmd_bind_descriptor_sets(
                         cmd_buffer,
@@ -986,7 +986,7 @@ impl VkRenderer {
                 &self,
                 asset_manager: &AssetManager,
                 cmd_buffer: vk::CommandBuffer,
-                vk_shader: &VkShader,
+                vk_shader: &VkGraphicsShader,
                 material_id: MaterialId,
                 material_group: &Vec<VkMeshInstance>,
         ) -> VkResult<()> {
@@ -1031,7 +1031,7 @@ impl VkRenderer {
         unsafe fn draw_mesh_instance(
                 &self,
                 cmd_buffer: vk::CommandBuffer,
-                vk_shader: &VkShader,
+                vk_shader: &VkGraphicsShader,
                 vk_mesh_instance: &VkMeshInstance,
         ) {
                 let device = &*self.context.device;
@@ -1120,8 +1120,8 @@ impl VkRenderer {
                 }
 
                 let hdr_shader_id = asset_manager.shader_names()["hdr-shader"];
-                let hdr_vk_shader = &self.vk_asset_manager.shaders[hdr_shader_id];
-                let hdr_vk_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
+                let hdr_vk_shader = &self.vk_asset_manager.graphics_shader(hdr_shader_id);
+                let hdr_vk_pipeline = self.vk_asset_manager.get_pipeline_for_graphics_shader(
                         &self.context,
                         asset_manager,
                         hdr_shader_id,
@@ -1152,7 +1152,7 @@ impl VkRenderer {
                         .cmd_set_scissor(cmd_buffer, 0, self.swapchain.scissor.ref_into_slice());
 
                 self.vk_asset_manager
-                        .update_world_descriptor_set(&self.context, hdr_vk_shader, self.framei);
+                        .update_world_dst_set_for_graphics(&self.context, hdr_vk_shader, self.framei);
 
                 self.context.device.cmd_bind_descriptor_sets(
                         cmd_buffer,
@@ -1439,10 +1439,13 @@ impl VkRenderer {
                 );
 
                 let cube_shadow_map_shader_id = asset_manager.shader_names()["cube-shadow-map"];
-                let cube_shadow_map_shader = &self.vk_asset_manager.shaders[cube_shadow_map_shader_id];
+                let cube_shadow_map_shader = &self.vk_asset_manager.graphics_shader(cube_shadow_map_shader_id);
 
-                self.vk_asset_manager
-                        .update_world_descriptor_set(&self.context, cube_shadow_map_shader, self.framei);
+                self.vk_asset_manager.update_world_dst_set_for_graphics(
+                        &self.context,
+                        cube_shadow_map_shader,
+                        self.framei,
+                );
 
                 for i in 0..6 {
                         {
@@ -1477,7 +1480,7 @@ impl VkRenderer {
                                 .device
                                 .cmd_set_scissor(cmd_buffer, 0, slice::from_ref(&shadow_map_rect));
 
-                        let cube_shadow_map_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
+                        let cube_shadow_map_pipeline = self.vk_asset_manager.get_pipeline_for_graphics_shader(
                                 &self.context,
                                 asset_manager,
                                 cube_shadow_map_shader_id,
@@ -1614,8 +1617,8 @@ impl VkRenderer {
                         .cmd_set_scissor(cmd_buffer, 0, slice::from_ref(&shadow_map_rect));
 
                 let shadow_map_shader_id = asset_manager.shader_names()["shadow-map"];
-                let shadow_map_shader = &self.vk_asset_manager.shaders[shadow_map_shader_id];
-                let shadow_map_pipeline = self.vk_asset_manager.get_pipeline_for_shader(
+                let shadow_map_shader = &self.vk_asset_manager.graphics_shader(shadow_map_shader_id);
+                let shadow_map_pipeline = self.vk_asset_manager.get_pipeline_for_graphics_shader(
                         &self.context,
                         asset_manager,
                         shadow_map_shader_id,
@@ -1624,7 +1627,7 @@ impl VkRenderer {
                 )?;
 
                 self.vk_asset_manager
-                        .update_world_descriptor_set(&self.context, shadow_map_shader, self.framei);
+                        .update_world_dst_set_for_graphics(&self.context, shadow_map_shader, self.framei);
 
                 self.context
                         .device

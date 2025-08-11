@@ -659,10 +659,13 @@ pub struct ShaderDeclaration {
         pub name: String,
 
         #[serde(rename = "vertex-shader")]
-        pub vert_shader: PathBuf,
+        pub vert_shader: Option<PathBuf>,
 
         #[serde(rename = "fragment-shader")]
         pub frag_shader: Option<PathBuf>,
+
+        #[serde(rename = "compute-shader")]
+        pub compute_shader: Option<PathBuf>,
 
         // default is false
         #[serde(rename = "disable-depth-test", default)]
@@ -686,7 +689,22 @@ pub struct ShaderDeclaration {
 slotmap::new_key_type! { pub struct ShaderId; }
 
 #[derive(Debug, Clone)]
-pub struct Shader {
+pub enum Shader {
+        Graphics(GraphicsShader),
+        Compute(ComputeShader),
+}
+
+impl Shader {
+        pub fn name(&self) -> &str {
+                match self {
+                        Shader::Graphics(graphics_shader) => &graphics_shader.name,
+                        Shader::Compute(compute_shader) => &compute_shader.name,
+                }
+        }
+}
+
+#[derive(Debug, Clone)]
+pub struct GraphicsShader {
         pub name: String,
         pub vert_shader: PreprocessedShaderStage,
         pub frag_shader: Option<PreprocessedShaderStage>,
@@ -697,34 +715,61 @@ pub struct Shader {
         pub push_constants_size: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct ComputeShader {
+        pub name: String,
+        pub compute_shader: PreprocessedShaderStage,
+        pub push_constants_size: u32,
+}
+
 impl Shader {
         pub fn from_yaml(shader_resources: &ShaderResourceRegistry, path: &Path) -> Result<Self, ShaderLoadError> {
                 let yaml = std::fs::read_to_string(path)?;
                 let declaration: ShaderDeclaration = serde_yaml::from_str(&yaml)?;
 
+                let name = declaration.name.clone();
+
                 let directory = path
                         .parent()
                         .ok_or_else(|| ShaderLoadError::InvalidPath(format!("Path {:?} does not have parent", path)))?;
 
-                Ok(Self {
-                        name: declaration.name.clone(),
-                        vert_shader: ShaderPreprocessor::preprocess_glsl_source(
-                                shader_resources,
-                                directory.join(&declaration.vert_shader),
-                        )?,
-                        frag_shader: declaration
-                                .frag_shader
-                                .as_ref()
-                                .map(|p| {
-                                        ShaderPreprocessor::preprocess_glsl_source(shader_resources, directory.join(p))
-                                })
-                                .transpose()?,
-                        disable_depth_test: declaration.disable_depth_test,
-                        cull_mode: declaration.cull_mode,
-                        vertex_inputs: declaration.vertex_inputs,
-                        render_stage: declaration.render_stage,
-                        push_constants_size: declaration.push_constants_size,
-                })
+                match (
+                        &declaration.vert_shader,
+                        &declaration.frag_shader,
+                        &declaration.compute_shader,
+                ) {
+                        (Some(vert_shader), _, None) => Ok(Self::Graphics(GraphicsShader {
+                                name,
+                                vert_shader: ShaderPreprocessor::preprocess_glsl_source(
+                                        shader_resources,
+                                        directory.join(&vert_shader),
+                                )?,
+                                frag_shader: declaration
+                                        .frag_shader
+                                        .as_ref()
+                                        .map(|p| {
+                                                ShaderPreprocessor::preprocess_glsl_source(
+                                                        shader_resources,
+                                                        directory.join(p),
+                                                )
+                                        })
+                                        .transpose()?,
+                                disable_depth_test: declaration.disable_depth_test,
+                                cull_mode: declaration.cull_mode,
+                                vertex_inputs: declaration.vertex_inputs,
+                                render_stage: declaration.render_stage,
+                                push_constants_size: declaration.push_constants_size,
+                        })),
+                        (None, None, Some(compute_shader)) => Ok(Self::Compute(ComputeShader {
+                                name,
+                                compute_shader: ShaderPreprocessor::preprocess_glsl_source(
+                                        shader_resources,
+                                        directory.join(&compute_shader),
+                                )?,
+                                push_constants_size: declaration.push_constants_size,
+                        })),
+                        _ => Err(ShaderLoadError::MissingOrInvalidShaderModules),
+                }
         }
 }
 
@@ -834,6 +879,8 @@ pub enum ShaderLoadError {
         ShaderNameAlreadyRegistered(String),
         #[error(transparent)]
         IoError(#[from] std::io::Error),
+        #[error("shader must specifiy either <vertex shader and fragment shader> or <compute shader>")]
+        MissingOrInvalidShaderModules,
         #[error("error ocurred compiling shaders: {0}")]
         CompileError(std::process::ExitStatus),
         #[error("invalid preprocessor directive syntax for '{0}'")]
@@ -1672,11 +1719,11 @@ impl AssetManager {
 
         pub fn load_shader_from_yaml(&mut self, path: &Path) -> Result<ShaderId, ShaderLoadError> {
                 let shader = Shader::from_yaml(&self.assets.shader_resources, path)?;
-                if self.shader_names.contains_key(&shader.name) {
-                        return Err(ShaderLoadError::ShaderNameAlreadyRegistered(shader.name));
+                let shader_name = shader.name().to_string();
+                if self.shader_names.contains_key(&shader_name) {
+                        return Err(ShaderLoadError::ShaderNameAlreadyRegistered(shader_name));
                 }
 
-                let shader_name = shader.name.clone();
                 let shader_id = self.assets.shaders.insert(shader);
 
                 debug!("Loaded shader with name: {}", shader_name);
@@ -1732,6 +1779,20 @@ impl AssetManager {
 
         pub fn shader(&self, shader_id: ShaderId) -> &Shader {
                 &self.assets.shaders[shader_id]
+        }
+
+        pub fn graphics_shader(&self, shader_id: ShaderId) -> &GraphicsShader {
+                match &self.assets.shaders[shader_id] {
+                        Shader::Graphics(graphics_shader) => graphics_shader,
+                        _ => panic!("shader {:?} is not a graphics shader!", shader_id),
+                }
+        }
+
+        pub fn compute_shader(&self, shader_id: ShaderId) -> &ComputeShader {
+                match &self.assets.shaders[shader_id] {
+                        Shader::Compute(compute_shader) => compute_shader,
+                        _ => panic!("shader {:?} is not a compute shader!", shader_id),
+                }
         }
 
         pub fn get_mesh(&self, mesh_id: MeshId) -> Option<&Mesh> {
