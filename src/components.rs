@@ -165,6 +165,26 @@ impl ProjectionCamera {
         pub fn calc_proj_matrix(&self, aspect_ratio: f32) -> Mat4 {
                 Mat4::perspective_rh(self.fovy / self.zoom, aspect_ratio, self.near, self.far)
         }
+
+        #[allow(unused)]
+        pub fn fovy(&self) -> f32 {
+                self.fovy
+        }
+
+        #[allow(unused)]
+        pub fn zoom(&self) -> f32 {
+                self.zoom
+        }
+
+        #[allow(unused)]
+        pub fn near(&self) -> f32 {
+                self.near
+        }
+
+        #[allow(unused)]
+        pub fn far(&self) -> f32 {
+                self.far
+        }
 }
 
 #[derive(Component, Debug)]
