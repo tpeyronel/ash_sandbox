@@ -61,7 +61,7 @@ impl ShaderResourceType {
                 }
         }
 
-        pub fn glsl_type_qualifier(&self, set: u32, binding: u32) -> String {
+        pub fn glsl_type_qualifier(&self, set: u32, binding: u32, read_only: bool) -> String {
                 match self {
                         ShaderResourceType::Struct(ShaderStructDeclaration { type_name, fields }) => {
                                 let body: String = fields
@@ -77,7 +77,8 @@ impl ShaderResourceType {
                         ShaderResourceType::DynamicArray { element_type } => {
                                 // TODO: this doesn't work if element_type is Array.
                                 format!(
-                                        "readonly buffer {}Array_{}_{} {{\n\tuint len;\n\t{} data[];\n}}",
+                                        "{}buffer {}Array_{}_{} {{\n\tuint len;\n\t{} data[];\n}}",
+                                        if read_only { "readonly " } else { "" },
                                         element_type.glsl_type_name(),
                                         set,
                                         binding,

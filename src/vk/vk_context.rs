@@ -282,7 +282,8 @@ impl VkContext {
 
                 let req_device_features = vk::PhysicalDeviceFeatures::default()
                         .sampler_anisotropy(true)
-                        .shader_clip_distance(true);
+                        .shader_clip_distance(true)
+                        .fragment_stores_and_atomics(true);
 
                 let mut features13 = vk::PhysicalDeviceVulkan13Features::default()
                         .synchronization2(true)

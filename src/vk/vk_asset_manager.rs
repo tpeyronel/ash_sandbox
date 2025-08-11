@@ -1243,9 +1243,11 @@ impl VkAssetManager {
                 for requirement in &shader_stage.resources {
                         let binding = resource_bindings.get(&requirement.resource_id).unwrap();
                         let resource = shader_resources.get(&requirement.resource_id).unwrap();
-                        let type_text = resource
-                                .resource_type
-                                .glsl_type_qualifier(binding.set.value(), binding.binding);
+                        let type_text = resource.resource_type.glsl_type_qualifier(
+                                binding.set.value(),
+                                binding.binding,
+                                requirement.read_only,
+                        );
 
                         let suffix = match resource.resource_type {
                                 ShaderResourceType::Struct(_) | ShaderResourceType::DynamicArray { .. } => "\n",

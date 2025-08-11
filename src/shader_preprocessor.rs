@@ -14,6 +14,10 @@ static DIRECTIVE_RESOURCE_REGEX: Lazy<Regex> = lazy_regex!(
         r"^#resource\s+([a-zA-Z_][a-zA-Z_0-9]*(?:\[\])?)\s+([a-zA-Z_][a-zA-Z_0-9]*)\s+:\s+([a-zA-Z_][a-zA-Z_0-9]*)\s*;\s*$"
 );
 
+static DIRECTIVE_READONLY_RESOURCE_REGEX: Lazy<Regex> = lazy_regex!(
+        r"^#resource\s+readonly\s+([a-zA-Z_][a-zA-Z_0-9]*(?:\[\])?)\s+([a-zA-Z_][a-zA-Z_0-9]*)\s+:\s+([a-zA-Z_][a-zA-Z_0-9]*)\s*;\s*$"
+);
+
 pub struct ShaderPreprocessor {}
 
 impl ShaderPreprocessor {
@@ -43,10 +47,12 @@ impl ShaderPreprocessor {
                         };
 
                         match directive {
-                                ShaderDirective::Resource {
-                                        resource_id,
+                                ShaderDirective::Resource(ShaderResourceDirective {
+                                        read_only,
                                         variable_name,
-                                } => {
+                                        resource_id,
+                                        ..
+                                }) => {
                                         let resource = shader_resources.get(&resource_id).unwrap();
 
                                         match &resource.resource_type {
@@ -71,6 +77,7 @@ impl ShaderPreprocessor {
                                                 resource_id,
                                                 variable_name,
                                                 separator_index: parts.len() - 1,
+                                                read_only,
                                         });
 
                                         parts.push(String::new());
@@ -99,29 +106,46 @@ impl ShaderPreprocessor {
 
                 let directive = match directive_type {
                         "resource" => {
-                                let captures = DIRECTIVE_RESOURCE_REGEX
-                                        .captures(&line)
-                                        .ok_or(ShaderLoadError::InvalidPreprocessorDirective("resource"))?;
+                                let resource_directive = Self::parse_resource_shader_directive(line)?;
 
-                                let type_name = captures.get(1).unwrap().as_str().to_string();
-                                let variable_name = captures.get(2).unwrap().as_str().to_string();
-                                let resource_id = ShaderResourceId::new(captures.get(3).unwrap().as_str());
+                                let resource =
+                                        shader_resources.get(&resource_directive.resource_id).ok_or_else(|| {
+                                                ShaderLoadError::UnknownShaderResourceId(
+                                                        resource_directive.resource_id.deref().to_owned(),
+                                                )
+                                        })?;
 
-                                let resource = shader_resources.get(&resource_id).ok_or_else(|| {
-                                        ShaderLoadError::UnknownShaderResourceId(resource_id.deref().to_owned())
-                                })?;
+                                assert_eq!(
+                                        resource.resource_type.resource_type_name(),
+                                        resource_directive.type_name
+                                );
 
-                                assert_eq!(resource.resource_type.resource_type_name(), type_name);
-
-                                ShaderDirective::Resource {
-                                        resource_id: resource.id.clone(), // Use resource.id.clone() to avoid having multiple strings
-                                        variable_name,
-                                }
+                                ShaderDirective::Resource(resource_directive)
                         },
                         _ => return Ok(None),
                 };
 
                 Ok(Some(directive))
+        }
+
+        fn parse_resource_shader_directive(line: &str) -> Result<ShaderResourceDirective, ShaderLoadError> {
+                if let Some(captures) = DIRECTIVE_RESOURCE_REGEX.captures(&line) {
+                        Ok(ShaderResourceDirective {
+                                read_only: false,
+                                type_name: captures.get(1).unwrap().as_str().to_string(),
+                                variable_name: captures.get(2).unwrap().as_str().to_string(),
+                                resource_id: ShaderResourceId::new(captures.get(3).unwrap().as_str()),
+                        })
+                } else if let Some(captures) = DIRECTIVE_READONLY_RESOURCE_REGEX.captures(&line) {
+                        Ok(ShaderResourceDirective {
+                                read_only: true,
+                                type_name: captures.get(1).unwrap().as_str().to_string(),
+                                variable_name: captures.get(2).unwrap().as_str().to_string(),
+                                resource_id: ShaderResourceId::new(captures.get(3).unwrap().as_str()),
+                        })
+                } else {
+                        Err(ShaderLoadError::InvalidPreprocessorDirective("resource"))
+                }
         }
 
         fn write_children_struct_declarations_rec(
@@ -170,10 +194,15 @@ impl ShaderPreprocessor {
 
 #[derive(Debug)]
 pub enum ShaderDirective {
-        Resource {
-                resource_id: ShaderResourceId,
-                variable_name: String,
-        },
+        Resource(ShaderResourceDirective),
+}
+
+#[derive(Debug)]
+pub struct ShaderResourceDirective {
+        read_only: bool,
+        type_name: String,
+        variable_name: String,
+        resource_id: ShaderResourceId,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +210,7 @@ pub struct ShaderResourceRequirement {
         pub resource_id: ShaderResourceId,
         pub variable_name: String,
         pub separator_index: usize,
+        pub read_only: bool,
 }
 
 #[derive(Debug, Clone)]

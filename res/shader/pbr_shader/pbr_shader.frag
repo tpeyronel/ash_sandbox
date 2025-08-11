@@ -11,7 +11,7 @@
 #resource ShaderSettings u_settings : SHADER_SETTINGS;
 #resource WorldMatrices u_world_matrices : WORLD_MATRICES;
 #resource WorldLights u_lights : WORLD_LIGHTS;
-#resource WorldPointLightNoShadow[] u_point_lights : WORLD_POINT_LIGHTS;
+#resource readonly WorldPointLightNoShadow[] u_point_lights : WORLD_POINT_LIGHTS;
 #resource MaterialData u_material : MATERIAL_DATA;
 #resource sampler2D u_base_color_map : MATERIAL_BASE_COLOR_TEXTURE;
 #resource sampler2D u_metallic_roughness_map : MATERIAL_METALLIC_ROUGHNESS_TEXTURE;
