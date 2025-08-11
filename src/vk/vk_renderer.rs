@@ -185,11 +185,9 @@ impl VkRenderer {
 
 impl Renderer for VkRenderer {
         fn draw_world(&mut self, world: &mut World, imgui_draw_data: &imgui::DrawData) -> AnyResult<()> {
-                let asset_manager = world.remove_resource::<AssetManager>().unwrap();
-
                 self.vk_asset_manager.process_asset_manager_events(
                         &self.context,
-                        &asset_manager,
+                        world.get_resource::<AssetManager>().unwrap(),
                         &self.asset_manager_event_rx,
                 )?;
 
@@ -203,6 +201,8 @@ impl Renderer for VkRenderer {
                         BeginFrameResult::Draw { imagei } => imagei,
                         BeginFrameResult::Skip => return Ok(()),
                 };
+
+                let asset_manager = world.remove_resource::<AssetManager>().unwrap();
 
                 self.vk_asset_manager.provide_shader_resource(
                         &self.context,
