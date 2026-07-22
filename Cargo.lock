@@ -2544,7 +2544,7 @@ dependencies = [
 [[package]]
 name = "tps-counter"
 version = "0.1.0"
-source = "git+https://github.com/tpeyronel/tps-counter#ab7a832a36af93b125543e46b2052bae011fdf99"
+source = "git+ssh://git@github.com/tpeyronel/tps-counter.git#ab7a832a36af93b125543e46b2052bae011fdf99"
 
 [[package]]
 name = "tracing"
