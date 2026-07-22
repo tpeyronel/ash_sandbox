@@ -307,7 +307,7 @@ impl Renderer for VkRenderer {
                         vp: proj_mat * view_mat,
                         inv_proj: proj_mat.inverse(),
                         cluster_grid_size,
-                        near_far: Vec4::new(camera_projection.near(), camera_projection.far(), 0.0, 0.0),
+                        near_far_viewport_size: Vec4::new(camera_projection.near(), camera_projection.far(), width as f32, height as f32),
                 };
 
                 self.vk_asset_manager.provide_shader_resource(
@@ -913,6 +913,19 @@ impl VkRenderer {
                 };
 
                 {
+                        let memory_barrier = vk::MemoryBarrier2::default()
+                                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                                .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                                .dst_access_mask(vk::AccessFlags2::SHADER_READ);
+
+                        let dependency_info = vk::DependencyInfo::default().memory_barriers(memory_barrier.ref_into_slice());
+                        self.context
+                                .device
+                                .cmd_pipeline_barrier2(*frame_data.draw_cmd_buffer, &dependency_info);
+                }
+
+                {
                         VkImage::cmd_transition_img_layout(
                                 &self.context.device,
                                 cmd_buffer,
@@ -1008,7 +1021,7 @@ impl VkRenderer {
                                 }],
                         );
 
-                        self.draw_shader_group(asset_manager, cmd_buffer, skybox_material.shader, &shader_group)?;
+                        // self.draw_shader_group(asset_manager, cmd_buffer, skybox_material.shader, &shader_group)?;
                 }
 
                 for (shader_id, shader_group) in &scene.mesh_instances {
@@ -1839,7 +1852,7 @@ pub struct WorldMatrices {
         vp: Mat4,
         inv_proj: Mat4,
         cluster_grid_size: Vec4u, // xyz is the cluster grid size, w is the total cluster count, i.e. x * y * z.
-        near_far: Vec4,
+        near_far_viewport_size: Vec4,
 }
 
 #[allow(dead_code)]

@@ -12,8 +12,8 @@ vec4 ndc_to_view(vec4 ndc_coords) {
 }
 
 float compute_slice_depth(uint slice) {
-    float near = u_world_matrices.near_far.x;
-    float far = u_world_matrices.near_far.y;
+    float near = u_world_matrices.near_far_viewport_size.x;
+    float far = u_world_matrices.near_far_viewport_size.y;
     uint num_slices = u_world_matrices.cluster_grid_size.z;
 
     return near * pow(far / near, float(slice) / float(num_slices));
@@ -85,5 +85,8 @@ void main() {
     u_out_clusters.data[cluster_linear_index].min_point = vec4(aabb_min_point, 1.0);
     u_out_clusters.data[cluster_linear_index].max_point = vec4(aabb_max_point, 1.0);
 
-    // debugPrintfEXT("%v3u\t%v4f\t%v4f\t\n", cluster_index, u_out_clusters.data[cluster_linear_index].min_point, u_out_clusters.data[cluster_linear_index].max_point);
+    // if (cluster_index.z == 0) {
+        // debugPrintfEXT("%v3u\t%v4f\t%v4f\t\n", cluster_index, u_out_clusters.data[cluster_linear_index].min_point, u_out_clusters.data[cluster_linear_index].max_point);
+    // }
+    // debugPrintfEXT("%u\t%v4f\t%v4f\t\n", cluster_linear_index, u_out_clusters.data[cluster_linear_index].min_point, u_out_clusters.data[cluster_linear_index].max_point);
 }

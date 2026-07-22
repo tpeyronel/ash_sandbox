@@ -12,6 +12,7 @@
 #resource WorldMatrices u_world_matrices : WORLD_MATRICES;
 #resource WorldLights u_lights : WORLD_LIGHTS;
 #resource readonly WorldPointLightNoShadow[] u_point_lights : WORLD_POINT_LIGHTS;
+#resource readonly Cluster[] u_clusters : FRUSTUM_CLUSTERS;
 #resource MaterialData u_material : MATERIAL_DATA;
 #resource sampler2D u_base_color_map : MATERIAL_BASE_COLOR_TEXTURE;
 #resource sampler2D u_metallic_roughness_map : MATERIAL_METALLIC_ROUGHNESS_TEXTURE;
@@ -259,7 +260,74 @@ vec3 calc_point_light(
 //         return diffuse + specular;
 // }
 
+bool is_in_aabb(vec3 aabb_min_point, vec3 aabb_max_point, vec3 pos) {
+        return aabb_min_point.x <= pos.x && pos.x <= aabb_max_point.x
+                && aabb_min_point.y <= pos.y && pos.y <= aabb_max_point.y
+                && aabb_min_point.z <= pos.z && pos.z <= aabb_max_point.z;
+}
+
+int find_cluster_index(vec3 pos_vs) {
+        for (int i = 0; i < u_clusters.len; i++) {
+                if (is_in_aabb(u_clusters.data[i].min_point.xyz, u_clusters.data[i].max_point.xyz, pos_vs)) {
+                        return i;
+                }
+        }
+
+        return -1;
+}
+
+uint compute_linear_cluster_index(uvec3 cluster_index, uvec3 cluster_grid_size) {
+    return cluster_index.x +
+        cluster_grid_size.x * cluster_index.y +
+        cluster_grid_size.x * cluster_grid_size.y * cluster_index.z;
+}
+
+uint get_cluster_index() {
+        float near = u_world_matrices.near_far_viewport_size.x;
+        float far = u_world_matrices.near_far_viewport_size.y;
+        vec2 viewport_size = u_world_matrices.near_far_viewport_size.zw;
+        vec3 win_coord = gl_FragCoord.xyz;
+        // win_coord = clamp(win_coord, vec3(0.0), vec3(viewport_size, 1.0));
+
+        uint x = uint((win_coord.x / viewport_size.x) * u_world_matrices.cluster_grid_size.x);
+        uint y = uint((win_coord.y / viewport_size.y) * u_world_matrices.cluster_grid_size.y);
+        uint z = uint(pow(win_coord.z, far - near) * u_world_matrices.cluster_grid_size.z);
+
+        // gl_FragCoord.z = zclip / wclip
+        //         = zclip * gl_FragCoord.w;
+        // => zclip = gl_FragCoord.z / gl_FragCoord.w;
+        // debugPrintfEXT("%f\n", gl_FragCoord.z / gl_FragCoord.w);
+
+        // return compute_linear_cluster_index(uvec3(x, y, z), u_world_matrices.cluster_grid_size.xyz);
+        return z;
+}
+
+const vec3 cluster_colors[8] = vec3[8](
+        vec3(1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(1.0, 1.0, 0.0),
+        vec3(0.0, 1.0, 1.0),
+        vec3(1.0, 0.0, 1.0),
+        vec3(1.0, 1.0, 1.0),
+        vec3(0.0, 0.0, 0.0)
+);
+
 void main() {
+        vec4 frag_pos_vs = u_world_matrices.view * vec4(i_frag_world_pos, 1.0);
+        // frag_pos_vs = frag_pos_vs / frag_pos_vs.w;
+        // int cluster_index = find_cluster_index(frag_pos_vs.xyz);
+        uint cluster_index = get_cluster_index();
+        if (cluster_index != -1) {
+                uint cluster_color_index = cluster_index % 7;
+                o_output = vec4(cluster_colors[cluster_color_index], 1.0);
+                if (cluster_index == 19) {
+                        o_output = vec4(0.0);
+                }
+                // debugPrintfEXT("%f\n", frag_pos_vs.z);
+                return;
+        }
+
         vec3 albedo = texture(u_base_color_map, i_tex_coord).rgb;
         vec2 metallic_roughness = texture(u_metallic_roughness_map, i_tex_coord).zy;
         float metallic = metallic_roughness.x;
